@@ -28,8 +28,10 @@ class MainFlutterWindow: NSWindow {
           result(nil)
           return
         }
-        // Save current style for restoration
-        self.savedStyleMask = self.styleMask
+        // Save current style for restoration (only on first call)
+        if self.savedStyleMask == nil {
+          self.savedStyleMask = self.styleMask
+        }
 
         // Borderless fullscreen window covering the entire screen (including menu bar)
         self.styleMask = [.borderless]
@@ -53,6 +55,7 @@ class MainFlutterWindow: NSWindow {
         result(nil)
       case "exitOverlayMode":
         self.styleMask = self.savedStyleMask ?? [.titled, .closable, .miniaturizable, .resizable]
+        self.savedStyleMask = nil
         self.isOpaque = true
         self.backgroundColor = .windowBackgroundColor
         self.hasShadow = true
@@ -64,11 +67,16 @@ class MainFlutterWindow: NSWindow {
       case "resizeToRect":
         // Shrink the borderless overlay window to the selection rect for in-place preview.
         // Stays borderless (no corner radius) and floating above other windows.
-        let args = call.arguments as! [String: Double]
-        let x = args["x"]!
-        let y = args["y"]!
-        let w = args["width"]!
-        let h = args["height"]!
+        guard let args = call.arguments as? [String: Double],
+              let x = args["x"],
+              let y = args["y"],
+              let w = args["width"],
+              let h = args["height"] else {
+          result(FlutterError(code: "INVALID_ARGS",
+                              message: "resizeToRect requires x, y, width, height",
+                              details: nil))
+          return
+        }
         // Convert from Flutter top-left origin to macOS bottom-left origin
         let screenH = NSScreen.main?.frame.height ?? 0
         let macY = screenH - y - h

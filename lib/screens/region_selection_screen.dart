@@ -45,6 +45,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     final frame = await codec.getNextFrame();
     if (mounted) {
       setState(() => _decodedImage = frame.image);
+    } else {
+      frame.image.dispose();
     }
     codec.dispose();
   }
@@ -114,6 +116,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       child: MouseRegion(
         cursor: SystemMouseCursors.precise,
         onHover: (event) {
+          if (event.localPosition == _current) return;
           setState(() => _current = event.localPosition);
         },
         child: Listener(
@@ -198,7 +201,7 @@ class _SelectionPainter extends CustomPainter {
       // Selection dimensions label
       final w = (selectionRect!.width.abs() * devicePixelRatio).round();
       final h = (selectionRect!.height.abs() * devicePixelRatio).round();
-      _drawDimensionLabel(canvas, selectionRect!, '$w \u00D7 $h');
+      _drawDimensionLabel(canvas, selectionRect!, '$w \u00D7 $h', size);
     } else {
       // Full scrim when not dragging
       canvas.drawRect(fullRect, scrimPaint);
@@ -236,7 +239,9 @@ class _SelectionPainter extends CustomPainter {
     );
   }
 
-  void _drawDimensionLabel(Canvas canvas, Rect selection, String text) {
+  void _drawDimensionLabel(
+    Canvas canvas, Rect selection, String text, Size canvasSize,
+  ) {
     final textPainter = TextPainter(
       text: TextSpan(
         text: text,
@@ -252,7 +257,12 @@ class _SelectionPainter extends CustomPainter {
     final labelW = textPainter.width + 12;
     final labelH = textPainter.height + 6;
     final labelX = selection.center.dx - labelW / 2;
-    final labelY = selection.bottom + 6;
+    var labelY = selection.bottom + 6;
+
+    // Flip above selection if label would go off-screen at bottom
+    if (labelY + labelH > canvasSize.height) {
+      labelY = selection.top - labelH - 6;
+    }
 
     final bgRect = RRect.fromRectAndRadius(
       Rect.fromLTWH(labelX, labelY, labelW, labelH),

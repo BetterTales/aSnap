@@ -26,11 +26,13 @@ class CaptureService {
     final frame = await codec.getNextFrame();
     final image = frame.image;
 
+    final clampedLeft = physicalRect.left.clamp(0.0, image.width.toDouble());
+    final clampedTop = physicalRect.top.clamp(0.0, image.height.toDouble());
     final srcRect = ui.Rect.fromLTWH(
-      physicalRect.left.clamp(0, image.width.toDouble()),
-      physicalRect.top.clamp(0, image.height.toDouble()),
-      physicalRect.width.clamp(0, image.width - physicalRect.left),
-      physicalRect.height.clamp(0, image.height - physicalRect.top),
+      clampedLeft,
+      clampedTop,
+      physicalRect.width.clamp(0, image.width - clampedLeft),
+      physicalRect.height.clamp(0, image.height - clampedTop),
     );
 
     if (srcRect.width <= 0 || srcRect.height <= 0) {
