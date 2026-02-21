@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import '../utils/constants.dart';
@@ -15,8 +16,14 @@ class TrayService with TrayListener {
 
     final menu = Menu(
       items: [
-        MenuItem(key: 'capture_full_screen', label: 'Capture Full Screen'),
-        MenuItem(key: 'capture_region', label: 'Capture Region'),
+        MenuItem(
+          key: 'capture_full_screen',
+          label: 'Full Screen (${_shortcutLabel(kFullScreenHotkey)})',
+        ),
+        MenuItem(
+          key: 'capture_region',
+          label: 'Region (${_shortcutLabel(kRegionHotkey)})',
+        ),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit $kAppName'),
       ],
@@ -50,5 +57,14 @@ class TrayService with TrayListener {
   Future<void> destroy() async {
     trayManager.removeListener(this);
     await trayManager.destroy();
+  }
+
+  /// Compact shortcut label from a HotKey, e.g. "⌘⇧1".
+  /// Uses keyLabel (symbol map) instead of debugName (raw key names).
+  static String _shortcutLabel(HotKey hotKey) {
+    final modifiers = (hotKey.modifiers ?? [])
+        .map((m) => m.physicalKeys.first.keyLabel)
+        .join();
+    return '$modifiers${hotKey.physicalKey.keyLabel}';
   }
 }

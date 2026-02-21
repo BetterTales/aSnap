@@ -92,19 +92,34 @@ class WindowService {
 
   /// Shrink the overlay window in-place to the selection rect for preview.
   /// Stays borderless (no corner radius) and floating above other windows.
+  /// Enforces a minimum size so the toolbar always fits, expanding outward
+  /// from the selection center if needed.
   Future<void> showPreviewInPlace({required Rect selectionRect}) async {
+    // Enforce minimum so the toolbar never overflows
+    final w = selectionRect.width.clamp(_minPreviewSize.width, double.infinity);
+    final h = selectionRect.height.clamp(
+      _minPreviewSize.height,
+      double.infinity,
+    );
+    final rect = Rect.fromCenter(
+      center: selectionRect.center,
+      width: w,
+      height: h,
+    );
+
     await _channel.invokeMethod('resizeToRect', {
-      'x': selectionRect.left,
-      'y': selectionRect.top,
-      'width': selectionRect.width,
-      'height': selectionRect.height,
+      'x': rect.left,
+      'y': rect.top,
+      'width': rect.width,
+      'height': rect.height,
     });
   }
 
   Future<void> hidePreview() async {
-    // Hide first to avoid flash (exitOverlayMode restores normal window briefly)
+    // Hide only — defer exitOverlayMode to the next showPreview() call.
+    // Restoring styleMask on a "hidden" window can still flash because macOS
+    // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
-    await _channel.invokeMethod('exitOverlayMode');
     await windowManager.setAlwaysOnTop(false);
   }
 }

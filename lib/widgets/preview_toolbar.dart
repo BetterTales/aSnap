@@ -70,28 +70,18 @@ class _ActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final foreground = isDestructive ? Colors.red[300]! : Colors.white;
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: onPressed,
-        borderRadius: BorderRadius.circular(22),
-        hoverColor: Colors.white.withValues(alpha: 0.1),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(icon, color: foreground, size: 18),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                style: TextStyle(
-                  color: foreground,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ],
+    return Tooltip(
+      message: label,
+      waitDuration: const Duration(milliseconds: 400),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onPressed,
+          borderRadius: BorderRadius.circular(22),
+          hoverColor: Colors.white.withValues(alpha: 0.1),
+          child: Padding(
+            padding: const EdgeInsets.all(8),
+            child: Icon(icon, color: foreground, size: 18),
           ),
         ),
       ),
