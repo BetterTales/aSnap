@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../state/app_state.dart';
 import '../widgets/preview_toolbar.dart';
@@ -58,26 +59,28 @@ class _PreviewScreenState extends State<PreviewScreen> {
               widget.onDiscard();
             }
           },
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              // Screenshot fills the entire window
-              Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true),
+          child: DragToMoveArea(
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                // Screenshot fills the entire window
+                Image.memory(bytes, fit: BoxFit.contain, gaplessPlayback: true),
 
-              // Floating toolbar at bottom center
-              Positioned(
-                bottom: 0,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: PreviewToolbar(
-                    onCopy: widget.onCopy,
-                    onSave: widget.onSave,
-                    onDiscard: widget.onDiscard,
+                // Floating toolbar at bottom center
+                Positioned(
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  child: Center(
+                    child: PreviewToolbar(
+                      onCopy: widget.onCopy,
+                      onSave: widget.onSave,
+                      onDiscard: widget.onDiscard,
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },
