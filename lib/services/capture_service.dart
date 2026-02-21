@@ -9,13 +9,13 @@ class CaptureService {
     if (!await _ensurePermission()) return null;
 
     final imagePath = await _tempImagePath();
-    final capturedData = await screenCapturer.capture(
-      mode: CaptureMode.screen,
-      imagePath: imagePath,
-      copyToClipboard: false,
-      silent: true,
-    );
-    return _readAndCleanup(capturedData, imagePath);
+    // Call screencapture directly without -C to exclude the mouse cursor
+    final result = await Process.run('/usr/sbin/screencapture', [
+      '-x',
+      imagePath,
+    ]);
+    if (result.exitCode != 0) return null;
+    return _readFile(imagePath);
   }
 
   Future<Uint8List?> captureRegion() async {
@@ -28,7 +28,8 @@ class CaptureService {
       copyToClipboard: false,
       silent: true,
     );
-    return _readAndCleanup(capturedData, imagePath);
+    if (capturedData == null) return null;
+    return _readFile(imagePath);
   }
 
   Future<bool> checkPermission() async {
@@ -78,12 +79,7 @@ class CaptureService {
     return '${dir.path}/asnap_capture_$timestamp.png';
   }
 
-  Future<Uint8List?> _readAndCleanup(
-    CapturedData? capturedData,
-    String imagePath,
-  ) async {
-    if (capturedData == null) return null;
-
+  Future<Uint8List?> _readFile(String imagePath) async {
     final file = File(imagePath);
     if (await file.exists()) {
       final bytes = await file.readAsBytes();
