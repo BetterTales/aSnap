@@ -104,6 +104,9 @@ class MainFlutterWindow: NSWindow {
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
 
+  // Suppress macOS system beep — key events are handled on the Flutter/Dart side
+  override func keyDown(with event: NSEvent) {}
+
   // Hide window at launch — Dart side controls when to show via window_manager
   override public func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
     super.order(place, relativeTo: otherWin)

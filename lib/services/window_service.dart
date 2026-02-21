@@ -102,9 +102,10 @@ class WindowService {
   }
 
   Future<void> hidePreview() async {
-    // Hide first to avoid flash (exitOverlayMode restores normal window briefly)
+    // Hide only — defer exitOverlayMode to the next showPreview() call.
+    // Restoring styleMask on a "hidden" window can still flash because macOS
+    // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
-    await _channel.invokeMethod('exitOverlayMode');
     await windowManager.setAlwaysOnTop(false);
   }
 }

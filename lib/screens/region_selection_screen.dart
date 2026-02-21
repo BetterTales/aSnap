@@ -240,7 +240,10 @@ class _SelectionPainter extends CustomPainter {
   }
 
   void _drawDimensionLabel(
-    Canvas canvas, Rect selection, String text, Size canvasSize,
+    Canvas canvas,
+    Rect selection,
+    String text,
+    Size canvasSize,
   ) {
     final textPainter = TextPainter(
       text: TextSpan(
