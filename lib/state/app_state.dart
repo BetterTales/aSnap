@@ -23,6 +23,10 @@ class AppState extends ChangeNotifier {
   Size? _screenSize;
   Size? get screenSize => _screenSize;
 
+  /// Top-left origin (CG-style coordinates) of the captured display.
+  Offset? _screenOrigin;
+  Offset? get screenOrigin => _screenOrigin;
+
   CaptureStatus _status = CaptureStatus.idle;
   CaptureStatus get status => _status;
 
@@ -36,12 +40,14 @@ class AppState extends ChangeNotifier {
     required Image decodedImage,
     List<Rect>? windowRects,
     Size? screenSize,
+    Offset? screenOrigin,
   }) {
     _decodedFullScreen?.dispose();
     _decodedFullScreen = decodedImage;
     _fullScreenBytes = fullScreenBytes;
     _windowRects = windowRects;
     _screenSize = screenSize;
+    _screenOrigin = screenOrigin;
     _status = CaptureStatus.selecting;
     notifyListeners();
   }
@@ -60,7 +66,14 @@ class AppState extends ChangeNotifier {
     _decodedFullScreen = null;
     _windowRects = null;
     _screenSize = null;
+    _screenOrigin = null;
     _status = CaptureStatus.captured;
+    notifyListeners();
+  }
+
+  /// Trigger a rebuild without changing any state.
+  /// Used when the native window is shown/focused after initial state updates.
+  void nudge() {
     notifyListeners();
   }
 
@@ -71,6 +84,7 @@ class AppState extends ChangeNotifier {
     _decodedFullScreen = null;
     _windowRects = null;
     _screenSize = null;
+    _screenOrigin = null;
     _status = CaptureStatus.idle;
     notifyListeners();
   }

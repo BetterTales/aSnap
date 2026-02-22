@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -16,6 +17,8 @@ import 'state/app_state.dart';
 
 bool _displayChangeInProgress = false;
 bool _displayChangePending = false;
+bool _regionCaptureCancelled = false;
+bool _escActionInProgress = false;
 
 /// Pre-cached window/element rects from background polling.
 /// Updated every ~2 seconds by the native background thread.
@@ -76,6 +79,7 @@ void main() async {
       onDiscard: _handleDiscard,
       onRegionSelected: _handleRegionSelected,
       onRegionCancel: _handleRegionCancel,
+      onHitTest: _handleHitTest,
     ),
   );
 
@@ -94,6 +98,7 @@ Future<void> _initAfterRunApp() async {
 
   _windowService.onOverlayCancelled = _handleRegionCancel;
   _windowService.onOverlayDisplayChanged = _handleDisplayChanged;
+  _windowService.onEscPressed = _handleEscPressed;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
   };
@@ -111,6 +116,36 @@ Future<void> _initAfterRunApp() async {
   // Start background rect polling — keeps window/element rects ready
   // so captures are instant (no AX tree walk at trigger time).
   await _windowService.startRectPolling();
+}
+
+void _handleEscPressed() {
+  switch (_appState.status) {
+    case CaptureStatus.capturing:
+      // During capture setup, Esc should abort the flow immediately.
+      _regionCaptureCancelled = true;
+      return;
+    case CaptureStatus.selecting:
+      // Fallback: region overlay normally handles Esc in Flutter.
+      if (_escActionInProgress) return;
+      _escActionInProgress = true;
+      unawaited(
+        _handleRegionCancel().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+      return;
+    case CaptureStatus.captured:
+      if (_escActionInProgress) return;
+      _escActionInProgress = true;
+      unawaited(
+        _handleDiscard().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+      return;
+    case CaptureStatus.idle:
+      return;
+  }
 }
 
 /// Decode image dimensions from PNG bytes.
@@ -134,24 +169,58 @@ Future<ui.Image> _decodeImageBytes(Uint8List bytes) async {
   return frame.image;
 }
 
-Future<void> _showPreviewWithImage(Uint8List bytes) async {
+Future<void> _showPreviewWithImage(
+  Uint8List bytes, {
+  required Size targetScreenSize,
+  required Offset targetScreenOrigin,
+}) async {
   _appState.setCapturedImage(bytes);
   final imgSize = await _getImageSize(bytes);
   await _windowService.showPreview(
     imageWidth: imgSize.width.toInt(),
     imageHeight: imgSize.height.toInt(),
+    screenSize: targetScreenSize,
+    screenOrigin: targetScreenOrigin,
   );
+  // setCapturedImage() happens before the window is visible. Rebuild once more
+  // after show/focus so PreviewScreen can re-run focus sync reliably.
+  _appState.nudge();
+  await _windowService.startEscMonitor();
+}
+
+/// Real-time AX hit-test: convert local overlay coordinates to global CG
+/// coordinates, query the deepest accessible element, and return the result
+/// back in local coordinates.
+Future<Rect?> _handleHitTest(Offset localPoint) async {
+  final screenOrigin = _appState.screenOrigin;
+  if (screenOrigin == null) return null;
+
+  final cgPoint = Offset(
+    localPoint.dx + screenOrigin.dx,
+    localPoint.dy + screenOrigin.dy,
+  );
+  final cgRect = await _windowService.hitTestElement(cgPoint);
+  if (cgRect == null) return null;
+
+  // Convert CG rect back to local overlay coordinates.
+  return cgRect.shift(Offset(-screenOrigin.dx, -screenOrigin.dy));
 }
 
 Future<void> _handleFullScreenCapture() async {
   if (_appState.status == CaptureStatus.capturing) return;
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
   _appState.setCapturing();
   await _windowService.hidePreview();
 
   // Native capture targets the display under the cursor
   final capture = await _windowService.captureScreen();
   if (capture != null) {
-    await _showPreviewWithImage(capture.bytes);
+    await _showPreviewWithImage(
+      capture.bytes,
+      targetScreenSize: capture.screenSize,
+      targetScreenOrigin: capture.screenOrigin,
+    );
   } else {
     _appState.clear();
   }
@@ -159,16 +228,33 @@ Future<void> _handleFullScreenCapture() async {
 
 Future<void> _handleRegionCapture() async {
   if (_appState.status == CaptureStatus.capturing) return;
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
   // Allow re-entry from selecting state (display-change re-trigger).
   _appState.setCapturing();
+  _regionCaptureCancelled = false;
   await _windowService.hidePreview();
   _clearDisplayCaches();
+
+  // Start native Esc monitor so user can cancel during capture setup
+  // (before the Flutter overlay and its KeyboardListener are visible).
+  await _windowService.startEscMonitor();
 
   // Stop background polling — our overlay would contaminate future polls.
   await _windowService.stopRectPolling();
 
   // Capture the display under the cursor for single-display overlay.
   final capture = await _windowService.captureScreen();
+
+  // Bail if user pressed Esc during capture.
+  if (_regionCaptureCancelled) {
+    _regionCaptureCancelled = false;
+    _appState.clear();
+    await _windowService.stopEscMonitor();
+    await _windowService.startRectPolling();
+    return;
+  }
+
   if (capture != null) {
     List<Rect> localRects;
 
@@ -197,11 +283,22 @@ Future<void> _handleRegionCapture() async {
     // (no async Image.memory decode that would show stale content).
     final decodedImage = await _decodeImageBytes(capture.bytes);
 
+    // Bail if user pressed Esc during decode — we own the image, dispose it.
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      decodedImage.dispose();
+      _appState.clear();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
     _appState.setSelecting(
       capture.bytes,
       decodedImage: decodedImage,
       windowRects: localRects,
       screenSize: capture.screenSize,
+      screenOrigin: capture.screenOrigin,
     );
 
     // Enter overlay mode — window configured + positioned but stays invisible.
@@ -209,12 +306,36 @@ Future<void> _handleRegionCapture() async {
       screenOrigin: capture.screenOrigin,
     );
 
+    // Bail if user pressed Esc during overlay setup.
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      _appState.clear();
+      await _windowService.exitOverlay();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
     // Wait for Flutter to render the pre-decoded image at overlay size.
     await WidgetsBinding.instance.endOfFrame;
     await WidgetsBinding.instance.endOfFrame;
+
+    // Bail if user pressed Esc during frame wait.
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      _appState.clear();
+      await _windowService.exitOverlay();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
     await _windowService.revealOverlay();
+    // Overlay is visible — Flutter KeyboardListener takes over Esc handling.
+    await _windowService.stopEscMonitor();
   } else {
     _appState.clear();
+    await _windowService.stopEscMonitor();
     await _windowService.startRectPolling();
   }
 }
@@ -271,6 +392,7 @@ Future<void> _handleDisplayChanged() async {
       decodedImage: decodedImage,
       windowRects: localRects,
       screenSize: capture.screenSize,
+      screenOrigin: capture.screenOrigin,
     );
 
     // 7. Wait for Flutter to render the new (pre-decoded) screenshot.
@@ -308,7 +430,8 @@ Future<void> _handleDisplayChanged() async {
 Future<void> _handleRegionSelected(Rect logicalRect) async {
   final fullScreenBytes = _appState.fullScreenBytes;
   final screenSize = _appState.screenSize;
-  if (fullScreenBytes == null || screenSize == null) {
+  final screenOrigin = _appState.screenOrigin;
+  if (fullScreenBytes == null || screenSize == null || screenOrigin == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
@@ -333,22 +456,50 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
     physicalRect,
   );
   if (cropped != null) {
-    _appState.setCapturedImage(cropped);
-    await _windowService.showPreviewInPlace(selectionRect: logicalRect);
+    // Full-screen selection → centered preview (same as ⌘⇧1)
+    // Partial selection → borderless in-place preview at the selection location
+    final isFullScreen =
+        logicalRect.left <= 4 &&
+        logicalRect.top <= 4 &&
+        logicalRect.right >= screenSize.width - 4 &&
+        logicalRect.bottom >= screenSize.height - 4;
+
+    if (isFullScreen) {
+      await _showPreviewWithImage(
+        cropped,
+        targetScreenSize: screenSize,
+        targetScreenOrigin: screenOrigin,
+      );
+    } else {
+      _appState.setCapturedImage(cropped);
+      await _windowService.showPreviewInPlace(selectionRect: logicalRect);
+      // Window is resized/focused after setCapturedImage(); force another
+      // rebuild so KeyboardListener focus sync runs with the visible window.
+      _appState.nudge();
+      await _windowService.startEscMonitor();
+    }
   } else {
     _appState.clear();
+    await _windowService.stopEscMonitor();
     await _windowService.hidePreview();
   }
 }
 
 Future<void> _handleRegionCancel() async {
+  await _windowService.stopEscMonitor();
   _clearDisplayCaches();
   _appState.clear();
   await _windowService.hidePreview();
+  // Clean up overlay properties (monitors, level, isOpaque, etc.).
+  // Without this, the display-change monitor stays active after cancel,
+  // and the window retains borderless/maximumWindow configuration.
+  await _windowService.exitOverlay();
   await _windowService.startRectPolling();
 }
 
 Future<void> _handleCopy() async {
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
   final bytes = _appState.screenshotBytes;
   if (bytes != null) {
     await _clipboardService.copyImage(bytes);
@@ -360,6 +511,8 @@ Future<void> _handleCopy() async {
 }
 
 Future<void> _handleSave() async {
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
   final bytes = _appState.screenshotBytes;
   if (bytes != null) {
     await _fileService.saveScreenshot(bytes);
@@ -371,6 +524,8 @@ Future<void> _handleSave() async {
 }
 
 Future<void> _handleDiscard() async {
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
   _clearDisplayCaches();
   _appState.clear();
   await _windowService.hidePreview();
@@ -378,6 +533,7 @@ Future<void> _handleDiscard() async {
 }
 
 Future<void> _handleQuit() async {
+  await _windowService.stopEscMonitor();
   await _windowService.stopRectPolling();
   await _hotkeyService.unregisterAll();
   await _trayService.destroy();

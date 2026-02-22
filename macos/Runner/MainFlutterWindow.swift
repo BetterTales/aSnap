@@ -15,6 +15,11 @@ class MainFlutterWindow: NSWindow {
   private var rectPollingTimer: DispatchSourceTimer?
   private let rectPollingQueue = DispatchQueue(label: "com.asnap.rectPolling", qos: .utility)
 
+  // Global Esc key monitor (catches Escape when our window isn't key)
+  private var globalEscMonitor: Any?
+  // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
+  private var localEscMonitor: Any?
+
   /// Append a debug line to ~/asnap_overlay.log
   private static func log(_ msg: String) {
     let line = "\(Date()) \(msg)\n"
@@ -30,6 +35,11 @@ class MainFlutterWindow: NSWindow {
 
   override func awakeFromNib() {
     MainFlutterWindow.log("=== awakeFromNib: new code loaded ===")
+
+    // Enforce hidden launch state before any Dart-side window calls run.
+    // This prevents the transient dark window flash on startup.
+    self.alphaValue = 0
+    hiddenWindowAtLaunch()
 
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
@@ -92,9 +102,9 @@ class MainFlutterWindow: NSWindow {
           cgImage = CGDisplayCreateImage(displayID)
           logicalWidth  = Double(target.frame.size.width)
           logicalHeight = Double(target.frame.size.height)
-          let primaryH = allScreens[0].frame.height
-          cgOriginX = Double(target.frame.origin.x)
-          cgOriginY = Double(primaryH - target.frame.maxY)
+          let cgBounds = CGDisplayBounds(displayID)
+          cgOriginX = Double(cgBounds.origin.x)
+          cgOriginY = Double(cgBounds.origin.y)
           MainFlutterWindow.log("  capture size=\(cgImage?.width ?? 0)x\(cgImage?.height ?? 0) logical=\(logicalWidth)x\(logicalHeight) cgOrigin=(\(cgOriginX),\(cgOriginY))")
         }
 
@@ -127,7 +137,11 @@ class MainFlutterWindow: NSWindow {
           NSEvent.removeMonitor(monitor)
           self.displayChangeMonitor = nil
         }
+        // Remove Esc monitors (safety net — normally stopped by Dart)
+        self.stopEscMonitorImpl()
         self.overlayScreenFrame = nil
+        // Restore alpha in case overlay was at alpha=0 when exiting
+        self.alphaValue = 1
         self.styleMask = self.savedStyleMask ?? [.titled, .closable, .miniaturizable, .resizable]
         self.savedStyleMask = nil
         self.isOpaque = true
@@ -150,6 +164,14 @@ class MainFlutterWindow: NSWindow {
           NSWorkspace.shared.notificationCenter.removeObserver(obs)
           self.spaceChangeObserver = nil
         }
+        // Mark non-opaque so the compositor redraws the area behind the window.
+        // Without this, isOpaque=true tells the compositor it doesn't need to
+        // track what's behind the window, leaving stale ghost pixels when the
+        // overlay repositions to a different display.
+        self.isOpaque = false
+        self.contentView?.layer?.isOpaque = false
+        self.backgroundColor = .clear
+        self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         self.alphaValue = 0
         MainFlutterWindow.log("suspendOverlay: alpha=0")
         result(nil)
@@ -168,11 +190,13 @@ class MainFlutterWindow: NSWindow {
 
         let targetCGX = args["screenOriginX"] ?? 0
         let targetCGY = args["screenOriginY"] ?? 0
-        let primaryH = Double(allScreens[0].frame.height)
         let targetScreen = allScreens.first(where: { screen in
-          let cgX = Double(screen.frame.origin.x)
-          let cgY = primaryH - Double(screen.frame.maxY)
-          return abs(cgX - targetCGX) < 2 && abs(cgY - targetCGY) < 2
+          guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+            return false
+          }
+          let bounds = CGDisplayBounds(id.uint32Value)
+          return abs(Double(bounds.origin.x) - targetCGX) < 2 &&
+            abs(Double(bounds.origin.y) - targetCGY) < 2
         }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
           ?? NSScreen.main ?? allScreens[0]
 
@@ -182,6 +206,11 @@ class MainFlutterWindow: NSWindow {
         MainFlutterWindow.log("repositionOverlay: frame=\(NSStringFromRect(screenFrame))")
         result(nil)
       case "revealOverlay":
+        // Restore opacity before making visible (reversed by suspendOverlay).
+        self.isOpaque = true
+        self.contentView?.layer?.isOpaque = true
+        self.backgroundColor = .black
+        self.contentView?.layer?.backgroundColor = NSColor.black.cgColor
         // Make the overlay visible after Flutter has rendered the new content.
         self.alphaValue = 1
         self.makeKeyAndOrderFront(nil)
@@ -224,12 +253,132 @@ class MainFlutterWindow: NSWindow {
       case "getWindowList":
         // Synchronous window list + AX tree walk. Shows permission prompt if needed.
         result(MainFlutterWindow.computeWindowRects(promptForAccess: true))
+      case "activateApp":
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        result(nil)
+      case "startEscMonitor":
+        self.stopEscMonitorImpl()
+        // Global monitor: catches Esc when our window is NOT key (capture setup phase)
+        self.globalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+          if event.keyCode == 53 { // Escape
+            DispatchQueue.main.async {
+              self?.flutterChannel?.invokeMethod("onEscPressed", arguments: nil)
+            }
+          }
+        }
+        // Local monitor: catches Esc when our window IS key but at alpha=0
+        self.localEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+          if event.keyCode == 53 { // Escape
+            DispatchQueue.main.async {
+              self?.flutterChannel?.invokeMethod("onEscPressed", arguments: nil)
+            }
+            return nil // consume the event
+          }
+          return event
+        }
+        MainFlutterWindow.log("startEscMonitor: installed")
+        result(nil)
+      case "stopEscMonitor":
+        self.stopEscMonitorImpl()
+        MainFlutterWindow.log("stopEscMonitor: removed")
+        result(nil)
       case "startRectPolling":
         self.startRectPolling()
         result(nil)
       case "stopRectPolling":
         self.stopRectPolling()
         result(nil)
+      case "hitTestElement":
+        // Real-time AX hit-test: find the deepest accessible element at
+        // the given CG-coordinate position.
+        //
+        // AXUIElementCopyElementAtPosition may return an intermediate element
+        // (e.g. a "WebArea" or "group") in complex apps like Electron/browsers.
+        // To match Snipaste, we drill down through children to find the smallest
+        // sub-element containing the point, and walk up the parent chain if the
+        // initial element is too small.
+        guard let args = call.arguments as? [String: Double],
+              let cgX = args["x"], let cgY = args["y"] else {
+          result(nil); return
+        }
+        let point = CGPoint(x: cgX, y: cgY)
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+
+        // Find which app window sits at this position (skip our own).
+        guard let infoList = CGWindowListCopyWindowInfo(
+          [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+        ) as? [[String: Any]] else { result(nil); return }
+
+        var targetPID: Int32?
+        for info in infoList {
+          guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
+          guard let pid = info[kCGWindowOwnerPID as String] as? Int32, pid != ownPID else { continue }
+          guard let bd = info[kCGWindowBounds as String] as? NSDictionary,
+                let bounds = CGRect(dictionaryRepresentation: bd) else { continue }
+          if bounds.contains(point) {
+            targetPID = pid
+            break  // front-to-back order → first hit is the topmost
+          }
+        }
+        guard let pid = targetPID, AXIsProcessTrusted() else { result(nil); return }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        var axElement: AXUIElement?
+        let err = AXUIElementCopyElementAtPosition(appElement, Float(cgX), Float(cgY), &axElement)
+        guard err == .success, let element = axElement else { result(nil); return }
+
+        // Start with the returned element's frame.
+        var bestFrame: CGRect? = nil
+        var bestArea = Double.infinity
+        if let frame = MainFlutterWindow.frameOfElement(element),
+           frame.width >= 10, frame.height >= 10 {
+          bestFrame = frame
+          bestArea = Double(frame.width * frame.height)
+        }
+
+        // Drill down through children to find the smallest sub-element
+        // that still contains the point. Only walks into children whose
+        // frame contains the cursor, so it stays fast (typically 1-3
+        // children per level).
+        MainFlutterWindow.drillDownHitTest(
+          element: element,
+          point: point,
+          bestFrame: &bestFrame,
+          bestArea: &bestArea,
+          depth: 0,
+          maxDepth: 15
+        )
+
+        // If the initial element and its children were all < 10×10,
+        // walk up the parent chain to find the nearest usable ancestor.
+        if bestFrame == nil {
+          var current: AXUIElement? = element
+          while let el = current {
+            var parentValue: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(
+              el, kAXParentAttribute as CFString, &parentValue
+            ) == .success, CFGetTypeID(parentValue!) == AXUIElementGetTypeID() else { break }
+            let parent = parentValue as! AXUIElement
+            if let frame = MainFlutterWindow.frameOfElement(parent),
+               frame.width >= 10, frame.height >= 10 {
+              bestFrame = frame
+              break
+            }
+            current = parent
+          }
+        }
+
+        if let frame = bestFrame {
+          result([
+            "x": Double(frame.origin.x),
+            "y": Double(frame.origin.y),
+            "width": Double(frame.size.width),
+            "height": Double(frame.size.height),
+          ])
+        } else {
+          result(nil)
+        }
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -406,6 +555,59 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  /// Drill down through AX children to find the smallest element containing
+  /// [point]. Only recurses into children whose frame contains the point,
+  /// keeping the search focused (typically 1-3 children per level).
+  private static func drillDownHitTest(
+    element: AXUIElement,
+    point: CGPoint,
+    bestFrame: inout CGRect?,
+    bestArea: inout Double,
+    depth: Int,
+    maxDepth: Int
+  ) {
+    if depth >= maxDepth { return }
+
+    var childrenValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element, kAXChildrenAttribute as CFString, &childrenValue
+    ) == .success, let children = childrenValue as? [AXUIElement] else { return }
+
+    for child in children {
+      guard let frame = frameOfElement(child),
+            frame.width >= 10, frame.height >= 10,
+            frame.contains(point) else { continue }
+
+      let area = Double(frame.width * frame.height)
+      if area < bestArea {
+        bestFrame = frame
+        bestArea = area
+      }
+      drillDownHitTest(
+        element: child,
+        point: point,
+        bestFrame: &bestFrame,
+        bestArea: &bestArea,
+        depth: depth + 1,
+        maxDepth: maxDepth
+      )
+    }
+  }
+
+  // MARK: - Esc monitor helpers
+
+  /// Remove both global and local Esc key monitors.
+  private func stopEscMonitorImpl() {
+    if let monitor = self.globalEscMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.globalEscMonitor = nil
+    }
+    if let monitor = self.localEscMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.localEscMonitor = nil
+    }
+  }
+
   // MARK: - Overlay helpers
 
   /// Find the target screen from arguments (CG origin) or mouse location,
@@ -415,15 +617,21 @@ class MainFlutterWindow: NSWindow {
     let allScreens = NSScreen.screens
     guard !allScreens.isEmpty else { return }
 
+    func cgOrigin(for screen: NSScreen) -> (x: Double, y: Double)? {
+      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+        return nil
+      }
+      let bounds = CGDisplayBounds(id.uint32Value)
+      return (Double(bounds.origin.x), Double(bounds.origin.y))
+    }
+
     let targetScreen: NSScreen
     if let args = args,
        let targetCGX = args["screenOriginX"],
        let targetCGY = args["screenOriginY"] {
-      let primaryH = Double(allScreens[0].frame.height)
       targetScreen = allScreens.first(where: { screen in
-        let cgX = Double(screen.frame.origin.x)
-        let cgY = primaryH - Double(screen.frame.maxY)
-        return abs(cgX - targetCGX) < 2 && abs(cgY - targetCGY) < 2
+        guard let origin = cgOrigin(for: screen) else { return false }
+        return abs(origin.x - targetCGX) < 2 && abs(origin.y - targetCGY) < 2
       }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
         ?? NSScreen.main ?? allScreens[0]
       MainFlutterWindow.log("configureOverlay: matched by CG origin (\(targetCGX),\(targetCGY))")
@@ -447,8 +655,12 @@ class MainFlutterWindow: NSWindow {
     // has rendered the correct content (avoids black flash).
     self.alphaValue = 0
     self.styleMask = [.borderless]
+    // Keep overlay opaque with a solid background to avoid retained pixel trails.
     self.isOpaque = true
     self.backgroundColor = .black
+    self.contentView?.wantsLayer = true
+    self.contentView?.layer?.isOpaque = true
+    self.contentView?.layer?.backgroundColor = NSColor.black.cgColor
     self.hasShadow = false
     self.isMovableByWindowBackground = false
     self.minSize = NSSize(width: 1, height: 1)
@@ -490,7 +702,19 @@ class MainFlutterWindow: NSWindow {
     ) { [weak self] event in
       guard let self = self, let overlayFrame = self.overlayScreenFrame else { return event }
       let mouse = NSEvent.mouseLocation
-      if !overlayFrame.contains(mouse) {
+      // Only trigger when the cursor is on a confirmed *different* NSScreen.
+      // NSRect.contains uses half-open intervals (minY <= y < maxY), so the
+      // cursor at the exact top/right edge of the screen (y == maxY) reads as
+      // "outside" even though it's still on the same display.  This caused
+      // spurious display-change cycles that baked ghost images into re-captures.
+      let mouseIsOnDifferentScreen = NSScreen.screens.contains { screen in
+        screen.frame.contains(mouse) &&
+          (abs(screen.frame.origin.x - overlayFrame.origin.x) > 2 ||
+           abs(screen.frame.origin.y - overlayFrame.origin.y) > 2 ||
+           abs(screen.frame.width  - overlayFrame.width)  > 2 ||
+           abs(screen.frame.height - overlayFrame.height) > 2)
+      }
+      if mouseIsOnDifferentScreen {
         if let monitor = self.displayChangeMonitor {
           NSEvent.removeMonitor(monitor)
           self.displayChangeMonitor = nil

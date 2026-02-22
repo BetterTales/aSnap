@@ -28,6 +28,10 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>FLTEnableImpeller</key>
+	<true/>
+	<key>FLTDisablePartialRepaint</key>
+	<true/>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>aSnap needs screen capture access to take screenshots.</string>
 	<key>NSAccessibilityUsageDescription</key>

@@ -1,5 +1,4 @@
 import 'package:flutter/services.dart';
-import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 /// A visible on-screen window detected via CGWindowListCopyWindowInfo.
@@ -35,6 +34,9 @@ class WindowService {
   /// Called when the cursor moves to a different display during overlay mode.
   VoidCallback? onOverlayDisplayChanged;
 
+  /// Called when the native Esc key monitor detects Escape during capture setup.
+  VoidCallback? onEscPressed;
+
   /// Called when background rect polling delivers updated window/element rects.
   /// Rects are in global CG coordinates (top-left origin).
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
@@ -48,6 +50,8 @@ class WindowService {
         onOverlayCancelled?.call();
       } else if (call.method == 'onOverlayDisplayChanged') {
         onOverlayDisplayChanged?.call();
+      } else if (call.method == 'onEscPressed') {
+        onEscPressed?.call();
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -87,14 +91,13 @@ class WindowService {
   Future<void> showPreview({
     required int imageWidth,
     required int imageHeight,
+    required Size screenSize,
+    required Offset screenOrigin,
   }) async {
     if (imageWidth <= 0 || imageHeight <= 0) return;
 
     // Exit overlay mode first in case we're coming from region selection
     await _channel.invokeMethod('exitOverlayMode');
-
-    final display = await screenRetriever.getPrimaryDisplay();
-    final screenSize = display.size;
 
     final maxW = screenSize.width * 0.8;
     final maxH = screenSize.height * 0.8;
@@ -133,12 +136,18 @@ class WindowService {
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(true);
 
-    final x = (screenSize.width - previewSize.width) / 2;
-    final y = (screenSize.height - previewSize.height) / 2;
+    // Center on the cursor's display
+    final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
+    final y = screenOrigin.dy + (screenSize.height - previewSize.height) / 2;
     await windowManager.setPosition(Offset(x, y));
 
     await windowManager.show();
-    await windowManager.focus();
+    await _focusAndActivateWindow();
+
+    // One more pass right after show to avoid focus races during
+    // overlay -> preview transitions.
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    await _focusAndActivateWindow();
   }
 
   /// Show the overlay window covering the entire screen including the menu bar.
@@ -232,6 +241,18 @@ class WindowService {
     );
   }
 
+  /// Install global + local Esc key monitors on the native side.
+  /// Fires [onEscPressed] when Escape is pressed anywhere, even when the
+  /// overlay window isn't visible yet (capture setup phase).
+  Future<void> startEscMonitor() async {
+    await _channel.invokeMethod('startEscMonitor');
+  }
+
+  /// Remove the native Esc key monitors. Safe to call even if not monitoring.
+  Future<void> stopEscMonitor() async {
+    await _channel.invokeMethod('stopEscMonitor');
+  }
+
   /// Start background polling for window/element rects on a native background
   /// thread. Results are delivered periodically via [onRectsUpdated].
   Future<void> startRectPolling() async {
@@ -265,11 +286,37 @@ class WindowService {
     }).toList();
   }
 
+  /// Real-time AX hit-test: find the deepest accessible element at [cgPoint]
+  /// (global CG coordinates, top-left origin). Returns the element's rect
+  /// or `null` if nothing meaningful was found. Much more reliable than
+  /// pre-walking the entire AX tree (which can hit the 10 000-rect cap
+  /// before reaching some apps like Codex).
+  Future<Rect?> hitTestElement(Offset cgPoint) async {
+    final result = await _channel.invokeMethod<Map>('hitTestElement', {
+      'x': cgPoint.dx,
+      'y': cgPoint.dy,
+    });
+    if (result == null) return null;
+    return Rect.fromLTWH(
+      (result['x'] as num).toDouble(),
+      (result['y'] as num).toDouble(),
+      (result['width'] as num).toDouble(),
+      (result['height'] as num).toDouble(),
+    );
+  }
+
   Future<void> hidePreview() async {
     // Hide only — defer exitOverlayMode to the next showPreview() call.
     // Restoring styleMask on a "hidden" window can still flash because macOS
     // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
     await windowManager.setAlwaysOnTop(false);
+  }
+
+  Future<void> _focusAndActivateWindow() async {
+    await windowManager.focus();
+    // Accessory apps can be visible but not active; activate explicitly so
+    // keyboard events (Esc, shortcuts) route to our window immediately.
+    await _channel.invokeMethod('activateApp');
   }
 }

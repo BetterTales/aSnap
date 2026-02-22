@@ -3,8 +3,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../widgets/magnifier_loupe.dart';
-
 /// Fullscreen overlay for region selection (Snipaste-style).
 ///
 /// Displays the captured screenshot as an opaque background with a
@@ -19,6 +17,10 @@ class RegionSelectionScreen extends StatefulWidget {
   final VoidCallback onCancel;
   final void Function(Rect selectionRect) onRegionSelected;
 
+  /// Real-time AX hit-test callback. Takes a local point, returns the deepest
+  /// accessible element rect in local coordinates (or null).
+  final Future<Rect?> Function(Offset localPoint)? onHitTest;
+
   const RegionSelectionScreen({
     super.key,
     required this.fullScreenBytes,
@@ -26,6 +28,7 @@ class RegionSelectionScreen extends StatefulWidget {
     required this.windowRects,
     required this.onCancel,
     required this.onRegionSelected,
+    this.onHitTest,
   });
 
   @override
@@ -39,6 +42,9 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   Offset _current = Offset.zero;
   bool _isDragging = false;
   Rect? _detectedWindowRect;
+
+  /// True while a platform-channel AX hit-test is in flight.
+  bool _axQueryInFlight = false;
 
   @override
   void dispose() {
@@ -67,6 +73,30 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       }
     }
     return best;
+  }
+
+  Future<void> _fireAxHitTest(Offset queryPoint) async {
+    try {
+      final rect = await widget.onHitTest?.call(queryPoint);
+      if (!mounted || _isDragging) return;
+      // Use AX result; fall back to geometric at current cursor position.
+      final effective = rect ?? _hitTestElement(_current);
+      if (effective != _detectedWindowRect) {
+        setState(() {
+          _detectedWindowRect = effective;
+        });
+      }
+    } finally {
+      _axQueryInFlight = false;
+      // If cursor moved while query was in flight, fire another query
+      // for the current position so detection stays accurate.
+      if (mounted && !_isDragging && widget.onHitTest != null) {
+        if ((_current - queryPoint).distance > 5) {
+          _axQueryInFlight = true;
+          _fireAxHitTest(_current);
+        }
+      }
+    }
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -98,16 +128,33 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       );
       widget.onRegionSelected(normalized);
     } else {
-      // Click (no meaningful drag) — accept detected window if any
-      final windowRect = _hitTestElement(event.localPosition);
+      // Click (no meaningful drag) — accept detected window or AX element
+      final windowRect =
+          _detectedWindowRect ?? _hitTestElement(event.localPosition);
       if (windowRect != null) {
         widget.onRegionSelected(windowRect);
+      } else if (widget.onHitTest != null) {
+        // Try AX hit-test as last resort for click selection.
+        _tryAxClickSelect(event.localPosition);
       } else {
         setState(() {
           _start = null;
           _isDragging = false;
         });
       }
+    }
+  }
+
+  Future<void> _tryAxClickSelect(Offset localPoint) async {
+    final rect = await widget.onHitTest?.call(localPoint);
+    if (!mounted) return;
+    if (rect != null) {
+      widget.onRegionSelected(rect);
+    } else {
+      setState(() {
+        _start = null;
+        _isDragging = false;
+      });
     }
   }
 
@@ -129,12 +176,21 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         cursor: SystemMouseCursors.precise,
         onHover: (event) {
           if (event.localPosition == _current) return;
+          final pos = event.localPosition;
+          final hasAxHitTest = widget.onHitTest != null;
           setState(() {
-            _current = event.localPosition;
-            if (!_isDragging) {
-              _detectedWindowRect = _hitTestElement(event.localPosition);
+            _current = pos;
+            if (!_isDragging && !hasAxHitTest) {
+              _detectedWindowRect = _hitTestElement(pos);
             }
           });
+          // Throttle AX queries: fire immediately, skip while in-flight.
+          // The round-trip (~20-30ms) acts as a natural throttle interval.
+          // When the in-flight query returns, it re-fires if cursor moved.
+          if (!_isDragging && hasAxHitTest && !_axQueryInFlight) {
+            _axQueryInFlight = true;
+            _fireAxHitTest(pos);
+          }
         },
         child: Listener(
           onPointerDown: _onPointerDown,
@@ -143,13 +199,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
           child: Stack(
             children: [
               // Background: pre-decoded screenshot (instant, no async decode)
-              Positioned.fill(
-                child: RawImage(image: widget.decodedImage, fit: BoxFit.cover),
-              ),
               // Overlay: scrim + crosshair + selection cutout
               Positioned.fill(
                 child: CustomPaint(
                   painter: _SelectionPainter(
+                    backgroundImage: widget.decodedImage,
                     selectionRect: _selectionRect,
                     detectedWindowRect: _isDragging
                         ? null
@@ -157,15 +211,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
                     cursorPosition: _current,
                     isDragging: _isDragging,
                     devicePixelRatio: dpr,
+                    screenSize: screenSize,
                   ),
+                  isComplex: true,
+                  willChange: true,
                 ),
-              ),
-              // Magnifier loupe
-              MagnifierLoupe(
-                sourceImage: widget.decodedImage,
-                cursorPosition: _current,
-                devicePixelRatio: dpr,
-                screenSize: screenSize,
               ),
             ],
           ),
@@ -176,23 +226,55 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 }
 
 class _SelectionPainter extends CustomPainter {
+  static const double _loupeSize = 140;
+  static const double _loupeZoom = 8;
+  static const double _loupeCursorOffset = 20;
+
+  final ui.Image backgroundImage;
   final Rect? selectionRect;
   final Rect? detectedWindowRect;
   final Offset cursorPosition;
   final bool isDragging;
   final double devicePixelRatio;
+  final Size screenSize;
 
   _SelectionPainter({
+    required this.backgroundImage,
     required this.selectionRect,
     required this.detectedWindowRect,
     required this.cursorPosition,
     required this.isDragging,
     required this.devicePixelRatio,
+    required this.screenSize,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final fullRect = Rect.fromLTWH(0, 0, size.width, size.height);
+
+    // Force a full-frame replacement on every paint so prior frames don't
+    // accumulate when the backing store isn't cleared.
+    canvas.saveLayer(fullRect, Paint()..blendMode = BlendMode.src);
+    // Opaque base to avoid any transparent pixels leaking previous content.
+    canvas.drawRect(fullRect, Paint()..color = Colors.black);
+
+    // Paint the captured screenshot every frame to avoid any accumulation
+    // artifacts from semi-transparent overlay strokes.
+    final imageSize = Size(
+      backgroundImage.width.toDouble(),
+      backgroundImage.height.toDouble(),
+    );
+    final fitted = applyBoxFit(BoxFit.cover, imageSize, size);
+    final srcRect = Alignment.center.inscribe(
+      fitted.source,
+      Offset.zero & imageSize,
+    );
+    final dstRect = Alignment.center.inscribe(
+      fitted.destination,
+      Offset.zero & size,
+    );
+    // Use BlendMode.src to force a full replacement of prior frame contents.
+    canvas.drawImageRect(backgroundImage, srcRect, dstRect, Paint());
 
     // Semi-transparent scrim over the screenshot
     final scrimPaint = Paint()..color = const Color(0x44000000);
@@ -276,6 +358,140 @@ class _SelectionPainter extends CustomPainter {
       Offset(cursorPosition.dx, size.height),
       crosshairPaint,
     );
+
+    _paintLoupe(canvas);
+    canvas.restore();
+  }
+
+  void _paintLoupe(Canvas canvas) {
+    final loupeOffset = _computeLoupeOffset();
+    final loupeRect = Rect.fromLTWH(
+      loupeOffset.dx,
+      loupeOffset.dy,
+      _loupeSize,
+      _loupeSize,
+    );
+    final loupeRRect = RRect.fromRectAndRadius(
+      loupeRect,
+      const Radius.circular(8),
+    );
+
+    // Shadow
+    final loupePath = Path()..addRRect(loupeRRect);
+    canvas.drawShadow(loupePath, const Color(0x80000000), 6, true);
+
+    // Clip to loupe shape and draw zoomed pixels
+    canvas.save();
+    canvas.clipRRect(loupeRRect);
+
+    final sampleSize = _loupeSize * devicePixelRatio / _loupeZoom;
+    final physX = cursorPosition.dx * devicePixelRatio;
+    final physY = cursorPosition.dy * devicePixelRatio;
+    final srcRect = Rect.fromCenter(
+      center: Offset(physX, physY),
+      width: sampleSize,
+      height: sampleSize,
+    );
+    final clampedSrc = Rect.fromLTRB(
+      srcRect.left.clamp(0, backgroundImage.width.toDouble()),
+      srcRect.top.clamp(0, backgroundImage.height.toDouble()),
+      srcRect.right.clamp(0, backgroundImage.width.toDouble()),
+      srcRect.bottom.clamp(0, backgroundImage.height.toDouble()),
+    );
+    canvas.drawImageRect(
+      backgroundImage,
+      clampedSrc,
+      loupeRect,
+      Paint()..filterQuality = FilterQuality.none,
+    );
+
+    // Crosshair inside loupe
+    final center = loupeRect.center;
+    final loupeShadow = Paint()
+      ..color = const Color(0x99000000)
+      ..strokeWidth = 1.5;
+    final loupeCrosshair = Paint()
+      ..color = const Color(0xCCFFFFFF)
+      ..strokeWidth = 0.5;
+    canvas.drawLine(
+      Offset(loupeRect.left, center.dy),
+      Offset(loupeRect.right, center.dy),
+      loupeShadow,
+    );
+    canvas.drawLine(
+      Offset(center.dx, loupeRect.top),
+      Offset(center.dx, loupeRect.bottom),
+      loupeShadow,
+    );
+    canvas.drawLine(
+      Offset(loupeRect.left, center.dy),
+      Offset(loupeRect.right, center.dy),
+      loupeCrosshair,
+    );
+    canvas.drawLine(
+      Offset(center.dx, loupeRect.top),
+      Offset(center.dx, loupeRect.bottom),
+      loupeCrosshair,
+    );
+
+    canvas.restore();
+
+    // Border
+    final borderPaint = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1;
+    canvas.drawRRect(loupeRRect, borderPaint);
+
+    // Coordinate label
+    final physicalX = (cursorPosition.dx * devicePixelRatio).round();
+    final physicalY = (cursorPosition.dy * devicePixelRatio).round();
+    _drawLoupeLabel(
+      canvas,
+      Offset(loupeRect.left, loupeRect.bottom + 4),
+      Size(_loupeSize, 20),
+      '$physicalX, $physicalY',
+    );
+  }
+
+  Offset _computeLoupeOffset() {
+    var dx = cursorPosition.dx + _loupeCursorOffset;
+    var dy = cursorPosition.dy - _loupeSize / 2 - 16;
+
+    if (dx + _loupeSize > screenSize.width) {
+      dx = cursorPosition.dx - _loupeCursorOffset - _loupeSize;
+    }
+    if (dy < 0) {
+      dy = cursorPosition.dy + _loupeCursorOffset;
+    }
+    dx = dx.clamp(0, screenSize.width - _loupeSize);
+    dy = dy.clamp(0, screenSize.height - _loupeSize - 24);
+
+    return Offset(dx, dy);
+  }
+
+  void _drawLoupeLabel(Canvas canvas, Offset topLeft, Size size, String text) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontFeatures: [FontFeature.tabularFigures()],
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final bgW = tp.width + 16;
+    final bgH = tp.height + 6;
+    final bgX = topLeft.dx + (size.width - bgW) / 2;
+    final bgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(bgX, topLeft.dy, bgW, bgH),
+      const Radius.circular(4),
+    );
+    canvas.drawRRect(bgRect, Paint()..color = const Color(0xCC000000));
+    tp.paint(canvas, Offset(bgX + 8, topLeft.dy + 3));
   }
 
   void _drawDimensionLabel(
@@ -319,6 +535,7 @@ class _SelectionPainter extends CustomPainter {
     return selectionRect != oldDelegate.selectionRect ||
         detectedWindowRect != oldDelegate.detectedWindowRect ||
         cursorPosition != oldDelegate.cursorPosition ||
-        isDragging != oldDelegate.isDragging;
+        isDragging != oldDelegate.isDragging ||
+        screenSize != oldDelegate.screenSize;
   }
 }

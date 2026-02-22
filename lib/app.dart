@@ -11,6 +11,7 @@ class ASnapApp extends StatelessWidget {
   final VoidCallback onDiscard;
   final void Function(Rect selectionRect) onRegionSelected;
   final VoidCallback onRegionCancel;
+  final Future<Rect?> Function(Offset localPoint)? onHitTest;
 
   const ASnapApp({
     super.key,
@@ -20,6 +21,7 @@ class ASnapApp extends StatelessWidget {
     required this.onDiscard,
     required this.onRegionSelected,
     required this.onRegionCancel,
+    this.onHitTest,
   });
 
   @override
@@ -40,6 +42,7 @@ class ASnapApp extends StatelessWidget {
               windowRects: appState.windowRects ?? const [],
               onCancel: onRegionCancel,
               onRegionSelected: onRegionSelected,
+              onHitTest: onHitTest,
             );
           }
           return PreviewScreen(

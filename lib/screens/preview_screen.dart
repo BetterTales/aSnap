@@ -25,20 +25,32 @@ class PreviewScreen extends StatefulWidget {
 
 class _PreviewScreenState extends State<PreviewScreen> {
   final _focusNode = FocusNode();
-
-  @override
-  void initState() {
-    super.initState();
-    // Ensure focus after window transitions (overlay → preview)
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _focusNode.requestFocus();
-    });
-  }
+  bool _focusRetryRunning = false;
 
   @override
   void dispose() {
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _scheduleFocusSync() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _focusNode.hasFocus || _focusRetryRunning) return;
+      _focusRetryRunning = true;
+      _requestFocusWithRetry().whenComplete(() {
+        _focusRetryRunning = false;
+      });
+    });
+  }
+
+  Future<void> _requestFocusWithRetry() async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (!mounted || _focusNode.hasFocus) return;
+      await windowManager.focus();
+      _focusNode.requestFocus();
+      if (_focusNode.hasFocus) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
   }
 
   @override
@@ -50,6 +62,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
         if (bytes == null) {
           return const ColoredBox(color: Color(0xFF1E1E1E));
         }
+
+        _scheduleFocusSync();
         return KeyboardListener(
           focusNode: _focusNode,
           autofocus: true,
