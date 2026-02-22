@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -93,7 +94,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       if (mounted && !_isDragging && widget.onHitTest != null) {
         if ((_current - queryPoint).distance > 5) {
           _axQueryInFlight = true;
-          _fireAxHitTest(_current);
+          unawaited(_fireAxHitTest(_current));
         }
       }
     }
@@ -135,7 +136,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         widget.onRegionSelected(windowRect);
       } else if (widget.onHitTest != null) {
         // Try AX hit-test as last resort for click selection.
-        _tryAxClickSelect(event.localPosition);
+        unawaited(_tryAxClickSelect(event.localPosition));
       } else {
         setState(() {
           _start = null;
@@ -189,7 +190,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
           // When the in-flight query returns, it re-fires if cursor moved.
           if (!_isDragging && hasAxHitTest && !_axQueryInFlight) {
             _axQueryInFlight = true;
-            _fireAxHitTest(pos);
+            unawaited(_fireAxHitTest(pos));
           }
         },
         child: Listener(

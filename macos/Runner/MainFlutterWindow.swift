@@ -104,7 +104,9 @@ class MainFlutterWindow: NSWindow {
           let mouseLocation = NSEvent.mouseLocation
           let target = allScreens.first(where: { $0.frame.contains(mouseLocation) })
             ?? NSScreen.main ?? allScreens[0]
-          let displayID = (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value
+          guard let displayID = (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else {
+            result(nil); return
+          }
           MainFlutterWindow.log("captureScreen: mouse=\(mouseLocation) targetFrame=\(NSStringFromRect(target.frame)) displayID=\(displayID)")
           cgImage = CGDisplayCreateImage(displayID)
           logicalWidth  = Double(target.frame.size.width)
@@ -244,6 +246,17 @@ class MainFlutterWindow: NSWindow {
         let screenFrame = self.overlayScreenFrame ?? NSScreen.main?.frame ?? .zero
         let macX = screenFrame.minX + x
         let macY = screenFrame.maxY - y - h
+        // Remove overlay monitors — selection is finished, transitioning to
+        // in-place preview. Without this, a Space switch or mouse move could
+        // fire stale overlay callbacks during preview.
+        if let obs = self.spaceChangeObserver {
+          NSWorkspace.shared.notificationCenter.removeObserver(obs)
+          self.spaceChangeObserver = nil
+        }
+        if let monitor = self.displayChangeMonitor {
+          NSEvent.removeMonitor(monitor)
+          self.displayChangeMonitor = nil
+        }
         self.overlayScreenFrame = nil
         self.level = .floating
         self.hasShadow = true

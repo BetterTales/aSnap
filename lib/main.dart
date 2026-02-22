@@ -424,7 +424,7 @@ Future<void> _handleDisplayChanged() async {
     _displayChangeInProgress = false;
     if (_displayChangePending) {
       _displayChangePending = false;
-      _handleDisplayChanged();
+      unawaited(_handleDisplayChanged());
     }
   }
 }
