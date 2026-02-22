@@ -20,6 +20,11 @@ class MainFlutterWindow: NSWindow {
   // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
   private var localEscMonitor: Any?
 
+  // Shortcut mapping for patching tray_manager's NSMenu with keyEquivalent.
+  // Keys are menu item titles, values are (keyEquivalent, modifierMask).
+  private var trayShortcuts: [String: (equiv: String, mask: NSEvent.ModifierFlags)] = [:]
+  private var trayMenuObserver: NSObjectProtocol?
+
   // Tiny borderless panel placed over the Flutter "Done" button so it receives
   // mouse clicks even though the main overlay has ignoresMouseEvents = true.
   private var scrollStopPanel: NSPanel?
@@ -596,6 +601,54 @@ class MainFlutterWindow: NSWindow {
       case "hideScrollStopButton":
         self.scrollStopPanel?.close()
         self.scrollStopPanel = nil
+        result(nil)
+      case "registerTrayShortcuts":
+        // Store shortcut mapping; tray_manager handles menu creation and display.
+        // We patch keyEquivalent on menu items via didBeginTrackingNotification.
+        guard let items = call.arguments as? [[String: Any]] else {
+          result(FlutterError(code: "INVALID_ARGS",
+                              message: "registerTrayShortcuts requires a list of shortcut dicts",
+                              details: nil))
+          return
+        }
+        var shortcuts: [String: (equiv: String, mask: NSEvent.ModifierFlags)] = [:]
+        for item in items {
+          guard let label = item["label"] as? String,
+                let equiv = item["keyEquivalent"] as? String else { continue }
+          var mask: NSEvent.ModifierFlags = []
+          if let mods = item["modifiers"] as? [String] {
+            for mod in mods {
+              switch mod {
+              case "command": mask.insert(.command)
+              case "shift":   mask.insert(.shift)
+              case "option":  mask.insert(.option)
+              case "control": mask.insert(.control)
+              default: break
+              }
+            }
+          }
+          shortcuts[label] = (equiv, mask)
+        }
+        self.trayShortcuts = shortcuts
+
+        // Observe menu tracking to patch items with keyEquivalent before render.
+        if let old = self.trayMenuObserver {
+          NotificationCenter.default.removeObserver(old)
+        }
+        self.trayMenuObserver = NotificationCenter.default.addObserver(
+          forName: NSMenu.didBeginTrackingNotification,
+          object: nil,
+          queue: .main
+        ) { [weak self] notification in
+          guard let self = self,
+                let menu = notification.object as? NSMenu else { return }
+          for item in menu.items {
+            if let shortcut = self.trayShortcuts[item.title] {
+              item.keyEquivalent = shortcut.equiv
+              item.keyEquivalentModifierMask = shortcut.mask
+            }
+          }
+        }
         result(nil)
       default:
         result(FlutterMethodNotImplemented)

@@ -1,11 +1,13 @@
-import 'dart:ui';
+import 'dart:io';
 
-import 'package:hotkey_manager/hotkey_manager.dart';
+import 'package:flutter/services.dart';
 import 'package:tray_manager/tray_manager.dart';
 
 import '../utils/constants.dart';
 
 class TrayService with TrayListener {
+  static const _channel = MethodChannel('com.asnap/window');
+
   VoidCallback? onCaptureFullScreen;
   VoidCallback? onCaptureRegion;
   VoidCallback? onCaptureScroll;
@@ -15,25 +17,40 @@ class TrayService with TrayListener {
     await trayManager.setIcon(kTrayIconPath, isTemplate: true);
     await trayManager.setToolTip(kTrayTooltip);
 
+    // Use tray_manager for menu creation and display (proper NSStatusItem
+    // integration). On macOS, register shortcuts separately so the native
+    // side can patch keyEquivalent on the menu items before they render.
     final menu = Menu(
       items: [
-        MenuItem(
-          key: 'capture_full_screen',
-          label: 'Full Screen (${_shortcutLabel(kFullScreenHotkey)})',
-        ),
-        MenuItem(
-          key: 'capture_region',
-          label: 'Region (${_shortcutLabel(kRegionHotkey)})',
-        ),
-        MenuItem(
-          key: 'capture_scroll',
-          label: 'Scroll (${_shortcutLabel(kScrollCaptureHotkey)})',
-        ),
+        MenuItem(key: 'capture_full_screen', label: 'Full Screen'),
+        MenuItem(key: 'capture_region', label: 'Region'),
+        MenuItem(key: 'capture_scroll', label: 'Scroll'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit $kAppName'),
       ],
     );
     await trayManager.setContextMenu(menu);
+
+    if (Platform.isMacOS) {
+      await _channel.invokeMethod('registerTrayShortcuts', [
+        {
+          'label': 'Full Screen',
+          'keyEquivalent': '1',
+          'modifiers': ['command', 'shift'],
+        },
+        {
+          'label': 'Region',
+          'keyEquivalent': '2',
+          'modifiers': ['command', 'shift'],
+        },
+        {
+          'label': 'Scroll',
+          'keyEquivalent': '3',
+          'modifiers': ['command', 'shift'],
+        },
+      ]);
+    }
+
     trayManager.addListener(this);
   }
 
@@ -64,14 +81,5 @@ class TrayService with TrayListener {
   Future<void> destroy() async {
     trayManager.removeListener(this);
     await trayManager.destroy();
-  }
-
-  /// Compact shortcut label from a HotKey, e.g. "⌘⇧1".
-  /// Uses keyLabel (symbol map) instead of debugName (raw key names).
-  static String _shortcutLabel(HotKey hotKey) {
-    final modifiers = (hotKey.modifiers ?? [])
-        .map((m) => m.physicalKeys.first.keyLabel)
-        .join();
-    return '$modifiers${hotKey.physicalKey.keyLabel}';
   }
 }
