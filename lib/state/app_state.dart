@@ -2,7 +2,14 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
-enum CaptureStatus { idle, capturing, selecting, captured }
+enum CaptureStatus {
+  idle,
+  capturing,
+  selecting,
+  scrollSelecting,
+  scrollCapturing,
+  captured,
+}
 
 class AppState extends ChangeNotifier {
   /// Pre-decoded full-screen image for instant display in the overlay.
@@ -26,12 +33,64 @@ class AppState extends ChangeNotifier {
   Offset? _screenOrigin;
   Offset? get screenOrigin => _screenOrigin;
 
+  /// Whether the current captured image is from a scroll capture (for scrollable preview).
+  bool _isScrollCapture = false;
+  bool get isScrollCapture => _isScrollCapture;
+
+  /// CG bounds of the scroll target window (for badge placement).
+  Rect? _scrollTargetBounds;
+  Rect? get scrollTargetBounds => _scrollTargetBounds;
+
+  /// Live frame count during scroll capture (for badge).
+  int _scrollFrameCount = 0;
+  int get scrollFrameCount => _scrollFrameCount;
+
+  /// Growing composite image for live scroll preview.
+  /// Owned by ScrollCaptureService — do NOT dispose here.
+  Image? _scrollPreviewImage;
+  Image? get scrollPreviewImage => _scrollPreviewImage;
+
   CaptureStatus _status = CaptureStatus.idle;
   CaptureStatus get status => _status;
 
   void setCapturing() {
     _status = CaptureStatus.capturing;
     notifyListeners();
+  }
+
+  void setScrollSelecting({
+    required Image decodedImage,
+    List<Rect>? windowRects,
+    Size? screenSize,
+    Offset? screenOrigin,
+  }) {
+    _decodedFullScreen?.dispose();
+    _decodedFullScreen = decodedImage;
+    _windowRects = windowRects;
+    _screenSize = screenSize;
+    _screenOrigin = screenOrigin;
+    _status = CaptureStatus.scrollSelecting;
+    notifyListeners();
+  }
+
+  void setScrollCapturing({required Rect captureRegion}) {
+    _scrollTargetBounds = captureRegion;
+    _scrollFrameCount = 0;
+    _status = CaptureStatus.scrollCapturing;
+    notifyListeners();
+  }
+
+  void updateScrollFrameCount(int count) {
+    _scrollFrameCount = count;
+    notifyListeners();
+  }
+
+  /// Update the live scroll preview image (called by ScrollCaptureService).
+  /// The image is owned by the service — we just hold a reference.
+  /// Does NOT call notifyListeners() — the caller is responsible for
+  /// triggering a rebuild (via updateScrollFrameCount) after setting this.
+  void updateScrollPreview(Image newImage) {
+    _scrollPreviewImage = newImage;
   }
 
   void setSelecting({
@@ -64,6 +123,20 @@ class AppState extends ChangeNotifier {
     _windowRects = null;
     _screenSize = null;
     _screenOrigin = null;
+    _isScrollCapture = false;
+    _status = CaptureStatus.captured;
+    notifyListeners();
+  }
+
+  void setCapturedScrollImage(Image image) {
+    _capturedImage?.dispose();
+    _capturedImage = image;
+    _decodedFullScreen?.dispose();
+    _decodedFullScreen = null;
+    _windowRects = null;
+    _scrollTargetBounds = null;
+    _scrollPreviewImage = null; // Service owns it; just clear reference
+    _isScrollCapture = true;
     _status = CaptureStatus.captured;
     notifyListeners();
   }
@@ -98,6 +171,10 @@ class AppState extends ChangeNotifier {
     _windowRects = null;
     _screenSize = null;
     _screenOrigin = null;
+    _isScrollCapture = false;
+    _scrollTargetBounds = null;
+    _scrollFrameCount = 0;
+    _scrollPreviewImage = null; // Service owns it; just clear reference
     _status = CaptureStatus.idle;
     notifyListeners();
   }

@@ -50,6 +50,9 @@ class WindowService {
   /// Called when the native Esc key monitor detects Escape during capture setup.
   VoidCallback? onEscPressed;
 
+  /// Called when the native scroll-stop button panel is clicked.
+  VoidCallback? onScrollCaptureDone;
+
   /// Called when background rect polling delivers updated window/element rects.
   /// Rects are in global CG coordinates (top-left origin).
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
@@ -65,6 +68,8 @@ class WindowService {
         onOverlayDisplayChanged?.call();
       } else if (call.method == 'onEscPressed') {
         onEscPressed?.call();
+      } else if (call.method == 'onScrollCaptureDone') {
+        onScrollCaptureDone?.call();
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -257,6 +262,15 @@ class WindowService {
     );
   }
 
+  /// Check macOS accessibility trust. When [prompt] is true, shows the TCC
+  /// system dialog if not yet trusted. Returns true if accessibility is granted.
+  Future<bool> checkAccessibility({bool prompt = false}) async {
+    final result = await _channel.invokeMethod<bool>('checkAccessibility', {
+      'prompt': prompt,
+    });
+    return result ?? false;
+  }
+
   /// Install global + local Esc key monitors on the native side.
   /// Fires [onEscPressed] when Escape is pressed anywhere, even when the
   /// overlay window isn't visible yet (capture setup phase).
@@ -319,6 +333,120 @@ class WindowService {
       (result['width'] as num).toDouble(),
       (result['height'] as num).toDouble(),
     );
+  }
+
+  /// Capture a rectangular region of the screen (all visible content).
+  /// [region] is in CG coordinates (top-left origin).
+  /// Returns raw BGRA pixel data, or null if capture fails.
+  Future<ScreenCapture?> captureRegion(Rect region) async {
+    final result = await _channel.invokeMethod<Map>('captureRegion', {
+      'x': region.left,
+      'y': region.top,
+      'width': region.width,
+      'height': region.height,
+    });
+    if (result == null) return null;
+    return ScreenCapture(
+      bytes: result['bytes'] as Uint8List,
+      pixelWidth: (result['pixelWidth'] as num).toInt(),
+      pixelHeight: (result['pixelHeight'] as num).toInt(),
+      bytesPerRow: (result['bytesPerRow'] as num).toInt(),
+      screenSize: Size(
+        (result['screenWidth'] as num).toDouble(),
+        (result['screenHeight'] as num).toDouble(),
+      ),
+      screenOrigin: Offset(
+        (result['screenOriginX'] as num).toDouble(),
+        (result['screenOriginY'] as num).toDouble(),
+      ),
+    );
+  }
+
+  /// Show a small native NSPanel covering [cgRect] (CG coordinates) so the
+  /// "Done" button in the Flutter overlay becomes clickable.  The overlay
+  /// window has `ignoresMouseEvents = true` for scroll passthrough; this
+  /// separate panel provides the click target.
+  Future<void> showScrollStopButton(Rect cgRect) async {
+    await _channel.invokeMethod('showScrollStopButton', {
+      'x': cgRect.left,
+      'y': cgRect.top,
+      'width': cgRect.width,
+      'height': cgRect.height,
+    });
+  }
+
+  /// Remove the native scroll-stop button panel.
+  Future<void> hideScrollStopButton() async {
+    await _channel.invokeMethod('hideScrollStopButton');
+  }
+
+  /// Transition the full-screen overlay to scroll capture mode.
+  /// Keeps the window at full-screen size but makes it non-interactive
+  /// (`ignoresMouseEvents = true`) and transparent. The Flutter widget
+  /// renders the rainbow border and live preview panel.
+  Future<void> enterScrollCaptureMode() async {
+    await _channel.invokeMethod('enterScrollCaptureMode');
+  }
+
+  /// Show scroll capture preview: fixed window sized for tall images.
+  /// Uses 50% screen width × 75% screen height.
+  Future<void> showScrollPreview({
+    required int imageWidth,
+    required int imageHeight,
+    required Size screenSize,
+    required Offset screenOrigin,
+  }) async {
+    if (imageWidth <= 0 || imageHeight <= 0) return;
+
+    await _channel.invokeMethod('exitOverlayMode');
+
+    final maxW = screenSize.width * 0.8;
+    final maxH = screenSize.height * 0.85;
+
+    // Size to image aspect ratio, clamped to screen bounds.
+    // Tall scroll captures will naturally be constrained by maxH
+    // and the Flutter widget provides scrolling.
+    final imageAspect = imageWidth / imageHeight;
+    var winW = imageWidth.toDouble();
+    var winH = imageHeight.toDouble();
+
+    if (winW > maxW) {
+      winW = maxW;
+      winH = winW / imageAspect;
+    }
+    if (winH > maxH) {
+      winH = maxH;
+      winW = winH * imageAspect;
+    }
+
+    winW = winW.clamp(_minPreviewSize.width, maxW);
+    winH = winH.clamp(_minPreviewSize.height, maxH);
+
+    final previewSize = Size(winW, winH);
+
+    await windowManager.setMinimumSize(const Size(0, 0));
+    await windowManager.setMaximumSize(
+      Size(screenSize.width, screenSize.height),
+    );
+    await windowManager.setTitleBarStyle(
+      TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    );
+    await windowManager.setSize(previewSize);
+    await windowManager.setMinimumSize(previewSize);
+    await windowManager.setMaximumSize(previewSize);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setHasShadow(true);
+
+    final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
+    final y = screenOrigin.dy + (screenSize.height - previewSize.height) / 2;
+    await windowManager.setPosition(Offset(x, y));
+
+    await windowManager.show();
+    await _focusAndActivateWindow();
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    await _focusAndActivateWindow();
   }
 
   Future<void> hidePreview() async {

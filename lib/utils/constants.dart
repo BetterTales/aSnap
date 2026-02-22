@@ -23,3 +23,16 @@ HotKey get kRegionHotkey => HotKey(
       : [HotKeyModifier.control, HotKeyModifier.shift],
   scope: HotKeyScope.system,
 );
+
+HotKey get kScrollCaptureHotkey => HotKey(
+  key: PhysicalKeyboardKey.digit3,
+  modifiers: Platform.isMacOS
+      ? [HotKeyModifier.meta, HotKeyModifier.shift]
+      : [HotKeyModifier.control, HotKeyModifier.shift],
+  scope: HotKeyScope.system,
+);
+
+// Scroll capture tuning constants
+const int kScrollMaxFrames = 150;
+const int kScrollTimeoutSeconds = 30;
+const int kScrollCaptureFps = 15;

@@ -10,6 +10,7 @@ import 'services/capture_service.dart';
 import 'services/clipboard_service.dart';
 import 'services/file_service.dart';
 import 'services/hotkey_service.dart';
+import 'services/scroll_capture_service.dart';
 import 'services/tray_service.dart';
 import 'services/window_service.dart';
 import 'state/app_state.dart';
@@ -54,6 +55,7 @@ late final ClipboardService _clipboardService;
 late final FileService _fileService;
 late final HotkeyService _hotkeyService;
 late final TrayService _trayService;
+late final ScrollCaptureService _scrollCaptureService;
 late final WindowService _windowService;
 
 void main() async {
@@ -64,6 +66,7 @@ void main() async {
   _clipboardService = ClipboardService();
   _fileService = FileService();
   _hotkeyService = HotkeyService();
+  _scrollCaptureService = ScrollCaptureService();
   _trayService = TrayService();
   _windowService = WindowService();
 
@@ -76,8 +79,11 @@ void main() async {
       onSave: _handleSave,
       onDiscard: _handleDiscard,
       onRegionSelected: _handleRegionSelected,
+      onScrollRegionSelected: _handleScrollRegionSelected,
       onRegionCancel: _handleRegionCancel,
       onHitTest: _handleHitTest,
+      onScrollCaptureDone: _handleScrollCaptureDone,
+      onScrollStopButtonRect: _handleScrollStopButtonRect,
     ),
   );
 
@@ -92,11 +98,26 @@ Future<void> _initAfterRunApp() async {
     if (!hasPermission) {
       await _captureService.requestPermission();
     }
+    await _windowService.checkAccessibility(prompt: true);
   }
 
-  _windowService.onOverlayCancelled = _handleRegionCancel;
+  _windowService.onOverlayCancelled = () {
+    if (_appState.status == CaptureStatus.scrollCapturing) {
+      if (!_escActionInProgress) {
+        _escActionInProgress = true;
+        unawaited(
+          _handleScrollCancel().whenComplete(() {
+            _escActionInProgress = false;
+          }),
+        );
+      }
+    } else {
+      _handleRegionCancel();
+    }
+  };
   _windowService.onOverlayDisplayChanged = _handleDisplayChanged;
   _windowService.onEscPressed = _handleEscPressed;
+  _windowService.onScrollCaptureDone = _handleScrollCaptureDone;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
   };
@@ -104,11 +125,13 @@ Future<void> _initAfterRunApp() async {
   await _trayService.init();
   _trayService.onCaptureFullScreen = _handleFullScreenCapture;
   _trayService.onCaptureRegion = _handleRegionCapture;
+  _trayService.onCaptureScroll = _handleScrollCapture;
   _trayService.onQuit = _handleQuit;
 
   await _hotkeyService.register(
     onFullScreen: _handleFullScreenCapture,
     onRegion: _handleRegionCapture,
+    onScrollCapture: _handleScrollCapture,
   );
 
   // Start background rect polling — keeps window/element rects ready
@@ -123,6 +146,7 @@ void _handleEscPressed() {
       _regionCaptureCancelled = true;
       return;
     case CaptureStatus.selecting:
+    case CaptureStatus.scrollSelecting:
       // Fallback: region overlay normally handles Esc in Flutter.
       if (_escActionInProgress) return;
       _escActionInProgress = true;
@@ -137,6 +161,16 @@ void _handleEscPressed() {
       _escActionInProgress = true;
       unawaited(
         _handleDiscard().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+      return;
+    case CaptureStatus.scrollCapturing:
+      // Esc during scroll capture = cancel (discard frames)
+      if (_escActionInProgress) return;
+      _escActionInProgress = true;
+      unawaited(
+        _handleScrollCancel().whenComplete(() {
           _escActionInProgress = false;
         }),
       );
@@ -333,7 +367,10 @@ Future<void> _handleRegionCapture() async {
 /// Uses fast suspend/resume path (no window property restore/reconfigure)
 /// and pre-cached global rects for instant display switching.
 Future<void> _handleDisplayChanged() async {
-  if (_appState.status != CaptureStatus.selecting) return;
+  if (_appState.status != CaptureStatus.selecting &&
+      _appState.status != CaptureStatus.scrollSelecting) {
+    return;
+  }
 
   if (_displayChangeInProgress) {
     _displayChangePending = true;
@@ -363,9 +400,7 @@ Future<void> _handleDisplayChanged() async {
       localRects = cached.localRects;
     } else if (_cachedGlobalWindows.isNotEmpty) {
       localRects = _globalRectsToLocal(capture.screenOrigin);
-      _displayCaches[key] = _DisplayCache(
-        localRects: localRects,
-      );
+      _displayCaches[key] = _DisplayCache(localRects: localRects);
     } else {
       localRects = const [];
     }
@@ -377,12 +412,22 @@ Future<void> _handleDisplayChanged() async {
     await _windowService.repositionOverlay(screenOrigin: capture.screenOrigin);
 
     // 6. Update Flutter state with the pre-decoded image.
-    _appState.setSelecting(
-      decodedImage: decodedImage,
-      windowRects: localRects,
-      screenSize: capture.screenSize,
-      screenOrigin: capture.screenOrigin,
-    );
+    // Preserve the current status (selecting or scrollSelecting).
+    if (_appState.status == CaptureStatus.scrollSelecting) {
+      _appState.setScrollSelecting(
+        decodedImage: decodedImage,
+        windowRects: localRects,
+        screenSize: capture.screenSize,
+        screenOrigin: capture.screenOrigin,
+      );
+    } else {
+      _appState.setSelecting(
+        decodedImage: decodedImage,
+        windowRects: localRects,
+        screenSize: capture.screenSize,
+        screenOrigin: capture.screenOrigin,
+      );
+    }
 
     // 7. Wait for Flutter to render the new (pre-decoded) screenshot.
     await WidgetsBinding.instance.endOfFrame;
@@ -401,9 +446,7 @@ Future<void> _handleDisplayChanged() async {
             ),
           )
           .toList();
-      _displayCaches[key] = _DisplayCache(
-        localRects: fetchedRects,
-      );
+      _displayCaches[key] = _DisplayCache(localRects: fetchedRects);
       _appState.updateWindowRects(fetchedRects);
     }
   } finally {
@@ -475,9 +518,9 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
 }
 
 Future<void> _handleRegionCancel() async {
-  // Clear state and hide immediately for instant visual feedback.
-  _appState.clear();
+  // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
+  _appState.clear();
   // Clean up overlay properties (monitors, level, isOpaque, etc.).
   // Without this, the display-change monitor stays active after cancel,
   // and the window retains borderless/maximumWindow configuration.
@@ -489,10 +532,11 @@ Future<void> _handleRegionCancel() async {
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
-  // Detach image so clear() won't dispose it, then hide immediately.
+  // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
-  _appState.clear();
+  // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
+  _appState.clear();
   // Encode + copy after window is gone — user perceives instant dismiss.
   if (image != null) {
     final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -508,18 +552,15 @@ Future<void> _handleCopy() async {
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
-  // Detach image so clear() won't dispose it, then hide immediately.
-  final image = _appState.detachCapturedImage();
-  _appState.clear();
-  await _windowService.hidePreview();
-  // Encode + save after window is gone — user perceives instant dismiss.
-  if (image != null) {
-    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-    if (byteData != null) {
-      await _fileService.saveScreenshot(byteData.buffer.asUint8List());
-    }
-    image.dispose();
+  // Encode while the preview is still visible — the image stays on screen
+  // behind the NSSavePanel so the user sees what they're saving.
+  final pngBytes = await _appState.capturedImageAsPng();
+  if (pngBytes != null) {
+    await _fileService.saveScreenshot(pngBytes);
   }
+  // Save dialog closed — now hide + clear.
+  await _windowService.hidePreview();
+  _appState.clear();
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
   unawaited(_windowService.startRectPolling());
@@ -527,13 +568,225 @@ Future<void> _handleSave() async {
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
-  // Hide window immediately for instant visual feedback.
-  _appState.clear();
+  // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
+  _appState.clear();
   // Non-blocking cleanup after window is gone.
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
   unawaited(_windowService.startRectPolling());
+}
+
+// ---------------------------------------------------------------------------
+// Scroll capture (manual)
+// ---------------------------------------------------------------------------
+
+Future<void> _handleScrollCapture() async {
+  if (_appState.status == CaptureStatus.capturing ||
+      _appState.status == CaptureStatus.scrollSelecting) {
+    return;
+  }
+  if (_appState.status == CaptureStatus.scrollCapturing) {
+    // Re-pressing hotkey finishes scroll capture
+    if (!_escActionInProgress) {
+      _escActionInProgress = true;
+      unawaited(
+        _handleScrollFinish().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+    }
+    return;
+  }
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
+  _appState.setCapturing();
+  _regionCaptureCancelled = false;
+  await _windowService.hidePreview();
+  _clearDisplayCaches();
+
+  await _windowService.startEscMonitor();
+  await _windowService.stopRectPolling();
+
+  final capture = await _windowService.captureScreen();
+
+  if (_regionCaptureCancelled) {
+    _regionCaptureCancelled = false;
+    _appState.clear();
+    await _windowService.stopEscMonitor();
+    await _windowService.startRectPolling();
+    return;
+  }
+
+  if (capture != null) {
+    List<Rect> localRects;
+    if (_cachedGlobalWindows.isNotEmpty) {
+      localRects = _globalRectsToLocal(capture.screenOrigin);
+    } else {
+      final windows = await _windowService.getWindowList();
+      localRects = windows
+          .map(
+            (w) => w.rect.shift(
+              Offset(-capture.screenOrigin.dx, -capture.screenOrigin.dy),
+            ),
+          )
+          .toList();
+    }
+    _displayCaches[_displayKey(capture.screenOrigin)] = _DisplayCache(
+      localRects: localRects,
+    );
+
+    final decodedImage = await _decodeRawPixels(capture);
+
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      decodedImage.dispose();
+      _appState.clear();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
+    _appState.setScrollSelecting(
+      decodedImage: decodedImage,
+      windowRects: localRects,
+      screenSize: capture.screenSize,
+      screenOrigin: capture.screenOrigin,
+    );
+
+    await _windowService.showFullScreenOverlay(
+      screenOrigin: capture.screenOrigin,
+    );
+
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      _appState.clear();
+      await _windowService.exitOverlay();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
+    await WidgetsBinding.instance.endOfFrame;
+    await WidgetsBinding.instance.endOfFrame;
+
+    if (_regionCaptureCancelled) {
+      _regionCaptureCancelled = false;
+      _appState.clear();
+      await _windowService.exitOverlay();
+      await _windowService.stopEscMonitor();
+      await _windowService.startRectPolling();
+      return;
+    }
+
+    await _windowService.revealOverlay();
+    await _windowService.stopEscMonitor();
+  } else {
+    _appState.clear();
+    await _windowService.stopEscMonitor();
+    await _windowService.startRectPolling();
+  }
+}
+
+Future<void> _handleScrollRegionSelected(Rect logicalRect) async {
+  final screenSize = _appState.screenSize;
+  final screenOrigin = _appState.screenOrigin;
+  if (screenSize == null || screenOrigin == null) {
+    _appState.clear();
+    await _windowService.hidePreview();
+    return;
+  }
+
+  // Convert logical selection rect to CG coordinates (absolute screen position).
+  // NOTE: Do NOT call exitOverlay() here. The overlay and scroll capture mode
+  // both use .borderless styleMask. Calling exitOverlayMode would restore a
+  // titled styleMask and set everything opaque, then enterScrollCaptureMode
+  // would set .borderless again — this double styleMask transition causes macOS
+  // to recreate the Metal layer hierarchy, leaving the window opaque black.
+  // Instead, enterScrollCaptureMode handles overlay cleanup (monitors, etc.)
+  // directly.
+  final cgRegion = Rect.fromLTWH(
+    logicalRect.left + screenOrigin.dx,
+    logicalRect.top + screenOrigin.dy,
+    logicalRect.width,
+    logicalRect.height,
+  );
+
+  // Transition to scroll capture mode BEFORE updating state so backgrounds
+  // are cleared before the transparent widget renders (avoids black flash).
+  await _windowService.enterScrollCaptureMode();
+  _appState.setScrollCapturing(captureRegion: cgRegion);
+  await _windowService.startEscMonitor();
+
+  // Wire up callbacks and start manual capture loop
+  _scrollCaptureService.onProgress = _appState.updateScrollFrameCount;
+  _scrollCaptureService.onPreviewUpdated = _appState.updateScrollPreview;
+  _scrollCaptureService.startManualCapture(cgRegion, _windowService);
+}
+
+Future<void> _handleScrollFinish() async {
+  await _windowService.hideScrollStopButton();
+  await _windowService.stopEscMonitor();
+
+  final result = await _scrollCaptureService.stopCapture();
+
+  if (result != null) {
+    // Use the screen info from the capture region for preview positioning.
+    Size screenSize = const Size(1920, 1080);
+    Offset screenOrigin = Offset.zero;
+
+    if (_appState.screenSize != null && _appState.screenOrigin != null) {
+      screenSize = _appState.screenSize!;
+      screenOrigin = _appState.screenOrigin!;
+    }
+
+    _appState.setCapturedScrollImage(result);
+    // Don't call hidePreview() here — showScrollPreview calls exitOverlayMode
+    // which handles the transition. Calling hidePreview() first fires
+    // setAlwaysOnTop(false) via unawaited() which can race with the property
+    // changes in showScrollPreview.
+    await _windowService.showScrollPreview(
+      imageWidth: result.width,
+      imageHeight: result.height,
+      screenSize: screenSize,
+      screenOrigin: screenOrigin,
+    );
+    _appState.nudge();
+    await _windowService.startEscMonitor();
+  } else {
+    _appState.clear();
+    await _windowService.hidePreview();
+    await _windowService.exitOverlay();
+    await _windowService.startRectPolling();
+  }
+}
+
+/// Called by the "Done" button in the live preview panel (via native NSPanel).
+void _handleScrollCaptureDone() {
+  if (_appState.status != CaptureStatus.scrollCapturing) return;
+  if (_escActionInProgress) return;
+  _escActionInProgress = true;
+  unawaited(
+    _handleScrollFinish().whenComplete(() {
+      _escActionInProgress = false;
+    }),
+  );
+}
+
+/// Called by ScrollCapturePreview when its "Done" button position changes.
+/// Forwards the CG rect to the native side so it can place a clickable panel.
+void _handleScrollStopButtonRect(Rect cgRect) {
+  unawaited(_windowService.showScrollStopButton(cgRect));
+}
+
+Future<void> _handleScrollCancel() async {
+  await _windowService.hideScrollStopButton();
+  await _windowService.stopEscMonitor();
+  _scrollCaptureService.requestCancel();
+  _appState.clear();
+  await _windowService.hidePreview();
+  await _windowService.exitOverlay();
+  await _windowService.startRectPolling();
 }
 
 Future<void> _handleQuit() async {
