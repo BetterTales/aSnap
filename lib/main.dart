@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -28,9 +27,8 @@ List<DetectedWindow> _cachedGlobalWindows = [];
 /// Per-display cache of screenshot + local rects, keyed by CG origin string.
 /// Lives only for the duration of one capture session (cleared on dismiss/finish).
 class _DisplayCache {
-  final ScreenCapture capture;
   final List<Rect> localRects;
-  const _DisplayCache({required this.capture, required this.localRects});
+  const _DisplayCache({required this.localRects});
 }
 
 final Map<String, _DisplayCache> _displayCaches = {};
@@ -148,37 +146,30 @@ void _handleEscPressed() {
   }
 }
 
-/// Decode image dimensions from PNG bytes.
-Future<Size> _getImageSize(Uint8List bytes) async {
-  final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  final size = Size(
-    frame.image.width.toDouble(),
-    frame.image.height.toDouble(),
+/// Decode raw BGRA pixel bytes into a ui.Image via GPU upload.
+/// Near-instant compared to PNG codec decode.
+Future<ui.Image> _decodeRawPixels(ScreenCapture capture) {
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    capture.bytes,
+    capture.pixelWidth,
+    capture.pixelHeight,
+    ui.PixelFormat.bgra8888,
+    completer.complete,
+    rowBytes: capture.bytesPerRow,
   );
-  frame.image.dispose();
-  codec.dispose();
-  return size;
-}
-
-/// Decode PNG bytes into a ui.Image. Caller owns the returned image.
-Future<ui.Image> _decodeImageBytes(Uint8List bytes) async {
-  final codec = await ui.instantiateImageCodec(bytes);
-  final frame = await codec.getNextFrame();
-  codec.dispose();
-  return frame.image;
+  return completer.future;
 }
 
 Future<void> _showPreviewWithImage(
-  Uint8List bytes, {
+  ui.Image image, {
   required Size targetScreenSize,
   required Offset targetScreenOrigin,
 }) async {
-  _appState.setCapturedImage(bytes);
-  final imgSize = await _getImageSize(bytes);
+  _appState.setCapturedImage(image);
   await _windowService.showPreview(
-    imageWidth: imgSize.width.toInt(),
-    imageHeight: imgSize.height.toInt(),
+    imageWidth: image.width,
+    imageHeight: image.height,
     screenSize: targetScreenSize,
     screenOrigin: targetScreenOrigin,
   );
@@ -216,8 +207,9 @@ Future<void> _handleFullScreenCapture() async {
   // Native capture targets the display under the cursor
   final capture = await _windowService.captureScreen();
   if (capture != null) {
+    final decodedImage = await _decodeRawPixels(capture);
     await _showPreviewWithImage(
-      capture.bytes,
+      decodedImage,
       targetScreenSize: capture.screenSize,
       targetScreenOrigin: capture.screenOrigin,
     );
@@ -275,13 +267,11 @@ Future<void> _handleRegionCapture() async {
 
     // Cache for this display so switching back is instant.
     _displayCaches[_displayKey(capture.screenOrigin)] = _DisplayCache(
-      capture: capture,
       localRects: localRects,
     );
 
-    // Pre-decode PNG so Flutter can paint immediately via RawImage
-    // (no async Image.memory decode that would show stale content).
-    final decodedImage = await _decodeImageBytes(capture.bytes);
+    // Decode raw BGRA pixels — near-instant GPU upload (no PNG codec).
+    final decodedImage = await _decodeRawPixels(capture);
 
     // Bail if user pressed Esc during decode — we own the image, dispose it.
     if (_regionCaptureCancelled) {
@@ -294,7 +284,6 @@ Future<void> _handleRegionCapture() async {
     }
 
     _appState.setSelecting(
-      capture.bytes,
       decodedImage: decodedImage,
       windowRects: localRects,
       screenSize: capture.screenSize,
@@ -375,22 +364,20 @@ Future<void> _handleDisplayChanged() async {
     } else if (_cachedGlobalWindows.isNotEmpty) {
       localRects = _globalRectsToLocal(capture.screenOrigin);
       _displayCaches[key] = _DisplayCache(
-        capture: capture,
         localRects: localRects,
       );
     } else {
       localRects = const [];
     }
 
-    // 4. Pre-decode the new screenshot so RawImage can paint it instantly.
-    final decodedImage = await _decodeImageBytes(capture.bytes);
+    // 4. Decode raw BGRA pixels — near-instant GPU upload.
+    final decodedImage = await _decodeRawPixels(capture);
 
     // 5. Move the invisible overlay to the new display (setFrame only).
     await _windowService.repositionOverlay(screenOrigin: capture.screenOrigin);
 
     // 6. Update Flutter state with the pre-decoded image.
     _appState.setSelecting(
-      capture.bytes,
       decodedImage: decodedImage,
       windowRects: localRects,
       screenSize: capture.screenSize,
@@ -415,7 +402,6 @@ Future<void> _handleDisplayChanged() async {
           )
           .toList();
       _displayCaches[key] = _DisplayCache(
-        capture: capture,
         localRects: fetchedRects,
       );
       _appState.updateWindowRects(fetchedRects);
@@ -430,21 +416,18 @@ Future<void> _handleDisplayChanged() async {
 }
 
 Future<void> _handleRegionSelected(Rect logicalRect) async {
-  final fullScreenBytes = _appState.fullScreenBytes;
+  final decodedFullScreen = _appState.decodedFullScreen;
   final screenSize = _appState.screenSize;
   final screenOrigin = _appState.screenOrigin;
-  if (fullScreenBytes == null || screenSize == null || screenOrigin == null) {
+  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
 
-  // Get the device pixel ratio from the captured image vs the captured display.
-  // The image is in physical pixels; the selection rect is in logical pixels.
-  final imgSize = await _getImageSize(fullScreenBytes);
-
-  final scaleX = imgSize.width / screenSize.width;
-  final scaleY = imgSize.height / screenSize.height;
+  // The decoded image is in physical pixels; the selection rect is in logical pixels.
+  final scaleX = decodedFullScreen.width / screenSize.width;
+  final scaleY = decodedFullScreen.height / screenSize.height;
 
   final physicalRect = Rect.fromLTRB(
     logicalRect.left * scaleX,
@@ -453,8 +436,12 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
     logicalRect.bottom * scaleY,
   );
 
+  // Stop Esc monitor during crop to prevent a race where Esc disposes the
+  // source image while cropImage's picture.toImage() is still in-flight.
+  await _windowService.stopEscMonitor();
+
   final cropped = await _captureService.cropImage(
-    fullScreenBytes,
+    decodedFullScreen,
     physicalRect,
   );
   if (cropped != null) {
@@ -488,50 +475,65 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
 }
 
 Future<void> _handleRegionCancel() async {
-  await _windowService.stopEscMonitor();
-  _clearDisplayCaches();
+  // Clear state and hide immediately for instant visual feedback.
   _appState.clear();
   await _windowService.hidePreview();
   // Clean up overlay properties (monitors, level, isOpaque, etc.).
   // Without this, the display-change monitor stays active after cancel,
   // and the window retains borderless/maximumWindow configuration.
   await _windowService.exitOverlay();
-  await _windowService.startRectPolling();
+  _clearDisplayCaches();
+  unawaited(_windowService.stopEscMonitor());
+  unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
-  await _windowService.stopEscMonitor();
-  final bytes = _appState.screenshotBytes;
-  if (bytes != null) {
-    await _clipboardService.copyImage(bytes);
-  }
-  _clearDisplayCaches();
+  // Detach image so clear() won't dispose it, then hide immediately.
+  final image = _appState.detachCapturedImage();
   _appState.clear();
   await _windowService.hidePreview();
-  await _windowService.startRectPolling();
+  // Encode + copy after window is gone — user perceives instant dismiss.
+  if (image != null) {
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (byteData != null) {
+      await _clipboardService.copyImage(byteData.buffer.asUint8List());
+    }
+    image.dispose();
+  }
+  _clearDisplayCaches();
+  unawaited(_windowService.stopEscMonitor());
+  unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
-  await _windowService.stopEscMonitor();
-  final bytes = _appState.screenshotBytes;
-  if (bytes != null) {
-    await _fileService.saveScreenshot(bytes);
-  }
-  _clearDisplayCaches();
+  // Detach image so clear() won't dispose it, then hide immediately.
+  final image = _appState.detachCapturedImage();
   _appState.clear();
   await _windowService.hidePreview();
-  await _windowService.startRectPolling();
+  // Encode + save after window is gone — user perceives instant dismiss.
+  if (image != null) {
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (byteData != null) {
+      await _fileService.saveScreenshot(byteData.buffer.asUint8List());
+    }
+    image.dispose();
+  }
+  _clearDisplayCaches();
+  unawaited(_windowService.stopEscMonitor());
+  unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
-  await _windowService.stopEscMonitor();
-  _clearDisplayCaches();
+  // Hide window immediately for instant visual feedback.
   _appState.clear();
   await _windowService.hidePreview();
-  await _windowService.startRectPolling();
+  // Non-blocking cleanup after window is gone.
+  _clearDisplayCaches();
+  unawaited(_windowService.stopEscMonitor());
+  unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleQuit() async {

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -7,9 +9,17 @@ class DetectedWindow {
   const DetectedWindow({required this.rect});
 }
 
-/// Screenshot bytes + the captured display's logical size and CG origin.
+/// Raw BGRA pixel data + the captured display's logical size and CG origin.
 class ScreenCapture {
+  /// Raw BGRA pixel bytes (no PNG encoding).
   final Uint8List bytes;
+
+  /// Physical pixel dimensions of the captured image.
+  final int pixelWidth;
+  final int pixelHeight;
+
+  /// Bytes per row (may include padding beyond pixelWidth × 4).
+  final int bytesPerRow;
 
   /// Logical (point) size of the captured display.
   final Size screenSize;
@@ -19,6 +29,9 @@ class ScreenCapture {
 
   const ScreenCapture({
     required this.bytes,
+    required this.pixelWidth,
+    required this.pixelHeight,
+    required this.bytesPerRow,
     required this.screenSize,
     required this.screenOrigin,
   });
@@ -230,6 +243,9 @@ class WindowService {
     if (result == null) return null;
     return ScreenCapture(
       bytes: result['bytes'] as Uint8List,
+      pixelWidth: (result['pixelWidth'] as num).toInt(),
+      pixelHeight: (result['pixelHeight'] as num).toInt(),
+      bytesPerRow: (result['bytesPerRow'] as num).toInt(),
       screenSize: Size(
         (result['screenWidth'] as num).toDouble(),
         (result['screenHeight'] as num).toDouble(),
@@ -310,7 +326,8 @@ class WindowService {
     // Restoring styleMask on a "hidden" window can still flash because macOS
     // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
-    await windowManager.setAlwaysOnTop(false);
+    // Window is already invisible — no need to block on this.
+    unawaited(windowManager.setAlwaysOnTop(false));
   }
 
   Future<void> _focusAndActivateWindow() async {

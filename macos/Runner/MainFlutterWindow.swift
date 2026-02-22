@@ -118,13 +118,31 @@ class MainFlutterWindow: NSWindow {
         }
 
         guard let img = cgImage else { result(nil); return }
-        let bitmapRep = NSBitmapImageRep(cgImage: img)
-        guard let pngData = bitmapRep.representation(using: .png, properties: [:]) else {
-          result(nil); return
-        }
+
+        // Force-convert to BGRA8888 via CGContext — CGWindowListCreateImage
+        // doesn't guarantee a specific pixel format.  Dart side decodes with
+        // PixelFormat.bgra8888 so the bytes must match exactly.
+        let w = img.width
+        let h = img.height
+        let bpr = w * 4
+        guard let ctx = CGContext(
+            data: nil,
+            width: w, height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: bpr,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                      | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { result(nil); return }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let baseAddr = ctx.data else { result(nil); return }
+        let pixelData = Data(bytes: baseAddr, count: h * bpr)
 
         result([
-          "bytes": FlutterStandardTypedData(bytes: pngData),
+          "bytes": FlutterStandardTypedData(bytes: pixelData),
+          "pixelWidth": w,
+          "pixelHeight": h,
+          "bytesPerRow": bpr,
           "screenWidth": logicalWidth,
           "screenHeight": logicalHeight,
           "screenOriginX": cgOriginX,
