@@ -452,6 +452,12 @@ class MainFlutterWindow: NSWindow {
                               details: nil))
           return
         }
+        guard w > 0, h > 0 else {
+          result(FlutterError(code: "INVALID_ARGS",
+                              message: "captureRegion requires positive width and height",
+                              details: nil))
+          return
+        }
         let cgRect = CGRect(x: x, y: y, width: w, height: h)
         // Capture all on-screen windows BELOW our overlay so the rainbow
         // border and preview panel don't contaminate scroll capture frames.
@@ -547,6 +553,9 @@ class MainFlutterWindow: NSWindow {
               let cgY = args["y"],
               let w = args["width"],
               let h = args["height"] else {
+          result(nil); return
+        }
+        guard w > 0, h > 0 else {
           result(nil); return
         }
 

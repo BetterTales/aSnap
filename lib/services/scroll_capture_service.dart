@@ -52,6 +52,9 @@ class ScrollCaptureService {
   /// Last computed scroll offset; used as prediction for faster search.
   int _predictedOffset = 0;
 
+  @visibleForTesting
+  set predictedOffset(int value) => _predictedOffset = value;
+
   /// Running composite image for the live preview panel.
   ui.Image? _runningImage;
 
@@ -177,7 +180,7 @@ class ScrollCaptureService {
         _prevBytesPerRow = capture.bytesPerRow;
 
         _lastStoredHeight = capture.pixelHeight;
-        _lastStoredCols = _columnSamples(
+        _lastStoredCols = columnSamples(
           capture.bytes,
           capture.pixelWidth,
           capture.pixelHeight,
@@ -191,7 +194,7 @@ class ScrollCaptureService {
       }
 
       // Compare with most recent frame — skip if identical (no scroll)
-      if (_framesIdentical(
+      if (framesIdentical(
         _prevBytes!,
         _prevWidth,
         _prevHeight,
@@ -207,13 +210,13 @@ class ScrollCaptureService {
 
       // Compute overlap against the last *stored* frame (not the latest
       // captured frame) because the stitcher only uses stored frames.
-      final currCols = _columnSamples(
+      final currCols = columnSamples(
         capture.bytes,
         capture.pixelWidth,
         capture.pixelHeight,
         capture.bytesPerRow,
       );
-      final overlap = _computeOverlap(
+      final overlap = computeOverlap(
         _lastStoredCols!,
         currCols,
         _lastStoredHeight,
@@ -406,7 +409,8 @@ class ScrollCaptureService {
   /// Check if two raw BGRA frames are effectively identical.
   /// Compares the bottom 30% of prev with the bottom 30% of curr,
   /// sampling every 4th row and every 4th column (~6% of pixels).
-  bool _framesIdentical(
+  @visibleForTesting
+  static bool framesIdentical(
     Uint8List prevBytes,
     int prevWidth,
     int prevHeight,
@@ -466,7 +470,8 @@ class ScrollCaptureService {
   /// Returns a list of [height] entries, each with [kColSamples] doubles.
   static const kColSamples = 10;
 
-  List<List<double>> _columnSamples(
+  @visibleForTesting
+  static List<List<double>> columnSamples(
     Uint8List bytes,
     int width,
     int height,
@@ -497,13 +502,15 @@ class ScrollCaptureService {
   ///
   /// At offset `o`, prevFrame's row `o + i` is compared with currFrame's
   /// row `i` for all i in `[0, min(prevH - o, currH))`.
-  double _colDiff(
+  @visibleForTesting
+  static double colDiff(
     List<List<double>> prevCols,
     List<List<double>> currCols,
     int offset,
   ) {
     final prevH = prevCols.length;
     final currH = currCols.length;
+    if (prevH == 0 || currH == 0) return double.infinity;
     if (offset <= 0 || offset >= prevH) return double.infinity;
 
     final len = (prevH - offset) < currH ? (prevH - offset) : currH;
@@ -529,7 +536,8 @@ class ScrollCaptureService {
   ///
   /// Searches outward from the predicted offset for fast convergence.
   /// The offset with the minimum column diff wins.
-  int _computeOverlap(
+  @visibleForTesting
+  int computeOverlap(
     List<List<double>> prevCols,
     List<List<double>> currCols,
     int prevHeight,
@@ -553,7 +561,7 @@ class ScrollCaptureService {
     }
 
     for (final offset in searchOrder) {
-      final diff = _colDiff(prevCols, currCols, offset);
+      final diff = colDiff(prevCols, currCols, offset);
 
       if (diff < bestDiff) {
         bestDiff = diff;
