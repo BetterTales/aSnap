@@ -102,7 +102,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       _start = event.localPosition;
       _current = event.localPosition;
       _isDragging = true;
-      _detectedWindowRect = null;
+      // Keep _detectedWindowRect — needed for click selection.
+      // The painter already ignores it when _isDragging is true.
     });
   }
 

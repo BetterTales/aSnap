@@ -37,21 +37,6 @@ class ScreenCapture {
   });
 }
 
-/// A window identified as a scroll capture target.
-class ScrollTargetWindow {
-  final int windowId;
-  final int ownerPid;
-
-  /// Window bounds in CG coordinates (top-left origin).
-  final Rect bounds;
-
-  const ScrollTargetWindow({
-    required this.windowId,
-    required this.ownerPid,
-    required this.bounds,
-  });
-}
-
 class WindowService {
   static const _minPreviewSize = Size(400, 300);
   static const _channel = MethodChannel('com.asnap/window');
@@ -65,13 +50,12 @@ class WindowService {
   /// Called when the native Esc key monitor detects Escape during capture setup.
   VoidCallback? onEscPressed;
 
+  /// Called when the native scroll-stop button panel is clicked.
+  VoidCallback? onScrollCaptureDone;
+
   /// Called when background rect polling delivers updated window/element rects.
   /// Rects are in global CG coordinates (top-left origin).
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
-
-  /// Called when the CGEvent tap captures a click during scroll target selection.
-  /// The offset is in global CG coordinates (top-left origin).
-  void Function(Offset cgPoint)? onScrollTargetClicked;
 
   Future<void> ensureInitialized() async {
     await windowManager.ensureInitialized();
@@ -84,11 +68,8 @@ class WindowService {
         onOverlayDisplayChanged?.call();
       } else if (call.method == 'onEscPressed') {
         onEscPressed?.call();
-      } else if (call.method == 'onScrollTargetClicked') {
-        final args = Map<String, dynamic>.from(call.arguments as Map);
-        final x = (args['x'] as num).toDouble();
-        final y = (args['y'] as num).toDouble();
-        onScrollTargetClicked?.call(Offset(x, y));
+      } else if (call.method == 'onScrollCaptureDone') {
+        onScrollCaptureDone?.call();
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -281,6 +262,15 @@ class WindowService {
     );
   }
 
+  /// Check macOS accessibility trust. When [prompt] is true, shows the TCC
+  /// system dialog if not yet trusted. Returns true if accessibility is granted.
+  Future<bool> checkAccessibility({bool prompt = false}) async {
+    final result = await _channel.invokeMethod<bool>('checkAccessibility', {
+      'prompt': prompt,
+    });
+    return result ?? false;
+  }
+
   /// Install global + local Esc key monitors on the native side.
   /// Fires [onEscPressed] when Escape is pressed anywhere, even when the
   /// overlay window isn't visible yet (capture setup phase).
@@ -345,46 +335,15 @@ class WindowService {
     );
   }
 
-  // MARK: - Scroll capture methods
-
-  /// Install a CGEvent tap that intercepts the next left mouse click.
-  /// When fired, [onScrollTargetClicked] is called with CG coordinates
-  /// and the click is suppressed (not delivered to the target app).
-  Future<void> startClickMonitor() async {
-    await _channel.invokeMethod('startClickMonitor');
-  }
-
-  /// Remove the CGEvent tap. Safe to call even if not monitoring.
-  Future<void> stopClickMonitor() async {
-    await _channel.invokeMethod('stopClickMonitor');
-  }
-
-  /// Find the frontmost non-aSnap window at [cgPoint] (CG coordinates).
-  /// Returns window ID, owner PID, and bounds, or `null` if nothing found.
-  Future<ScrollTargetWindow?> hitTestScrollTarget(Offset cgPoint) async {
-    final result = await _channel.invokeMethod<Map>('hitTestScrollTarget', {
-      'x': cgPoint.dx,
-      'y': cgPoint.dy,
-    });
-    if (result == null) return null;
-    return ScrollTargetWindow(
-      windowId: (result['windowId'] as num).toInt(),
-      ownerPid: (result['ownerPid'] as num).toInt(),
-      bounds: Rect.fromLTWH(
-        (result['boundsX'] as num).toDouble(),
-        (result['boundsY'] as num).toDouble(),
-        (result['boundsWidth'] as num).toDouble(),
-        (result['boundsHeight'] as num).toDouble(),
-      ),
-    );
-  }
-
-  /// Capture a specific window by its CGWindowID.
-  /// Returns raw BGRA pixel data + window bounds, or `null` if the window
-  /// is no longer visible.
-  Future<ScreenCapture?> captureWindow(int windowId) async {
-    final result = await _channel.invokeMethod<Map>('captureWindow', {
-      'windowId': windowId,
+  /// Capture a rectangular region of the screen (all visible content).
+  /// [region] is in CG coordinates (top-left origin).
+  /// Returns raw BGRA pixel data, or null if capture fails.
+  Future<ScreenCapture?> captureRegion(Rect region) async {
+    final result = await _channel.invokeMethod<Map>('captureRegion', {
+      'x': region.left,
+      'y': region.top,
+      'width': region.width,
+      'height': region.height,
     });
     if (result == null) return null;
     return ScreenCapture(
@@ -393,42 +352,40 @@ class WindowService {
       pixelHeight: (result['pixelHeight'] as num).toInt(),
       bytesPerRow: (result['bytesPerRow'] as num).toInt(),
       screenSize: Size(
-        (result['boundsWidth'] as num).toDouble(),
-        (result['boundsHeight'] as num).toDouble(),
+        (result['screenWidth'] as num).toDouble(),
+        (result['screenHeight'] as num).toDouble(),
       ),
       screenOrigin: Offset(
-        (result['boundsX'] as num).toDouble(),
-        (result['boundsY'] as num).toDouble(),
+        (result['screenOriginX'] as num).toDouble(),
+        (result['screenOriginY'] as num).toDouble(),
       ),
     );
   }
 
-  /// Bring the window with [windowId] to the front by activating its
-  /// owning application.
-  Future<void> activateWindowById(int windowId) async {
-    await _channel.invokeMethod('activateWindowById', {'windowId': windowId});
-  }
-
-  /// Send a scroll wheel event to the center of the window with [windowId].
-  /// [deltaPixels] is negative for downward scroll.
-  Future<void> scrollWindow({
-    required int windowId,
-    required double deltaPixels,
-  }) async {
-    await _channel.invokeMethod('scrollWindow', {
-      'windowId': windowId,
-      'deltaPixels': deltaPixels,
+  /// Show a small native NSPanel covering [cgRect] (CG coordinates) so the
+  /// "Done" button in the Flutter overlay becomes clickable.  The overlay
+  /// window has `ignoresMouseEvents = true` for scroll passthrough; this
+  /// separate panel provides the click target.
+  Future<void> showScrollStopButton(Rect cgRect) async {
+    await _channel.invokeMethod('showScrollStopButton', {
+      'x': cgRect.left,
+      'y': cgRect.top,
+      'width': cgRect.width,
+      'height': cgRect.height,
     });
   }
 
-  /// Show a small floating badge window near [anchorRect] (CG coordinates).
-  /// The badge is passive: `.statusBar` level, `ignoresMouseEvents = true`.
-  Future<void> showScrollBadge({required Rect anchorRect}) async {
-    await _channel.invokeMethod('showScrollBadge', {
-      'anchorX': anchorRect.left,
-      'anchorY': anchorRect.top,
-      'anchorWidth': anchorRect.width,
-    });
+  /// Remove the native scroll-stop button panel.
+  Future<void> hideScrollStopButton() async {
+    await _channel.invokeMethod('hideScrollStopButton');
+  }
+
+  /// Transition the full-screen overlay to scroll capture mode.
+  /// Keeps the window at full-screen size but makes it non-interactive
+  /// (`ignoresMouseEvents = true`) and transparent. The Flutter widget
+  /// renders the rainbow border and live preview panel.
+  Future<void> enterScrollCaptureMode() async {
+    await _channel.invokeMethod('enterScrollCaptureMode');
   }
 
   /// Show scroll capture preview: fixed window sized for tall images.
@@ -443,11 +400,28 @@ class WindowService {
 
     await _channel.invokeMethod('exitOverlayMode');
 
-    final winW = (screenSize.width * 0.50).clamp(400.0, screenSize.width * 0.7);
-    final winH = (screenSize.height * 0.75).clamp(
-      300.0,
-      screenSize.height * 0.85,
-    );
+    final maxW = screenSize.width * 0.8;
+    final maxH = screenSize.height * 0.85;
+
+    // Size to image aspect ratio, clamped to screen bounds.
+    // Tall scroll captures will naturally be constrained by maxH
+    // and the Flutter widget provides scrolling.
+    final imageAspect = imageWidth / imageHeight;
+    var winW = imageWidth.toDouble();
+    var winH = imageHeight.toDouble();
+
+    if (winW > maxW) {
+      winW = maxW;
+      winH = winW / imageAspect;
+    }
+    if (winH > maxH) {
+      winH = maxH;
+      winW = winH * imageAspect;
+    }
+
+    winW = winW.clamp(_minPreviewSize.width, maxW);
+    winH = winH.clamp(_minPreviewSize.height, maxH);
+
     final previewSize = Size(winW, winH);
 
     await windowManager.setMinimumSize(const Size(0, 0));

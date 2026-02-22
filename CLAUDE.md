@@ -107,6 +107,7 @@ These are hard-won lessons. Violating them breaks the app silently.
 2. **Never call `orderOut`/`setIsVisible(false)` before `RegisterGeneratedPlugins`** in MainFlutterWindow.swift — plugins need an active engine.
 3. **Use `window_manager`'s `hiddenWindowAtLaunch()` in an `order()` override** to hide the window at launch.
 4. **Always use `display: true` in `setFrame()`**.
+5. **To make Flutter's window transparent, walk the ENTIRE layer tree recursively** — Flutter's CAMetalLayer is a sublayer of `contentView.layer`, not the backing layer of any child NSView. Setting `isOpaque`/`backgroundColor` on `contentView.subviews` misses it. Use `setLayerTreeOpaque` which recurses through all `layer.sublayers`. Also clear `backgroundColor = nil` on every layer, and schedule multiple delayed passes (0ms, 100ms, 500ms) since Flutter may create layers lazily.
 
 ## Testing
 

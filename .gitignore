@@ -73,6 +73,7 @@ lib/generated_plugin_registrant.dart
 
 # Claude Code
 .claude/
+docs/plans/
 
 # IDE
 .idea/

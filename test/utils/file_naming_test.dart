@@ -17,10 +17,7 @@ void main() {
     test('matches expected format: asnap_YYYY-MM-DD_HHMMSS.png', () {
       final name = generateScreenshotFileName();
       // Pattern: asnap_2026-02-22_143025.png
-      expect(
-        name,
-        matches(RegExp(r'^asnap_\d{4}-\d{2}-\d{2}_\d{6}\.png$')),
-      );
+      expect(name, matches(RegExp(r'^asnap_\d{4}-\d{2}-\d{2}_\d{6}\.png$')));
     });
 
     test('contains current date', () {

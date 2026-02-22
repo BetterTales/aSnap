@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
 import 'state/app_state.dart';
-import 'utils/constants.dart';
 import 'widgets/scroll_progress_badge.dart';
 
 class ASnapApp extends StatelessWidget {
@@ -12,10 +11,11 @@ class ASnapApp extends StatelessWidget {
   final VoidCallback onSave;
   final VoidCallback onDiscard;
   final void Function(Rect selectionRect) onRegionSelected;
+  final void Function(Rect selectionRect)? onScrollRegionSelected;
   final VoidCallback onRegionCancel;
   final Future<Rect?> Function(Offset localPoint)? onHitTest;
-  final VoidCallback? onScrollCancel;
-
+  final VoidCallback? onScrollCaptureDone;
+  final void Function(Rect cgRect)? onScrollStopButtonRect;
   const ASnapApp({
     super.key,
     required this.appState,
@@ -23,9 +23,11 @@ class ASnapApp extends StatelessWidget {
     required this.onSave,
     required this.onDiscard,
     required this.onRegionSelected,
+    this.onScrollRegionSelected,
     required this.onRegionCancel,
     this.onHitTest,
-    this.onScrollCancel,
+    this.onScrollCaptureDone,
+    this.onScrollStopButtonRect,
   });
 
   @override
@@ -33,7 +35,13 @@ class ASnapApp extends StatelessWidget {
     return MaterialApp(
       title: 'aSnap',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark(useMaterial3: true),
+      theme: ThemeData.dark(useMaterial3: true).copyWith(
+        // Transparent canvas so the rainbow border overlay renders correctly
+        // on the transparent NSWindow. Other screens (preview, region selection)
+        // have opaque NSWindow backgrounds that show through.
+        canvasColor: Colors.transparent,
+        scaffoldBackgroundColor: Colors.transparent,
+      ),
       home: ListenableBuilder(
         listenable: appState,
         builder: (context, _) {
@@ -47,11 +55,25 @@ class ASnapApp extends StatelessWidget {
               onHitTest: onHitTest,
             );
           }
+          if (appState.status == CaptureStatus.scrollSelecting &&
+              appState.decodedFullScreen != null) {
+            return RegionSelectionScreen(
+              decodedImage: appState.decodedFullScreen!,
+              windowRects: appState.windowRects ?? const [],
+              onCancel: onRegionCancel,
+              onRegionSelected: onScrollRegionSelected ?? onRegionSelected,
+              onHitTest: onHitTest,
+            );
+          }
           if (appState.status == CaptureStatus.scrollCapturing) {
-            return ScrollProgressBadge(
+            return ScrollCapturePreview(
               frameCount: appState.scrollFrameCount,
-              maxFrames: kScrollMaxFrames,
-              onCancel: onScrollCancel ?? () {},
+              previewImage: appState.scrollPreviewImage,
+              captureRegion: appState.scrollTargetBounds ?? Rect.zero,
+              screenOrigin: appState.screenOrigin ?? Offset.zero,
+              screenSize: appState.screenSize ?? const Size(1920, 1080),
+              onDone: onScrollCaptureDone,
+              onStopButtonRect: onScrollStopButtonRect,
             );
           }
           return PreviewScreen(

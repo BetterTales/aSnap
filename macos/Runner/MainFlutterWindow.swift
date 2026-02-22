@@ -20,10 +20,9 @@ class MainFlutterWindow: NSWindow {
   // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
   private var localEscMonitor: Any?
 
-  // Scroll capture: CGEvent tap for intercepting next mouse click
-  private var clickEventTap: CFMachPort?
-  private var clickRunLoopSource: CFRunLoopSource?
-  private var clickSelfRef: Unmanaged<MainFlutterWindow>?
+  // Tiny borderless panel placed over the Flutter "Done" button so it receives
+  // mouse clicks even though the main overlay has ignoresMouseEvents = true.
+  private var scrollStopPanel: NSPanel?
 
   /// Append a debug line to ~/asnap_overlay.log (debug builds only).
   private static func log(_ msg: String) {
@@ -47,6 +46,13 @@ class MainFlutterWindow: NSWindow {
     // Enforce hidden launch state before any Dart-side window calls run.
     // This prevents the transient dark window flash on startup.
     self.alphaValue = 0
+    // Keep window permanently non-opaque so Flutter's Metal pipeline is
+    // configured with a transparent clear color from the very first frame.
+    // Overlay/preview modes still look opaque because their Flutter widgets
+    // paint every pixel — the transparent clear color is irrelevant there.
+    // Scroll badge mode relies on this for true window transparency.
+    self.isOpaque = false
+    self.backgroundColor = .clear
     hiddenWindowAtLaunch()
 
     let flutterViewController = FlutterViewController()
@@ -159,6 +165,9 @@ class MainFlutterWindow: NSWindow {
         self.configureOverlay(call.arguments as? [String: Double])
         result(nil)
       case "exitOverlayMode":
+        // Remove scroll stop button panel
+        self.scrollStopPanel?.close()
+        self.scrollStopPanel = nil
         // Remove space-change observer
         if let obs = self.spaceChangeObserver {
           NSWorkspace.shared.notificationCenter.removeObserver(obs)
@@ -176,8 +185,11 @@ class MainFlutterWindow: NSWindow {
         self.alphaValue = 1
         self.styleMask = self.savedStyleMask ?? [.titled, .closable, .miniaturizable, .resizable]
         self.savedStyleMask = nil
-        self.isOpaque = true
+        // isOpaque stays false — see awakeFromNib comment.
         self.backgroundColor = .windowBackgroundColor
+        self.contentView?.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        // Restore Flutter surface opacity (scroll capture sets it transparent).
+        self.setFlutterSurfaceOpaque(true)
         self.hasShadow = true
         self.level = .normal
         self.collectionBehavior = []
@@ -196,12 +208,8 @@ class MainFlutterWindow: NSWindow {
           NSWorkspace.shared.notificationCenter.removeObserver(obs)
           self.spaceChangeObserver = nil
         }
-        // Mark non-opaque so the compositor redraws the area behind the window.
-        // Without this, isOpaque=true tells the compositor it doesn't need to
-        // track what's behind the window, leaving stale ghost pixels when the
-        // overlay repositions to a different display.
-        self.isOpaque = false
-        self.contentView?.layer?.isOpaque = false
+        // Clear background so the compositor redraws the area behind the window.
+        // isOpaque is already false (permanently) — see awakeFromNib comment.
         self.backgroundColor = .clear
         self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
         self.alphaValue = 0
@@ -238,9 +246,8 @@ class MainFlutterWindow: NSWindow {
         MainFlutterWindow.log("repositionOverlay: frame=\(NSStringFromRect(screenFrame))")
         result(nil)
       case "revealOverlay":
-        // Restore opacity before making visible (reversed by suspendOverlay).
-        self.isOpaque = true
-        self.contentView?.layer?.isOpaque = true
+        // Restore solid backing before making visible (reversed by suspendOverlay).
+        // isOpaque stays false — see awakeFromNib comment.
         self.backgroundColor = .black
         self.contentView?.layer?.backgroundColor = NSColor.black.cgColor
         // Make the overlay visible after Flutter has rendered the new content.
@@ -296,6 +303,18 @@ class MainFlutterWindow: NSWindow {
       case "getWindowList":
         // Synchronous window list + AX tree walk. Shows permission prompt if needed.
         result(MainFlutterWindow.computeWindowRects(promptForAccess: true))
+      case "checkAccessibility":
+        // Check accessibility trust, optionally prompting the TCC dialog.
+        let prompt = (call.arguments as? [String: Any])?["prompt"] as? Bool ?? false
+        let trusted: Bool
+        if prompt {
+          trusted = AXIsProcessTrustedWithOptions(
+            [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+          )
+        } else {
+          trusted = AXIsProcessTrusted()
+        }
+        result(trusted)
       case "activateApp":
         self.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -422,186 +441,152 @@ class MainFlutterWindow: NSWindow {
         } else {
           result(nil)
         }
-      // MARK: - Scroll capture methods
-      case "startClickMonitor":
-        self.stopClickMonitorImpl()
-        let refToSelf = Unmanaged.passRetained(self)
-        let eventMask: CGEventMask = (1 << CGEventType.leftMouseDown.rawValue)
-        guard let tap = CGEvent.tapCreate(
-          tap: .cghidEventTap,
-          place: .headInsertEventTap,
-          options: .defaultTap,
-          eventsOfInterest: eventMask,
-          callback: MainFlutterWindow.clickTapCallback,
-          userInfo: refToSelf.toOpaque()
-        ) else {
-          refToSelf.release()
-          MainFlutterWindow.log("startClickMonitor: failed to create tap")
-          result(nil)
+      case "captureRegion":
+        guard let args = call.arguments as? [String: Double],
+              let x = args["x"],
+              let y = args["y"],
+              let w = args["width"],
+              let h = args["height"] else {
+          result(FlutterError(code: "INVALID_ARGS",
+                              message: "captureRegion requires x, y, width, height",
+                              details: nil))
           return
         }
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
-        self.clickEventTap = tap
-        self.clickRunLoopSource = source
-        self.clickSelfRef = refToSelf
-        MainFlutterWindow.log("startClickMonitor: installed")
-        result(nil)
-      case "stopClickMonitor":
-        self.stopClickMonitorImpl()
-        MainFlutterWindow.log("stopClickMonitor: removed")
-        result(nil)
-      case "hitTestScrollTarget":
-        guard let args = call.arguments as? [String: Double],
-              let cgX = args["x"], let cgY = args["y"] else {
-          result(nil); return
-        }
-        let point = CGPoint(x: cgX, y: cgY)
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        guard let infoList = CGWindowListCopyWindowInfo(
-          [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
-        ) as? [[String: Any]] else { result(nil); return }
+        let cgRect = CGRect(x: x, y: y, width: w, height: h)
+        // Capture all on-screen windows BELOW our overlay so the rainbow
+        // border and preview panel don't contaminate scroll capture frames.
+        // Our window is at .statusBar level, so all normal windows are below it.
+        let ownWID = CGWindowID(self.windowNumber)
+        let img = CGWindowListCreateImage(
+          cgRect,
+          [.optionOnScreenBelowWindow, .excludeDesktopElements],
+          ownWID,
+          .bestResolution
+        )
+        guard let img else { result(nil); return }
 
-        for info in infoList {
-          guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-          guard let pid = info[kCGWindowOwnerPID as String] as? Int32, pid != ownPID else { continue }
-          guard let windowId = info[kCGWindowNumber as String] as? CGWindowID else { continue }
-          guard let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-                let bounds = CGRect(dictionaryRepresentation: boundsDict) else { continue }
-          if bounds.contains(point) {
-            result([
-              "windowId": Int(windowId),
-              "ownerPid": Int(pid),
-              "boundsX": Double(bounds.origin.x),
-              "boundsY": Double(bounds.origin.y),
-              "boundsWidth": Double(bounds.size.width),
-              "boundsHeight": Double(bounds.size.height),
-            ])
-            return
-          }
-        }
-        result(nil)
-      case "captureWindow":
-        guard let args = call.arguments as? [String: Any],
-              let windowId = args["windowId"] as? Int else {
-          result(nil); return
-        }
-        let wid = CGWindowID(windowId)
-        // Get current window bounds
-        guard let infoList = CGWindowListCopyWindowInfo(
-          [.optionIncludingWindow], wid
-        ) as? [[String: Any]],
-              let info = infoList.first,
-              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-              let cgBounds = CGRect(dictionaryRepresentation: boundsDict)
-        else { result(nil); return }
-
-        // Capture only this window
-        guard let img = CGWindowListCreateImage(
-          cgBounds, .optionIncludingWindow, wid, .bestResolution
-        ) else { result(nil); return }
-
-        // Convert to BGRA8888 (same pattern as captureScreen)
-        let w = img.width
-        let h = img.height
-        let bpr = w * 4
+        let imgW = img.width
+        let imgH = img.height
+        let bpr = imgW * 4
         guard let ctx = CGContext(
-          data: nil, width: w, height: h,
+          data: nil, width: imgW, height: imgH,
           bitsPerComponent: 8, bytesPerRow: bpr,
           space: CGColorSpaceCreateDeviceRGB(),
           bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
                     | CGBitmapInfo.byteOrder32Little.rawValue
         ) else { result(nil); return }
-        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: imgW, height: imgH))
         guard let baseAddr = ctx.data else { result(nil); return }
-        let pixelData = Data(bytes: baseAddr, count: h * bpr)
+        let pixelData = Data(bytes: baseAddr, count: imgH * bpr)
 
         result([
           "bytes": FlutterStandardTypedData(bytes: pixelData),
-          "pixelWidth": w,
-          "pixelHeight": h,
+          "pixelWidth": imgW,
+          "pixelHeight": imgH,
           "bytesPerRow": bpr,
-          "boundsX": Double(cgBounds.origin.x),
-          "boundsY": Double(cgBounds.origin.y),
-          "boundsWidth": Double(cgBounds.size.width),
-          "boundsHeight": Double(cgBounds.size.height),
+          "screenWidth": w,
+          "screenHeight": h,
+          "screenOriginX": x,
+          "screenOriginY": y,
         ])
-      case "activateWindowById":
-        guard let args = call.arguments as? [String: Any],
-              let windowId = args["windowId"] as? Int else {
-          result(nil); return
-        }
-        let wid = CGWindowID(windowId)
-        guard let infoList = CGWindowListCopyWindowInfo(
-          [.optionIncludingWindow], wid
-        ) as? [[String: Any]],
-              let info = infoList.first,
-              let pid = info[kCGWindowOwnerPID as String] as? Int32
-        else { result(nil); return }
+      case "enterScrollCaptureMode":
+        // Transition from full-screen overlay to scroll capture mode.
+        // Keep the window at full-screen size — Flutter widget handles rendering
+        // the rainbow border and live preview panel. Only change interaction and
+        // transparency properties.
 
-        if let app = NSRunningApplication(processIdentifier: pid) {
-          app.activate(options: .activateIgnoringOtherApps)
+        // Clean up overlay monitors (display-change only; reinstall space-change below).
+        if let obs = self.spaceChangeObserver {
+          NSWorkspace.shared.notificationCenter.removeObserver(obs)
+          self.spaceChangeObserver = nil
         }
-        result(nil)
-      case "scrollWindow":
-        guard let args = call.arguments as? [String: Any],
-              let windowId = args["windowId"] as? Int,
-              let deltaPixels = args["deltaPixels"] as? Double else {
-          result(nil); return
+        if let monitor = self.displayChangeMonitor {
+          NSEvent.removeMonitor(monitor)
+          self.displayChangeMonitor = nil
         }
-        let wid = CGWindowID(windowId)
-        // Get window center for scroll event position
-        guard let infoList = CGWindowListCopyWindowInfo(
-          [.optionIncludingWindow], wid
-        ) as? [[String: Any]],
-              let info = infoList.first,
-              let boundsDict = info[kCGWindowBounds as String] as? NSDictionary,
-              let cgBounds = CGRect(dictionaryRepresentation: boundsDict)
-        else { result(nil); return }
+        self.overlayScreenFrame = nil
 
-        let center = CGPoint(x: cgBounds.midX, y: cgBounds.midY)
-        guard let scrollEvent = CGEvent(
-          scrollWheelEvent2Source: nil,
-          units: .pixel,
-          wheelCount: 1,
-          wheel1: Int32(deltaPixels),
-          wheel2: 0,
-          wheel3: 0
-        ) else { result(nil); return }
-        scrollEvent.location = center
-        scrollEvent.post(tap: .cghidEventTap)
-        result(nil)
-      case "showScrollBadge":
-        guard let args = call.arguments as? [String: Any],
-              let anchorX = args["anchorX"] as? Double,
-              let anchorY = args["anchorY"] as? Double,
-              let anchorW = args["anchorWidth"] as? Double else {
-          result(nil); return
+        // Re-install space-change observer for scroll capture mode.
+        // Dart side dispatches based on current capture state.
+        self.spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+          forName: NSWorkspace.activeSpaceDidChangeNotification,
+          object: nil,
+          queue: .main
+        ) { [weak self] _ in
+          self?.flutterChannel?.invokeMethod("onOverlayCancelled", arguments: nil)
         }
-        let badgeW: CGFloat = 160
-        let badgeH: CGFloat = 44
-        // CG coordinates (top-left origin) → NS coordinates (bottom-left origin)
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 900
-        let nsX = CGFloat(anchorX) + CGFloat(anchorW) - badgeW
-        let nsY = primaryHeight - CGFloat(anchorY) - badgeH + 8 // 8px above window top edge in CG
 
-        // Save current style if not already saved
-        if self.savedStyleMask == nil {
-          self.savedStyleMask = self.styleMask
-        }
-        self.styleMask = [.borderless]
-        self.isOpaque = false
-        self.backgroundColor = .clear
-        self.hasShadow = true
-        self.level = .statusBar
+        // Make overlay non-interactive so scroll events pass through to content.
         self.ignoresMouseEvents = true
-        self.collectionBehavior = [.canJoinAllSpaces]
-        self.minSize = NSSize(width: 1, height: 1)
-        self.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        self.setFrame(NSRect(x: nsX, y: nsY, width: badgeW, height: badgeH), display: true)
-        self.orderFrontRegardless()
-        MainFlutterWindow.log("showScrollBadge: frame=\(NSStringFromRect(self.frame))")
+        self.acceptsMouseMovedEvents = false
+
+        // Transparent backgrounds for see-through overlay areas.
+        self.backgroundColor = .clear
+        self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        self.setFlutterSurfaceOpaque(false)
+
+        // Above normal windows but below system UI.
+        self.level = .statusBar
+        self.hasShadow = false
+
+        // Delayed passes for lazily-created Metal layers.
+        DispatchQueue.main.async { [weak self] in
+          self?.setFlutterSurfaceOpaque(false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+          self?.setFlutterSurfaceOpaque(false)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+          self?.setFlutterSurfaceOpaque(false)
+        }
+        MainFlutterWindow.log("enterScrollCaptureMode: frame=\(NSStringFromRect(self.frame))")
+        result(nil)
+      case "showScrollStopButton":
+        guard let args = call.arguments as? [String: Double],
+              let cgX = args["x"],
+              let cgY = args["y"],
+              let w = args["width"],
+              let h = args["height"] else {
+          result(nil); return
+        }
+
+        // Convert CG coordinates (top-left origin) to NS coordinates (bottom-left).
+        let screenHeight = NSScreen.main?.frame.height ?? 0
+        let nsY = screenHeight - cgY - h
+
+        // Reuse existing panel or create a new one.
+        let panel: NSPanel
+        if let existing = self.scrollStopPanel {
+          panel = existing
+          panel.setFrame(NSRect(x: cgX, y: nsY, width: w, height: h), display: true)
+        } else {
+          panel = NSPanel(
+            contentRect: NSRect(x: cgX, y: nsY, width: w, height: h),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+          )
+          panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 1)
+          panel.backgroundColor = .clear
+          panel.isOpaque = false
+          panel.hasShadow = false
+          panel.ignoresMouseEvents = false
+          panel.collectionBehavior = [.canJoinAllSpaces, .stationary]
+
+          // Transparent click-target view covering the entire panel.
+          let clickView = ScrollStopClickView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+          clickView.autoresizingMask = [.width, .height]
+          clickView.onClick = { [weak self] in
+            self?.flutterChannel?.invokeMethod("onScrollCaptureDone", arguments: nil)
+          }
+          panel.contentView = clickView
+          self.scrollStopPanel = panel
+        }
+        panel.orderFront(nil)
+        result(nil)
+      case "hideScrollStopButton":
+        self.scrollStopPanel?.close()
+        self.scrollStopPanel = nil
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -636,6 +621,62 @@ class MainFlutterWindow: NSWindow {
   override public func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
     super.order(place, relativeTo: otherWin)
     hiddenWindowAtLaunch()
+  }
+
+  // MARK: - Flutter surface transparency
+
+  /// Toggle `isOpaque` on the Flutter rendering surface (CAMetalLayer).
+  /// Recursively walks the ENTIRE layer tree starting from `contentView.layer`
+  /// to catch the CAMetalLayer regardless of how deeply Flutter nests it.
+  ///
+  /// Previous versions only walked `contentView.subviews` one level deep,
+  /// which missed the CAMetalLayer when it was a sublayer of `contentView.layer`
+  /// rather than backing a child NSView.
+  private func setFlutterSurfaceOpaque(_ opaque: Bool) {
+    guard let contentView = contentView else { return }
+    contentView.wantsLayer = true
+    // Walk the content view's own layer tree — the CAMetalLayer is typically
+    // a sublayer here, not the backing layer of any child NSView.
+    if let rootLayer = contentView.layer {
+      Self.setLayerTreeOpaque(rootLayer, opaque: opaque)
+    }
+    // Also walk subview layer trees as a safety net.
+    for subview in contentView.subviews {
+      subview.wantsLayer = true
+      if let layer = subview.layer {
+        Self.setLayerTreeOpaque(layer, opaque: opaque)
+      }
+    }
+  }
+
+  /// Recursively set `isOpaque` on a layer and ALL its descendants.
+  /// When making transparent, also clears `backgroundColor` so the compositor
+  /// sees through to the content below.
+  private static func setLayerTreeOpaque(_ layer: CALayer, opaque: Bool) {
+    layer.isOpaque = opaque
+    if !opaque {
+      layer.backgroundColor = nil
+    }
+    layer.sublayers?.forEach { sublayer in
+      setLayerTreeOpaque(sublayer, opaque: opaque)
+    }
+  }
+
+  /// Log the full layer tree for diagnostics (debug builds only).
+  private static func dumpLayerTree(_ layer: CALayer, indent: String = "") {
+    #if DEBUG
+    let typeName = String(describing: type(of: layer))
+    let bg: String
+    if let comps = layer.backgroundColor?.components {
+      bg = comps.map { String(format: "%.1f", $0) }.joined(separator: ",")
+    } else {
+      bg = "nil"
+    }
+    log("\(indent)\(typeName): isOpaque=\(layer.isOpaque) bg=[\(bg)] bounds=\(layer.bounds)")
+    layer.sublayers?.forEach { sublayer in
+      dumpLayerTree(sublayer, indent: indent + "  ")
+    }
+    #endif
   }
 
   // MARK: - Background rect polling
@@ -818,49 +859,6 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
-  // MARK: - Click monitor helpers (scroll capture target selection)
-
-  /// C callback for CGEvent tap — intercepts next left click, suppresses it,
-  /// and notifies Dart with the CG coordinates.
-  private static let clickTapCallback: CGEventTapCallBack = { (proxy, type, event, userInfo) in
-    guard let userInfo = userInfo else { return Unmanaged.passUnretained(event) }
-    let window = Unmanaged<MainFlutterWindow>.fromOpaque(userInfo).takeUnretainedValue()
-
-    // System can disable taps; re-enable if that happens
-    if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-      if let tap = window.clickEventTap {
-        CGEvent.tapEnable(tap: tap, enable: true)
-      }
-      return Unmanaged.passUnretained(event)
-    }
-
-    let point = event.location // CG coordinates (top-left origin)
-    DispatchQueue.main.async {
-      window.stopClickMonitorImpl()
-      window.flutterChannel?.invokeMethod("onScrollTargetClicked", arguments: [
-        "x": Double(point.x),
-        "y": Double(point.y),
-      ])
-    }
-    return nil // suppress the click
-  }
-
-  /// Remove the CGEvent tap and release retained self reference.
-  private func stopClickMonitorImpl() {
-    if let tap = self.clickEventTap {
-      CGEvent.tapEnable(tap: tap, enable: false)
-      if let source = self.clickRunLoopSource {
-        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-      }
-      self.clickEventTap = nil
-      self.clickRunLoopSource = nil
-    }
-    if let ref = self.clickSelfRef {
-      ref.release()
-      self.clickSelfRef = nil
-    }
-  }
-
   // MARK: - Esc monitor helpers
 
   /// Remove both global and local Esc key monitors.
@@ -922,11 +920,12 @@ class MainFlutterWindow: NSWindow {
     // has rendered the correct content (avoids black flash).
     self.alphaValue = 0
     self.styleMask = [.borderless]
-    // Keep overlay opaque with a solid background to avoid retained pixel trails.
-    self.isOpaque = true
+    // NOTE: isOpaque stays false permanently (set in awakeFromNib) so the Metal
+    // pipeline always uses a transparent clear color. The overlay still looks
+    // opaque because RegionSelectionScreen paints every pixel. The solid black
+    // backgroundColor/layer backing prevents flash during the initial render.
     self.backgroundColor = .black
     self.contentView?.wantsLayer = true
-    self.contentView?.layer?.isOpaque = true
     self.contentView?.layer?.backgroundColor = NSColor.black.cgColor
     self.hasShadow = false
     self.isMovableByWindowBackground = false
@@ -991,5 +990,22 @@ class MainFlutterWindow: NSWindow {
       }
       return event
     }
+  }
+}
+
+// MARK: - ScrollStopClickView
+
+/// Transparent NSView that acts as a click target for the scroll capture "Done"
+/// button.  Placed inside a borderless NSPanel that floats above the Flutter
+/// overlay window (which has ignoresMouseEvents = true for scroll passthrough).
+private class ScrollStopClickView: NSView {
+  var onClick: (() -> Void)?
+
+  override func mouseDown(with event: NSEvent) {
+    onClick?()
+  }
+
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: .pointingHand)
   }
 }

@@ -12,7 +12,7 @@ class _ScrollFrame {
   final int pixelWidth;
   final int pixelHeight;
 
-  /// Rows shared with the previous frame (0 for the first frame).
+  /// Rows shared with the previous stored frame (0 for the first frame).
   final int overlapRows;
 
   const _ScrollFrame({
@@ -27,147 +27,318 @@ class ScrollCaptureService {
   /// Called after each frame is captured with the current frame count.
   void Function(int frameCount)? onProgress;
 
-  bool _cancelled = false;
+  /// Called with an updated running composite image for live preview.
+  void Function(ui.Image previewImage)? onPreviewUpdated;
 
-  /// Signal the scroll loop to stop.
-  /// If 3+ frames have been captured, the partial result is stitched.
+  bool _cancelled = false;
+  Timer? _captureTimer;
+  final List<_ScrollFrame> _frames = [];
+  Stopwatch? _stopwatch;
+
+  /// Raw BGRA of the most recent frame (for identity comparison).
+  Uint8List? _prevBytes;
+  int _prevWidth = 0;
+  int _prevHeight = 0;
+  int _prevBytesPerRow = 0;
+
+  /// Height of the last *stored* frame (for overlap computation).
+  /// Overlap must be relative to the previous stored frame because skipped
+  /// frames are not included in the stitched output.
+  int _lastStoredHeight = 0;
+
+  /// Column samples for the last stored frame (for overlap computation).
+  List<List<double>>? _lastStoredCols;
+
+  /// Last computed scroll offset; used as prediction for faster search.
+  int _predictedOffset = 0;
+
+  /// Running composite image for the live preview panel.
+  ui.Image? _runningImage;
+
+  /// Prevents concurrent _captureFrame() calls from overlapping.
+  bool _captureInProgress = false;
+
+  /// The screen region being captured (CG coordinates).
+  ui.Rect? _captureRegion;
+  WindowService? _windowService;
+
+  /// Signal the capture loop to stop (Esc pressed during capture).
   void requestCancel() {
     _cancelled = true;
+    _captureTimer?.cancel();
+    _captureTimer = null;
+    _runningImage?.dispose();
+    _runningImage = null;
   }
 
-  /// Run the full scroll-capture loop: activate window, capture frames,
-  /// scroll, detect bottom, stitch into one tall image.
-  ///
-  /// Returns `null` if cancelled with < 3 frames or if capture fails.
-  Future<ui.Image?> captureScrolling({
-    required int windowId,
-    required ui.Rect windowBounds,
-    required WindowService windowService,
-  }) async {
+  /// Start the manual capture loop: poll [region] at ~kScrollCaptureFps fps.
+  /// Frames are compared, overlap-detected, and stored for stitching.
+  /// Call [stopCapture] to finish and get the stitched result.
+  void startManualCapture(ui.Rect region, WindowService windowService) {
     _cancelled = false;
-    final frames = <_ScrollFrame>[];
-    final stopwatch = Stopwatch()..start();
+    _captureInProgress = false;
+    _frames.clear();
+    _prevBytes = null;
+    _lastStoredCols = null;
+    _predictedOffset = 0;
+    _runningImage?.dispose();
+    _runningImage = null;
+    _captureRegion = region;
+    _windowService = windowService;
+    _stopwatch = Stopwatch()..start();
+
+    final intervalMs = (1000 / kScrollCaptureFps).round();
+    _captureTimer = Timer.periodic(
+      Duration(milliseconds: intervalMs),
+      (_) => _captureFrame(),
+    );
+  }
+
+  /// Stop the capture timer and stitch all frames into one tall image.
+  /// Returns null if fewer than 1 frame was captured.
+  Future<ui.Image?> stopCapture() async {
+    _captureTimer?.cancel();
+    _captureTimer = null;
+    _stopwatch?.stop();
+    _prevBytes = null;
+    _lastStoredCols = null;
+    _predictedOffset = 0;
+    _runningImage?.dispose();
+    _runningImage = null;
+
+    if (_frames.isEmpty) return null;
+
+    // Single frame — just decode and return it directly
+    if (_frames.length == 1) {
+      return _decodePng(_frames.first.pngBytes);
+    }
+
+    return _stitchFrames(_frames);
+  }
+
+  Future<void> _captureFrame() async {
+    if (_cancelled) return;
+    if (_captureInProgress) return; // prevent reentrant calls
+    _captureInProgress = true;
+
+    final region = _captureRegion;
+    final ws = _windowService;
+    if (region == null || ws == null) {
+      _captureInProgress = false;
+      return;
+    }
+
+    // Enforce limits
+    if (_frames.length >= kScrollMaxFrames) {
+      _captureTimer?.cancel();
+      _captureTimer = null;
+      _captureInProgress = false;
+      return;
+    }
+    if (_stopwatch != null &&
+        _stopwatch!.elapsed.inSeconds >= kScrollTimeoutSeconds) {
+      _captureTimer?.cancel();
+      _captureTimer = null;
+      _captureInProgress = false;
+      return;
+    }
 
     try {
-      // 1. Activate the target window
-      await windowService.activateWindowById(windowId);
-      await Future<void>.delayed(const Duration(milliseconds: 150));
+      final capture = await ws.captureRegion(region);
+      if (capture == null || _cancelled) {
+        _captureInProgress = false;
+        return;
+      }
 
-      // 2. Capture the first frame
-      final firstCapture = await windowService.captureWindow(windowId);
-      if (firstCapture == null) return null;
-
-      final firstPng = await _encodePng(
-        firstCapture.bytes,
-        firstCapture.pixelWidth,
-        firstCapture.pixelHeight,
-        firstCapture.bytesPerRow,
-      );
-      if (firstPng == null) return null;
-
-      frames.add(
-        _ScrollFrame(
-          pngBytes: firstPng,
-          pixelWidth: firstCapture.pixelWidth,
-          pixelHeight: firstCapture.pixelHeight,
-          overlapRows: 0,
-        ),
-      );
-
-      // Keep raw BGRA of the most recent frame for comparison
-      var prevBytes = firstCapture.bytes;
-      var prevWidth = firstCapture.pixelWidth;
-      var prevHeight = firstCapture.pixelHeight;
-      var prevBytesPerRow = firstCapture.bytesPerRow;
-
-      onProgress?.call(frames.length);
-
-      // 3. Scroll loop
-      for (var i = 1; i < kScrollMaxFrames; i++) {
-        if (_cancelled) break;
-        if (stopwatch.elapsed.inSeconds >= kScrollTimeoutSeconds) break;
-
-        // Scroll down
-        await windowService.scrollWindow(
-          windowId: windowId,
-          deltaPixels: kScrollDeltaPixels,
-        );
-        await Future<void>.delayed(Duration(milliseconds: kScrollSettleMs));
-
-        if (_cancelled) break;
-
-        // Capture next frame
-        final capture = await windowService.captureWindow(windowId);
-        if (capture == null) break; // window closed or hidden
-
-        // Compare with previous frame
-        if (_framesIdentical(
-          prevBytes,
-          prevWidth,
-          prevHeight,
-          prevBytesPerRow,
-          capture.bytes,
-          capture.pixelWidth,
-          capture.pixelHeight,
-          capture.bytesPerRow,
-        )) {
-          break; // bottom reached
-        }
-
-        // Compute overlap between consecutive frames
-        final overlap = _computeOverlap(
-          prevBytes,
-          prevWidth,
-          prevHeight,
-          prevBytesPerRow,
-          capture.bytes,
-          capture.pixelWidth,
-          capture.pixelHeight,
-          capture.bytesPerRow,
-        );
-
-        // PNG-encode and store
+      // First frame — always store it
+      if (_frames.isEmpty) {
         final png = await _encodePng(
           capture.bytes,
           capture.pixelWidth,
           capture.pixelHeight,
           capture.bytesPerRow,
         );
-        if (png == null) break;
+        if (png == null) {
+          _captureInProgress = false;
+          return;
+        }
 
-        frames.add(
-          _ScrollFrame(
-            pngBytes: png,
-            pixelWidth: capture.pixelWidth,
-            pixelHeight: capture.pixelHeight,
-            overlapRows: overlap,
-          ),
+        final frame = _ScrollFrame(
+          pngBytes: png,
+          pixelWidth: capture.pixelWidth,
+          pixelHeight: capture.pixelHeight,
+          overlapRows: 0,
+        );
+        _frames.add(frame);
+
+        _prevBytes = capture.bytes;
+        _prevWidth = capture.pixelWidth;
+        _prevHeight = capture.pixelHeight;
+        _prevBytesPerRow = capture.bytesPerRow;
+
+        _lastStoredHeight = capture.pixelHeight;
+        _lastStoredCols = _columnSamples(
+          capture.bytes,
+          capture.pixelWidth,
+          capture.pixelHeight,
+          capture.bytesPerRow,
         );
 
-        // Replace previous raw frame
-        prevBytes = capture.bytes;
-        prevWidth = capture.pixelWidth;
-        prevHeight = capture.pixelHeight;
-        prevBytesPerRow = capture.bytesPerRow;
-
-        onProgress?.call(frames.length);
+        await _updateRunningPreview(frame);
+        onProgress?.call(_frames.length);
+        _captureInProgress = false;
+        return;
       }
+
+      // Compare with most recent frame — skip if identical (no scroll)
+      if (_framesIdentical(
+        _prevBytes!,
+        _prevWidth,
+        _prevHeight,
+        _prevBytesPerRow,
+        capture.bytes,
+        capture.pixelWidth,
+        capture.pixelHeight,
+        capture.bytesPerRow,
+      )) {
+        _captureInProgress = false;
+        return; // no scroll happened
+      }
+
+      // Compute overlap against the last *stored* frame (not the latest
+      // captured frame) because the stitcher only uses stored frames.
+      final currCols = _columnSamples(
+        capture.bytes,
+        capture.pixelWidth,
+        capture.pixelHeight,
+        capture.bytesPerRow,
+      );
+      final overlap = _computeOverlap(
+        _lastStoredCols!,
+        currCols,
+        _lastStoredHeight,
+        capture.pixelHeight,
+      );
+
+      // Always update prev for identity comparison
+      _prevBytes = capture.bytes;
+      _prevWidth = capture.pixelWidth;
+      _prevHeight = capture.pixelHeight;
+      _prevBytesPerRow = capture.bytesPerRow;
+
+      // When overlap is 0 the user scrolled too fast for a match.  Update the
+      // stored-frame reference so subsequent frames compare against recent
+      // content (breaks the stale-reference cascade) but don't store this
+      // frame — avoids visible content duplication at segment boundaries.
+      if (overlap == 0) {
+        debugPrint(
+          '[aSnap] manual scroll: no overlap — updating reference, '
+          'skipping frame',
+        );
+        _lastStoredHeight = capture.pixelHeight;
+        _lastStoredCols = currCols;
+        _predictedOffset = 0;
+        _captureInProgress = false;
+        return;
+      }
+
+      // PNG-encode and store
+      final png = await _encodePng(
+        capture.bytes,
+        capture.pixelWidth,
+        capture.pixelHeight,
+        capture.bytesPerRow,
+      );
+      if (png == null) {
+        _captureInProgress = false;
+        return;
+      }
+
+      debugPrint(
+        '[aSnap] manual scroll frame ${_frames.length}: '
+        '${capture.pixelWidth}x${capture.pixelHeight} overlap=$overlap',
+      );
+
+      final frame = _ScrollFrame(
+        pngBytes: png,
+        pixelWidth: capture.pixelWidth,
+        pixelHeight: capture.pixelHeight,
+        overlapRows: overlap,
+      );
+      _frames.add(frame);
+
+      // Update last stored frame reference
+      _lastStoredHeight = capture.pixelHeight;
+      _lastStoredCols = currCols;
+      _predictedOffset = capture.pixelHeight - overlap;
+
+      await _updateRunningPreview(frame);
+      onProgress?.call(_frames.length);
     } catch (e) {
-      debugPrint('[aSnap] Scroll capture error: $e');
+      debugPrint('[aSnap] Manual scroll capture error: $e');
+    } finally {
+      _captureInProgress = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live preview (incremental stitch)
+  // ---------------------------------------------------------------------------
+
+  /// Incrementally stitch a new frame onto the running composite image
+  /// and notify the preview listener.
+  Future<void> _updateRunningPreview(_ScrollFrame frame) async {
+    final newFrame = await _decodePng(frame.pngBytes);
+    if (newFrame == null) return;
+
+    if (_runningImage == null) {
+      // First frame — use it directly as the running image
+      _runningImage = newFrame;
+      onPreviewUpdated?.call(_runningImage!);
+      return;
     }
 
-    stopwatch.stop();
-
-    // If cancelled with fewer than 3 frames, discard
-    if (_cancelled && frames.length < 3) return null;
-
-    // Single frame — just decode and return it directly
-    if (frames.length == 1) {
-      return _decodePng(frames.first.pngBytes);
+    final prev = _runningImage!;
+    final newHeight = prev.height + newFrame.height - frame.overlapRows;
+    if (newHeight <= 0) {
+      newFrame.dispose();
+      return;
     }
 
-    // Stitch all frames into one tall image
-    return _stitchFrames(frames);
+    final recorder = ui.PictureRecorder();
+    final canvas = ui.Canvas(
+      recorder,
+      ui.Rect.fromLTWH(0, 0, prev.width.toDouble(), newHeight.toDouble()),
+    );
+
+    // Draw existing composite
+    canvas.drawImage(prev, ui.Offset.zero, ui.Paint());
+
+    // Draw new frame, skipping overlap rows
+    final srcTop = frame.overlapRows.toDouble();
+    final srcHeight = newFrame.height.toDouble() - srcTop;
+    canvas.drawImageRect(
+      newFrame,
+      ui.Rect.fromLTWH(0, srcTop, newFrame.width.toDouble(), srcHeight),
+      ui.Rect.fromLTWH(
+        0,
+        prev.height.toDouble(),
+        newFrame.width.toDouble(),
+        srcHeight,
+      ),
+      ui.Paint(),
+    );
+    newFrame.dispose();
+
+    final picture = recorder.endRecording();
+    try {
+      final composite = await picture.toImage(prev.width, newHeight);
+      prev.dispose();
+      _runningImage = composite;
+      onPreviewUpdated?.call(_runningImage!);
+    } finally {
+      picture.dispose();
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -280,157 +451,123 @@ class ScrollCaptureService {
   }
 
   // ---------------------------------------------------------------------------
-  // Overlap detection
+  // Overlap detection — column-sampling approach
   // ---------------------------------------------------------------------------
+  //
+  // Inspired by wayscrollshot (https://github.com/jswysnemc/wayscrollshot).
+  // Instead of matching small pixel blocks (easily fooled by repeating content
+  // like Twitter feeds), sample evenly-spaced columns per row and compare ALL
+  // overlapping rows for each candidate offset. The correct offset produces the
+  // lowest mean absolute difference across all rows — fixed headers are
+  // naturally handled because they're a minority of the total rows.
 
-  /// Find how many rows at the bottom of the previous frame match the top
-  /// of the current frame. Returns 0 if no reliable overlap is found.
-  ///
-  /// Searches up to 500px of overlap (covers most scroll amounts at Retina).
-  int _computeOverlap(
-    Uint8List prevBytes,
-    int prevWidth,
-    int prevHeight,
-    int prevBytesPerRow,
-    Uint8List currBytes,
-    int currWidth,
-    int currHeight,
-    int currBytesPerRow,
-  ) {
-    if (prevWidth != currWidth) return 0;
+  /// Compute column samples for a frame: for each row, compute the grayscale
+  /// value at [kColSamples] evenly-spaced columns across the full width.
+  /// Returns a list of [height] entries, each with [kColSamples] doubles.
+  static const kColSamples = 10;
 
-    final maxSearch = (prevHeight * 0.6).toInt().clamp(0, 500);
-    const requiredConsecutive = 3;
-    const rowThreshold = 12.0; // max average SAD per sampled pixel per channel
-
-    int consecutiveMatches = 0;
-    int firstMatchOffset = 0;
-
-    // For each candidate overlap offset (how many rows overlap):
-    // Compare prevFrame row (prevHeight - offset + r) with currFrame row (r)
-    for (var offset = 1; offset <= maxSearch; offset++) {
-      final prevRow = prevHeight - offset;
-      if (prevRow < 0) break;
-
-      // Compare this single row pair
-      final match = _rowsMatch(
-        prevBytes,
-        prevBytesPerRow,
-        prevRow,
-        currBytes,
-        currBytesPerRow,
-        0 + (offset - 1 - (firstMatchOffset - 1)).clamp(0, currHeight - 1),
-        prevWidth,
-        rowThreshold,
-      );
-
-      if (!match) {
-        // Reset and try with this offset as a fresh start
-        consecutiveMatches = 0;
-        continue;
-      }
-
-      if (consecutiveMatches == 0) {
-        firstMatchOffset = offset;
-      }
-      consecutiveMatches++;
-
-      if (consecutiveMatches >= requiredConsecutive) {
-        return firstMatchOffset;
-      }
-    }
-
-    // Fallback: use a simple approach — try to find where top of curr
-    // appears in bottom of prev by checking fixed offsets
-    return _computeOverlapSimple(
-      prevBytes,
-      prevWidth,
-      prevHeight,
-      prevBytesPerRow,
-      currBytes,
-      currWidth,
-      currHeight,
-      currBytesPerRow,
-      maxSearch,
-    );
-  }
-
-  /// Simpler overlap detection: for each candidate overlap amount, compare
-  /// the overlapping region row by row.
-  int _computeOverlapSimple(
-    Uint8List prevBytes,
-    int prevWidth,
-    int prevHeight,
-    int prevBytesPerRow,
-    Uint8List currBytes,
-    int currWidth,
-    int currHeight,
-    int currBytesPerRow,
-    int maxSearch,
-  ) {
-    const requiredConsecutive = 3;
-    const rowThreshold = 12.0;
-
-    for (var overlap = maxSearch; overlap >= requiredConsecutive; overlap--) {
-      var matchingRows = 0;
-
-      for (var r = 0; r < overlap && r < currHeight; r++) {
-        final prevRow = prevHeight - overlap + r;
-        if (prevRow < 0) break;
-
-        if (_rowsMatch(
-          prevBytes,
-          prevBytesPerRow,
-          prevRow,
-          currBytes,
-          currBytesPerRow,
-          r,
-          prevWidth,
-          rowThreshold,
-        )) {
-          matchingRows++;
-        }
-      }
-
-      // If most rows match (allow 10% tolerance for anti-aliasing artifacts)
-      if (matchingRows >= overlap * 0.9) {
-        return overlap;
-      }
-    }
-
-    return 0;
-  }
-
-  /// Compare a single row from two frames using sampled SAD.
-  bool _rowsMatch(
-    Uint8List aBytes,
-    int aBytesPerRow,
-    int aRow,
-    Uint8List bBytes,
-    int bBytesPerRow,
-    int bRow,
+  List<List<double>> _columnSamples(
+    Uint8List bytes,
     int width,
-    double threshold,
+    int height,
+    int bytesPerRow,
   ) {
-    final aOffset = aRow * aBytesPerRow;
-    final bOffset = bRow * bBytesPerRow;
-    int totalDiff = 0;
-    int samples = 0;
+    // Evenly space samples across the width, avoiding the very edges
+    final step = width / (kColSamples + 1);
+    final xPositions = List.generate(
+      kColSamples,
+      (i) => (step * (i + 1)).toInt().clamp(0, width - 1),
+    );
 
-    for (var x = 0; x < width; x += 2) {
-      final aIdx = aOffset + x * 4;
-      final bIdx = bOffset + x * 4;
+    return List.generate(height, (y) {
+      return List.generate(kColSamples, (s) {
+        final x = xPositions[s];
+        final idx = y * bytesPerRow + x * 4;
+        if (idx + 2 >= bytes.length) return 0.0;
+        // BGRA format → grayscale: 0.114*B + 0.587*G + 0.299*R
+        return 0.114 * bytes[idx] +
+            0.587 * bytes[idx + 1] +
+            0.299 * bytes[idx + 2];
+      });
+    });
+  }
 
-      if (aIdx + 2 >= aBytes.length || bIdx + 2 >= bBytes.length) continue;
+  /// Compute the mean absolute difference between prevCols and currCols
+  /// for a given [offset] (= number of new rows = scroll amount).
+  ///
+  /// At offset `o`, prevFrame's row `o + i` is compared with currFrame's
+  /// row `i` for all i in `[0, min(prevH - o, currH))`.
+  double _colDiff(
+    List<List<double>> prevCols,
+    List<List<double>> currCols,
+    int offset,
+  ) {
+    final prevH = prevCols.length;
+    final currH = currCols.length;
+    if (offset <= 0 || offset >= prevH) return double.infinity;
 
-      totalDiff += (aBytes[aIdx] - bBytes[bIdx]).abs();
-      totalDiff += (aBytes[aIdx + 1] - bBytes[bIdx + 1]).abs();
-      totalDiff += (aBytes[aIdx + 2] - bBytes[bIdx + 2]).abs();
-      samples += 3;
+    final len = (prevH - offset) < currH ? (prevH - offset) : currH;
+    if (len <= 0) return double.infinity;
+
+    final numGroups = prevCols[0].length;
+    double sum = 0;
+    int count = 0;
+
+    for (var i = 0; i < len; i++) {
+      final pRow = prevCols[offset + i];
+      final cRow = currCols[i];
+      for (var g = 0; g < numGroups; g++) {
+        sum += (pRow[g] - cRow[g]).abs();
+        count++;
+      }
     }
 
-    if (samples == 0) return true;
-    return (totalDiff / samples) < threshold;
+    return count > 0 ? sum / count : double.infinity;
+  }
+
+  /// Find the overlap between two frames using column-sample comparison.
+  ///
+  /// Searches outward from the predicted offset for fast convergence.
+  /// The offset with the minimum column diff wins.
+  int _computeOverlap(
+    List<List<double>> prevCols,
+    List<List<double>> currCols,
+    int prevHeight,
+    int currHeight,
+  ) {
+    if (prevHeight != currHeight) return 0;
+
+    const diffThreshold = 8.0; // max acceptable average column diff
+    const minOffset = 2; // ignore sub-pixel scrolls
+    final maxOffset = (prevHeight * 0.85).toInt();
+
+    double bestDiff = double.infinity;
+    int bestOffset = 0;
+
+    // Build search order: expand outward from predicted offset
+    final predict = _predictedOffset.clamp(minOffset, maxOffset);
+    final searchOrder = <int>[predict];
+    for (var delta = 1; delta <= maxOffset; delta++) {
+      if (predict + delta <= maxOffset) searchOrder.add(predict + delta);
+      if (predict - delta >= minOffset) searchOrder.add(predict - delta);
+    }
+
+    for (final offset in searchOrder) {
+      final diff = _colDiff(prevCols, currCols, offset);
+
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        bestOffset = offset;
+      }
+
+      // Early termination: only stop for near-perfect matches (diff ≈ 0)
+      if (bestDiff < 0.5) break;
+    }
+
+    if (bestDiff > diffThreshold || bestOffset <= 0) return 0;
+
+    final overlap = prevHeight - bestOffset;
+    return overlap.clamp(0, currHeight);
   }
 
   // ---------------------------------------------------------------------------

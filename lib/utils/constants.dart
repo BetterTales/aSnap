@@ -33,7 +33,6 @@ HotKey get kScrollCaptureHotkey => HotKey(
 );
 
 // Scroll capture tuning constants
-const int kScrollMaxFrames = 30;
+const int kScrollMaxFrames = 150;
 const int kScrollTimeoutSeconds = 30;
-const double kScrollDeltaPixels = -300.0; // negative = scroll down
-const int kScrollSettleMs = 100;
+const int kScrollCaptureFps = 15;

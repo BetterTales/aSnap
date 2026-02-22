@@ -6,7 +6,7 @@ enum CaptureStatus {
   idle,
   capturing,
   selecting,
-  scrollWaiting,
+  scrollSelecting,
   scrollCapturing,
   captured,
 }
@@ -45,6 +45,11 @@ class AppState extends ChangeNotifier {
   int _scrollFrameCount = 0;
   int get scrollFrameCount => _scrollFrameCount;
 
+  /// Growing composite image for live scroll preview.
+  /// Owned by ScrollCaptureService — do NOT dispose here.
+  Image? _scrollPreviewImage;
+  Image? get scrollPreviewImage => _scrollPreviewImage;
+
   CaptureStatus _status = CaptureStatus.idle;
   CaptureStatus get status => _status;
 
@@ -53,13 +58,23 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void setScrollWaiting() {
-    _status = CaptureStatus.scrollWaiting;
+  void setScrollSelecting({
+    required Image decodedImage,
+    List<Rect>? windowRects,
+    Size? screenSize,
+    Offset? screenOrigin,
+  }) {
+    _decodedFullScreen?.dispose();
+    _decodedFullScreen = decodedImage;
+    _windowRects = windowRects;
+    _screenSize = screenSize;
+    _screenOrigin = screenOrigin;
+    _status = CaptureStatus.scrollSelecting;
     notifyListeners();
   }
 
-  void setScrollCapturing({required Rect targetBounds}) {
-    _scrollTargetBounds = targetBounds;
+  void setScrollCapturing({required Rect captureRegion}) {
+    _scrollTargetBounds = captureRegion;
     _scrollFrameCount = 0;
     _status = CaptureStatus.scrollCapturing;
     notifyListeners();
@@ -68,6 +83,14 @@ class AppState extends ChangeNotifier {
   void updateScrollFrameCount(int count) {
     _scrollFrameCount = count;
     notifyListeners();
+  }
+
+  /// Update the live scroll preview image (called by ScrollCaptureService).
+  /// The image is owned by the service — we just hold a reference.
+  /// Does NOT call notifyListeners() — the caller is responsible for
+  /// triggering a rebuild (via updateScrollFrameCount) after setting this.
+  void updateScrollPreview(Image newImage) {
+    _scrollPreviewImage = newImage;
   }
 
   void setSelecting({
@@ -112,6 +135,7 @@ class AppState extends ChangeNotifier {
     _decodedFullScreen = null;
     _windowRects = null;
     _scrollTargetBounds = null;
+    _scrollPreviewImage = null; // Service owns it; just clear reference
     _isScrollCapture = true;
     _status = CaptureStatus.captured;
     notifyListeners();
@@ -150,6 +174,7 @@ class AppState extends ChangeNotifier {
     _isScrollCapture = false;
     _scrollTargetBounds = null;
     _scrollFrameCount = 0;
+    _scrollPreviewImage = null; // Service owns it; just clear reference
     _status = CaptureStatus.idle;
     notifyListeners();
   }
