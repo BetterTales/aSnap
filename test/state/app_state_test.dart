@@ -24,6 +24,10 @@ void main() {
     state = AppState();
   });
 
+  tearDown(() {
+    state.clear();
+  });
+
   group('initial state', () {
     test('starts idle with null fields', () {
       expect(state.status, CaptureStatus.idle);

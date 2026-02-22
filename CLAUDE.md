@@ -112,7 +112,7 @@ These are hard-won lessons. Violating them breaks the app silently.
 
 Run tests with `flutter test`.
 
-Current coverage is minimal (filename generation only). When adding features or fixing bugs:
+Current coverage is still minimal (primarily filename generation, widget behavior, and AppState). When adding features or fixing bugs:
 - Write unit tests for business logic (services, utilities)
 - Write widget tests for UI components
 - Place tests in `test/` mirroring the `lib/` structure (e.g., `test/services/capture_service_test.dart`)
@@ -124,7 +124,7 @@ Use the VSCode Flutter Widget Preview extension to preview widgets during develo
 Create preview files alongside widget files with a `_preview.dart` suffix:
 - `lib/widgets/magnifier_loupe.dart` → `lib/widgets/magnifier_loupe_preview.dart`
 
-Preview files should contain a `Widget build(BuildContext context)` function that returns the widget with sample data, wrapped in any necessary scaffolding.
+Preview files should expose a top-level `@Preview`-annotated function that returns the widget with sample data, wrapped in any necessary scaffolding (e.g., `MaterialApp` + `Scaffold`). No `BuildContext` parameter is needed.
 
 ## Refactoring
 

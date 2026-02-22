@@ -24,7 +24,9 @@ Future<ui.Image> _createCheckerboardImage() async {
   }
 
   final picture = recorder.endRecording();
-  return picture.toImage(size.toInt(), size.toInt());
+  final image = await picture.toImage(size.toInt(), size.toInt());
+  picture.dispose();
+  return image;
 }
 
 @Preview(name: 'MagnifierLoupe — center', size: Size(400, 300))

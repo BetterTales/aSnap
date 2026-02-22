@@ -119,21 +119,30 @@ class MainFlutterWindow: NSWindow {
 
         guard let img = cgImage else { result(nil); return }
 
-        // Extract raw BGRA pixel data directly — avoids PNG encode (~150ms).
-        // Dart side uses decodeImageFromPixels for near-instant GPU upload.
-        guard let dataProvider = img.dataProvider,
-              let cfData = dataProvider.data else {
-          result(nil); return
-        }
-        let rawPtr = CFDataGetBytePtr(cfData)!
-        let length = CFDataGetLength(cfData)
-        let pixelData = Data(bytes: rawPtr, count: length)
+        // Force-convert to BGRA8888 via CGContext — CGWindowListCreateImage
+        // doesn't guarantee a specific pixel format.  Dart side decodes with
+        // PixelFormat.bgra8888 so the bytes must match exactly.
+        let w = img.width
+        let h = img.height
+        let bpr = w * 4
+        guard let ctx = CGContext(
+            data: nil,
+            width: w, height: h,
+            bitsPerComponent: 8,
+            bytesPerRow: bpr,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                      | CGBitmapInfo.byteOrder32Little.rawValue
+        ) else { result(nil); return }
+        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let baseAddr = ctx.data else { result(nil); return }
+        let pixelData = Data(bytes: baseAddr, count: h * bpr)
 
         result([
           "bytes": FlutterStandardTypedData(bytes: pixelData),
-          "pixelWidth": img.width,
-          "pixelHeight": img.height,
-          "bytesPerRow": img.bytesPerRow,
+          "pixelWidth": w,
+          "pixelHeight": h,
+          "bytesPerRow": bpr,
           "screenWidth": logicalWidth,
           "screenHeight": logicalHeight,
           "screenOriginX": cgOriginX,

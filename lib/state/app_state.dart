@@ -76,6 +76,14 @@ class AppState extends ChangeNotifier {
     return byteData?.buffer.asUint8List();
   }
 
+  /// Remove and return the captured image without disposing it.
+  /// Caller takes ownership and is responsible for disposal.
+  Image? detachCapturedImage() {
+    final image = _capturedImage;
+    _capturedImage = null;
+    return image;
+  }
+
   /// Trigger a rebuild without changing any state.
   /// Used when the native window is shown/focused after initial state updates.
   void nudge() {

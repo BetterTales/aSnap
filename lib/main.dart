@@ -27,9 +27,8 @@ List<DetectedWindow> _cachedGlobalWindows = [];
 /// Per-display cache of screenshot + local rects, keyed by CG origin string.
 /// Lives only for the duration of one capture session (cleared on dismiss/finish).
 class _DisplayCache {
-  final ScreenCapture capture;
   final List<Rect> localRects;
-  const _DisplayCache({required this.capture, required this.localRects});
+  const _DisplayCache({required this.localRects});
 }
 
 final Map<String, _DisplayCache> _displayCaches = {};
@@ -268,7 +267,6 @@ Future<void> _handleRegionCapture() async {
 
     // Cache for this display so switching back is instant.
     _displayCaches[_displayKey(capture.screenOrigin)] = _DisplayCache(
-      capture: capture,
       localRects: localRects,
     );
 
@@ -366,7 +364,6 @@ Future<void> _handleDisplayChanged() async {
     } else if (_cachedGlobalWindows.isNotEmpty) {
       localRects = _globalRectsToLocal(capture.screenOrigin);
       _displayCaches[key] = _DisplayCache(
-        capture: capture,
         localRects: localRects,
       );
     } else {
@@ -405,7 +402,6 @@ Future<void> _handleDisplayChanged() async {
           )
           .toList();
       _displayCaches[key] = _DisplayCache(
-        capture: capture,
         localRects: fetchedRects,
       );
       _appState.updateWindowRects(fetchedRects);
@@ -439,6 +435,10 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
     logicalRect.right * scaleX,
     logicalRect.bottom * scaleY,
   );
+
+  // Stop Esc monitor during crop to prevent a race where Esc disposes the
+  // source image while cropImage's picture.toImage() is still in-flight.
+  await _windowService.stopEscMonitor();
 
   final cropped = await _captureService.cropImage(
     decodedFullScreen,
@@ -489,13 +489,17 @@ Future<void> _handleRegionCancel() async {
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
-  // Encode PNG while image is still alive, then hide immediately.
-  final png = await _appState.capturedImageAsPng();
+  // Detach image so clear() won't dispose it, then hide immediately.
+  final image = _appState.detachCapturedImage();
   _appState.clear();
   await _windowService.hidePreview();
-  // Copy to clipboard after window is gone — user perceives instant dismiss.
-  if (png != null) {
-    await _clipboardService.copyImage(png);
+  // Encode + copy after window is gone — user perceives instant dismiss.
+  if (image != null) {
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (byteData != null) {
+      await _clipboardService.copyImage(byteData.buffer.asUint8List());
+    }
+    image.dispose();
   }
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
@@ -504,13 +508,17 @@ Future<void> _handleCopy() async {
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
-  // Encode PNG while image is still alive, then hide immediately.
-  final png = await _appState.capturedImageAsPng();
+  // Detach image so clear() won't dispose it, then hide immediately.
+  final image = _appState.detachCapturedImage();
   _appState.clear();
   await _windowService.hidePreview();
-  // Save to file after window is gone — user perceives instant dismiss.
-  if (png != null) {
-    await _fileService.saveScreenshot(png);
+  // Encode + save after window is gone — user perceives instant dismiss.
+  if (image != null) {
+    final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (byteData != null) {
+      await _fileService.saveScreenshot(byteData.buffer.asUint8List());
+    }
+    image.dispose();
   }
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
