@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -167,6 +168,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   // -----------------------------------------------------------------------
 
   void _onPointerDown(PointerDownEvent event) {
+    // Right-click → go back one step (Snipaste-style).
+    if ((event.buttons & kSecondaryMouseButton) != 0) {
+      _goBack();
+      return;
+    }
+
     final pos = event.localPosition;
 
     switch (_phase) {
@@ -362,20 +369,26 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   void _onKeyEvent(KeyEvent event) {
     if (event is! KeyDownEvent) return;
     if (event.logicalKey != LogicalKeyboardKey.escape) return;
+    // Escape always exits the overlay immediately — no multi-step unwind.
+    widget.onCancel();
+  }
 
+  /// Go back one step (right-click behavior).
+  ///
+  /// Hovering → exit overlay. Drawing → cancel draw. Selected → clear
+  /// selection. Resizing/Moving → restore original rect.
+  void _goBack() {
     switch (_phase) {
       case _SelectionPhase.hovering:
         widget.onCancel();
 
       case _SelectionPhase.drawing:
-        // Cancel in-progress draw, return to hovering.
         setState(() {
           _drawStart = null;
           _phase = _SelectionPhase.hovering;
         });
 
       case _SelectionPhase.selected:
-        // Clear selection, return to hovering.
         setState(() {
           _selectionRect = null;
           _phase = _SelectionPhase.hovering;
@@ -383,7 +396,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 
       case _SelectionPhase.resizing:
       case _SelectionPhase.moving:
-        // Cancel resize/move, restore original rect.
         setState(() {
           _selectionRect = _dragStartRect;
           _activeHandle = null;
