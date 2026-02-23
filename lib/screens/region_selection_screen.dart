@@ -127,14 +127,21 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       );
       widget.onRegionSelected(normalized);
     } else {
-      // Click (no meaningful drag) — accept detected window or AX element
-      final windowRect =
-          _detectedWindowRect ?? _hitTestElement(event.localPosition);
+      // Click (no meaningful drag) — accept detected window or AX element.
+      // Validate that _detectedWindowRect (from a previous hover AX query)
+      // actually contains the click position. If the user moved quickly,
+      // the AX result may be stale (from a previous cursor position).
+      final detected = _detectedWindowRect;
+      final clickPos = event.localPosition;
+      final windowRect = (detected != null && detected.contains(clickPos))
+          ? detected
+          : _hitTestElement(clickPos);
       if (windowRect != null) {
         widget.onRegionSelected(windowRect);
       } else if (widget.onHitTest != null) {
-        // Try AX hit-test as last resort for click selection.
-        unawaited(_tryAxClickSelect(event.localPosition));
+        // No cached rect contains the click point — fire a fresh AX
+        // hit-test at the exact click position as a last resort.
+        unawaited(_tryAxClickSelect(clickPos));
       } else {
         setState(() {
           _start = null;
