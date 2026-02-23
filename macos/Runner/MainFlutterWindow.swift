@@ -197,7 +197,7 @@ class MainFlutterWindow: NSWindow {
         self.setFlutterSurfaceOpaque(true)
         self.hasShadow = true
         self.level = .normal
-        self.collectionBehavior = []
+        self.collectionBehavior = [.moveToActiveSpace]
         self.ignoresMouseEvents = false
         self.acceptsMouseMovedEvents = false
         result(nil)
@@ -295,7 +295,7 @@ class MainFlutterWindow: NSWindow {
         self.overlayScreenFrame = nil
         self.level = .floating
         self.hasShadow = true
-        self.collectionBehavior = []
+        self.collectionBehavior = [.moveToActiveSpace]
         self.acceptsMouseMovedEvents = false
         // Clear constraints so the window can resize freely
         self.minSize = NSSize(width: 1, height: 1)
