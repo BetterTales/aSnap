@@ -118,6 +118,7 @@ class SelectionToolbar extends StatelessWidget {
       (ShapeType.line, Icons.horizontal_rule_rounded, 'Line'),
       (ShapeType.pencil, Icons.edit_outlined, 'Pencil'),
       (ShapeType.marker, Icons.brush_outlined, 'Marker'),
+      (ShapeType.number, Icons.looks_one_outlined, 'Number'),
     ];
 
     final widgets = <Widget>[];
@@ -130,6 +131,7 @@ class SelectionToolbar extends StatelessWidget {
         label: label,
         onPressed: () => onToolTap!(type),
         isActive: isActive,
+        customIcon: type == ShapeType.number ? const _CircledOneIcon() : null,
       );
       // Anchor the settings popover to the active tool button.
       if (isActive && settingsLayerLink != null) {
@@ -151,12 +153,17 @@ class _ActionButton extends StatelessWidget {
   final bool isDestructive;
   final bool isActive;
 
+  /// Optional custom icon widget. When provided, takes priority over [icon].
+  /// Receives the foreground color via [IconTheme].
+  final Widget? customIcon;
+
   const _ActionButton({
     required this.icon,
     required this.label,
     this.onPressed,
     this.isDestructive = false,
     this.isActive = false,
+    this.customIcon,
   });
 
   @override
@@ -190,7 +197,45 @@ class _ActionButton extends StatelessWidget {
                     borderRadius: BorderRadius.circular(22),
                   )
                 : null,
-            child: Icon(icon, color: foreground, size: 18),
+            child: customIcon != null
+                ? IconTheme(
+                    data: IconThemeData(color: foreground, size: 18),
+                    child: customIcon!,
+                  )
+                : Icon(icon, color: foreground, size: 18),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A circled "1" icon that reads color and size from [IconTheme].
+class _CircledOneIcon extends StatelessWidget {
+  const _CircledOneIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = IconTheme.of(context);
+    final color = theme.color ?? Colors.white;
+    final size = theme.size ?? 18.0;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: color, width: 1.5),
+        ),
+        child: Center(
+          child: Text(
+            '1',
+            style: TextStyle(
+              color: color,
+              fontSize: size * 0.55,
+              fontWeight: FontWeight.bold,
+              height: 1,
+            ),
           ),
         ),
       ),

@@ -121,8 +121,12 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
       return;
     }
 
-    // 5. Empty space → deselect, start new drawing.
+    // 5. Empty space → deselect. Stamp tools commit immediately; others drag.
     state.deselectAnnotation();
+    if (state.settings.shapeType == ShapeType.number) {
+      state.placeStamp(imagePoint);
+      return;
+    }
     state.startDrawing(imagePoint);
   }
 

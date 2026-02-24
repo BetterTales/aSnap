@@ -433,7 +433,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 
   void _startAnnotationDrawing(Offset widgetPos) {
     final imagePoint = _widgetToImage(widgetPos);
-    widget.annotationState?.startDrawing(imagePoint);
+    final state = widget.annotationState;
+    if (state == null) return;
+    if (state.settings.shapeType == ShapeType.number) {
+      state.placeStamp(imagePoint);
+      return;
+    }
+    state.startDrawing(imagePoint);
   }
 
   void _handleAnnotationDoubleClick(Offset imagePoint) {

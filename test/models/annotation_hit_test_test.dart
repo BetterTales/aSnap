@@ -210,6 +210,55 @@ void main() {
     });
   });
 
+  group('Number stamp hit test', () {
+    test('hits stamp within circle radius', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.number,
+          start: Offset(100, 100),
+          end: Offset(100, 100),
+          color: Color(0xFFFF0000),
+          strokeWidth: 4,
+          label: 1,
+        ),
+      ];
+      // stampRadius = 4 * 4 = 16. Point 10px from center should hit.
+      final idx = hitTestAnnotations(const Offset(110, 100), annotations);
+      expect(idx, 0);
+    });
+
+    test('hits stamp at center', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.number,
+          start: Offset(50, 50),
+          end: Offset(50, 50),
+          color: Color(0xFFFF0000),
+          strokeWidth: 4,
+          label: 1,
+        ),
+      ];
+      final idx = hitTestAnnotations(const Offset(50, 50), annotations);
+      expect(idx, 0);
+    });
+
+    test('misses stamp when far outside radius', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.number,
+          start: Offset(100, 100),
+          end: Offset(100, 100),
+          color: Color(0xFFFF0000),
+          strokeWidth: 4,
+          label: 1,
+        ),
+      ];
+      // stampRadius = 16 + 2 tolerance = 18. Point 30px away should miss.
+      final idx = hitTestAnnotations(const Offset(130, 100), annotations);
+      expect(idx, isNull);
+    });
+  });
+
   group('distanceToLineSegment', () {
     test('point perpendicular to segment', () {
       final d = distanceToLineSegment(

@@ -36,6 +36,8 @@ bool _hitTestShape(Offset point, Annotation annotation, double threshold) {
     case ShapeType.pencil:
     case ShapeType.marker:
       return _distanceToPolyline(point, annotation) <= t;
+    case ShapeType.number:
+      return (point - annotation.start).distance <= annotation.stampRadius + 2;
   }
 }
 

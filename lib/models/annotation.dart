@@ -1,7 +1,7 @@
 import 'dart:ui';
 
 /// The type of shape annotation.
-enum ShapeType { rectangle, ellipse, arrow, line, pencil, marker }
+enum ShapeType { rectangle, ellipse, arrow, line, pencil, marker, number }
 
 /// Immutable representation of a single drawn annotation.
 ///
@@ -32,6 +32,9 @@ class Annotation {
   /// Freehand path points for pencil/marker tools.
   final List<Offset> points;
 
+  /// Number label for stamp annotations (null for other types).
+  final int? label;
+
   const Annotation({
     required this.type,
     required this.start,
@@ -42,14 +45,25 @@ class Annotation {
     this.constrained = false,
     this.controlPoints = const [],
     this.points = const [],
+    this.label,
   });
 
   /// Whether this annotation is a freehand type (pencil or marker).
   bool get isFreehand => type == ShapeType.pencil || type == ShapeType.marker;
 
+  /// Whether this annotation is a point-placed stamp (no drag sizing).
+  bool get isStamp => type == ShapeType.number;
+
+  /// Circle radius for number stamps, derived from stroke width.
+  double get stampRadius => strokeWidth * 4;
+
   /// Bounding rect: for freehand types, computed from all path points;
   /// for others, from start/end.
   Rect get boundingRect {
+    if (isStamp) {
+      final r = stampRadius;
+      return Rect.fromCircle(center: start, radius: r);
+    }
     if (isFreehand && points.length >= 2) {
       double minX = points[0].dx, maxX = points[0].dx;
       double minY = points[0].dy, maxY = points[0].dy;
@@ -75,6 +89,7 @@ class Annotation {
     constrained: constrained,
     controlPoints: controlPoints,
     points: points,
+    label: label,
   );
 
   Annotation withConstrained(bool value) => Annotation(
@@ -87,6 +102,7 @@ class Annotation {
     constrained: value,
     controlPoints: controlPoints,
     points: points,
+    label: label,
   );
 
   /// Returns a copy with the control point at [index] replaced by [point].
@@ -103,6 +119,7 @@ class Annotation {
       constrained: constrained,
       controlPoints: updated,
       points: points,
+      label: label,
     );
   }
 
@@ -119,6 +136,7 @@ class Annotation {
       constrained: constrained,
       controlPoints: [...controlPoints, point],
       points: points,
+      label: label,
     );
   }
 
@@ -135,6 +153,7 @@ class Annotation {
       constrained: constrained,
       controlPoints: updated,
       points: points,
+      label: label,
     );
   }
 
@@ -150,6 +169,7 @@ class Annotation {
       constrained: constrained,
       controlPoints: controlPoints,
       points: [...points, point],
+      label: label,
     );
   }
 
@@ -165,6 +185,7 @@ class Annotation {
       constrained: constrained,
       controlPoints: controlPoints,
       points: newPoints,
+      label: label,
     );
   }
 }

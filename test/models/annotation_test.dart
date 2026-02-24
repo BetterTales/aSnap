@@ -184,4 +184,83 @@ void main() {
       expect(a.withConstrained(true).points, a.points);
     });
   });
+
+  group('Number stamp', () {
+    test('isStamp returns true for number type', () {
+      const a = Annotation(
+        type: ShapeType.number,
+        start: Offset(50, 50),
+        end: Offset(50, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 4,
+        label: 1,
+      );
+      expect(a.isStamp, isTrue);
+      expect(a.isFreehand, isFalse);
+    });
+
+    test('isStamp returns false for other types', () {
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(0, 0),
+        end: Offset(100, 100),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+      );
+      expect(a.isStamp, isFalse);
+    });
+
+    test('stampRadius is strokeWidth * 4', () {
+      const a = Annotation(
+        type: ShapeType.number,
+        start: Offset(50, 50),
+        end: Offset(50, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 5,
+        label: 1,
+      );
+      expect(a.stampRadius, 20);
+    });
+
+    test('boundingRect is circle around start for stamps', () {
+      const a = Annotation(
+        type: ShapeType.number,
+        start: Offset(100, 100),
+        end: Offset(100, 100),
+        color: Color(0xFFFF0000),
+        strokeWidth: 4,
+        label: 1,
+      );
+      final rect = a.boundingRect;
+      // radius = 4 * 4 = 16
+      expect(rect.left, 84);
+      expect(rect.top, 84);
+      expect(rect.right, 116);
+      expect(rect.bottom, 116);
+    });
+
+    test('label is preserved through copy methods', () {
+      const a = Annotation(
+        type: ShapeType.number,
+        start: Offset(50, 50),
+        end: Offset(50, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 4,
+        label: 3,
+      );
+      expect(a.withEnd(const Offset(60, 60)).label, 3);
+      expect(a.withConstrained(true).label, 3);
+    });
+
+    test('label defaults to null', () {
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(0, 0),
+        end: Offset(100, 100),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+      );
+      expect(a.label, isNull);
+    });
+  });
 }

@@ -70,6 +70,19 @@ void main() {
       expect(handles.length, 3); // start + end + 1 control point
       expect(handles.any((h) => h.type == AnnHandleType.controlPoint), true);
     });
+
+    test('number stamp returns no handles', () {
+      const a = Annotation(
+        type: ShapeType.number,
+        start: Offset(50, 50),
+        end: Offset(50, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 4,
+        label: 1,
+      );
+      final handles = annotationHandles(a);
+      expect(handles, isEmpty);
+    });
   });
 
   group('hitTestAnnotationHandle', () {

@@ -81,6 +81,9 @@ class AnnotationPainter extends CustomPainter {
 
       case ShapeType.marker:
         _drawMarker(canvas, annotation, paint);
+
+      case ShapeType.number:
+        _drawNumberStamp(canvas, annotation);
     }
   }
 
@@ -218,6 +221,42 @@ class AnnotationPainter extends CustomPainter {
     canvas.restore();
   }
 
+  void _drawNumberStamp(Canvas canvas, Annotation a) {
+    final radius = a.stampRadius;
+    final center = a.start;
+
+    // Filled circle.
+    canvas.drawCircle(center, radius, Paint()..color = a.color);
+
+    // Number text — white on dark colors, black on light.
+    final luminance = a.color.computeLuminance();
+    final textColor = luminance > 0.5
+        ? const Color(0xFF000000)
+        : const Color(0xFFFFFFFF);
+    final label = a.label?.toString() ?? '?';
+    final fontSize = radius * 1.2;
+
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: label,
+        style: TextStyle(
+          color: textColor,
+          fontSize: fontSize,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+
+    textPainter.paint(
+      canvas,
+      Offset(
+        center.dx - textPainter.width / 2,
+        center.dy - textPainter.height / 2,
+      ),
+    );
+  }
+
   void _drawFreehandSelectionBox(Canvas canvas, Annotation annotation) {
     final rect = annotation.boundingRect;
     if (rect.isEmpty) return;
@@ -231,8 +270,8 @@ class AnnotationPainter extends CustomPainter {
   }
 
   void _drawSelectionHandles(Canvas canvas, Annotation annotation) {
-    // Freehand types get a bounding box highlight instead of handles.
-    if (annotation.isFreehand) {
+    // Freehand types and stamps get a bounding box highlight instead of handles.
+    if (annotation.isFreehand || annotation.isStamp) {
       _drawFreehandSelectionBox(canvas, annotation);
       return;
     }

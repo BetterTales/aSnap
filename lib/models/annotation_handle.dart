@@ -64,7 +64,8 @@ List<AnnHandle> annotationHandles(Annotation annotation) {
       ];
     case ShapeType.pencil:
     case ShapeType.marker:
-      // Freehand shapes have no resize handles.
+    case ShapeType.number:
+      // Freehand shapes and stamps have no resize handles.
       return [];
   }
 }
@@ -182,5 +183,6 @@ Annotation _withStartEnd(Annotation a, Offset start, Offset end) {
     constrained: a.constrained,
     controlPoints: a.controlPoints,
     points: a.points,
+    label: a.label,
   );
 }

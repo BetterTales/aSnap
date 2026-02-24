@@ -70,6 +70,34 @@ class AnnotationState extends ChangeNotifier {
       annotations.isNotEmpty || _activeAnnotation != null;
 
   // ---------------------------------------------------------------------------
+  // Number stamp
+  // ---------------------------------------------------------------------------
+
+  /// Computes the next stamp number: highest existing label + 1.
+  int get _nextStampNumber =>
+      annotations
+          .where((a) => a.type == ShapeType.number)
+          .fold(
+            0,
+            (best, a) => a.label != null && a.label! > best ? a.label! : best,
+          ) +
+      1;
+
+  /// Places a number stamp at [point] and immediately commits it.
+  void placeStamp(Offset point) {
+    final stamp = Annotation(
+      type: ShapeType.number,
+      start: point,
+      end: point,
+      color: _settings.color,
+      strokeWidth: _settings.strokeWidth,
+      label: _nextStampNumber,
+    );
+    _commitAnnotation(stamp);
+    _selectedIndex = annotations.length - 1;
+  }
+
+  // ---------------------------------------------------------------------------
   // Drawing lifecycle
   // ---------------------------------------------------------------------------
 
