@@ -62,10 +62,12 @@ List<AnnHandle> annotationHandles(Annotation annotation) {
             controlPointIndex: i,
           ),
       ];
+    case ShapeType.text:
     case ShapeType.pencil:
     case ShapeType.marker:
     case ShapeType.number:
-      // Freehand shapes and stamps have no resize handles.
+      // Text, freehand shapes, and stamps have no resize handles.
+      // Text size is controlled via the stroke-width slider.
       return [];
   }
 }
@@ -184,5 +186,7 @@ Annotation _withStartEnd(Annotation a, Offset start, Offset end) {
     controlPoints: a.controlPoints,
     points: a.points,
     label: a.label,
+    text: a.text,
+    fontFamily: a.fontFamily,
   );
 }

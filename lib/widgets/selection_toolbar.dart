@@ -119,6 +119,7 @@ class SelectionToolbar extends StatelessWidget {
       (ShapeType.pencil, Icons.edit_outlined, 'Pencil'),
       (ShapeType.marker, Icons.brush_outlined, 'Marker'),
       (ShapeType.number, Icons.looks_one_outlined, 'Number'),
+      (ShapeType.text, Icons.text_fields_rounded, 'Text'),
     ];
 
     final widgets = <Widget>[];

@@ -6,15 +6,16 @@ import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../models/annotation.dart';
+import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../state/app_state.dart';
 import '../widgets/annotation_overlay.dart';
-import '../widgets/preview_toolbar.dart';
 import '../widgets/shape_popover.dart';
 
 class PreviewScreen extends StatefulWidget {
   final AppState appState;
   final AnnotationState annotationState;
+  final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
   final VoidCallback onDiscard;
@@ -23,6 +24,7 @@ class PreviewScreen extends StatefulWidget {
     super.key,
     required this.appState,
     required this.annotationState,
+    required this.windowService,
     required this.onCopy,
     required this.onSave,
     required this.onDiscard,
@@ -39,7 +41,6 @@ class _PreviewScreenState extends State<PreviewScreen> {
 
   ShapeType? _activeShapeType;
   bool _popoverVisible = false;
-  final _settingsLayerLink = LayerLink();
   OverlayEntry? _popoverEntry;
 
   /// Tracks the last image to detect capture changes and reset annotation UI.
@@ -52,11 +53,14 @@ class _PreviewScreenState extends State<PreviewScreen> {
     // This avoids issues where SingleChildScrollView's Scrollable steals
     // focus from KeyboardListener, breaking Escape and shortcuts.
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+    // Wire native toolbar button callbacks.
+    widget.windowService.onToolbarAction = _handleToolbarAction;
   }
 
   @override
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    widget.windowService.onToolbarAction = null;
     _removePopover();
     _scrollController.dispose();
     _focusNode.dispose();
@@ -110,23 +114,70 @@ class _PreviewScreenState extends State<PreviewScreen> {
         _showPopover();
       }
     });
+    _syncToolbarState();
+  }
+
+  /// Handles button clicks from the native toolbar panel.
+  void _handleToolbarAction(String action) {
+    if (action.startsWith('toolTap:')) {
+      final type = _shapeTypeFromString(action.substring('toolTap:'.length));
+      if (type != null) _handleToolTap(type);
+    } else {
+      switch (action) {
+        case 'undo':
+          widget.annotationState.undo();
+        case 'redo':
+          widget.annotationState.redo();
+        case 'copy':
+          widget.onCopy();
+        case 'save':
+          widget.onSave();
+        case 'discard':
+          widget.onDiscard();
+      }
+    }
+  }
+
+  static ShapeType? _shapeTypeFromString(String name) {
+    return switch (name) {
+      'rectangle' => ShapeType.rectangle,
+      'ellipse' => ShapeType.ellipse,
+      'arrow' => ShapeType.arrow,
+      'line' => ShapeType.line,
+      'pencil' => ShapeType.pencil,
+      'marker' => ShapeType.marker,
+      'number' => ShapeType.number,
+      'text' => ShapeType.text,
+      _ => null,
+    };
+  }
+
+  /// Push current annotation state to the native toolbar buttons.
+  void _syncToolbarState() {
+    widget.windowService.updateToolbarState(
+      activeTool: _activeShapeType?.name,
+      canUndo: widget.annotationState.canUndo,
+      canRedo: widget.annotationState.canRedo,
+      hasAnnotations: widget.annotationState.hasAnnotations,
+    );
   }
 
   void _showPopover() {
     _removePopover();
     _popoverVisible = true;
     _popoverEntry = OverlayEntry(
-      builder: (_) => Stack(
-        children: [
-          ShapePopover(
+      builder: (_) => Align(
+        alignment: Alignment.bottomCenter,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: ShapePopover(
             annotationState: widget.annotationState,
-            layerLink: _settingsLayerLink,
             onDismiss: () {
               _removePopover();
               _popoverVisible = false;
             },
           ),
-        ],
+        ),
       ),
     );
     Overlay.of(context).insert(_popoverEntry!);
@@ -176,6 +227,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
+      // Don't delete annotation while editing text (Backspace is used in TextField).
+      if (widget.annotationState.editingText) return false;
       if (widget.annotationState.selectedIndex != null) {
         widget.annotationState.deleteSelected();
         return true;
@@ -183,6 +236,11 @@ class _PreviewScreenState extends State<PreviewScreen> {
     }
 
     if (event.logicalKey == LogicalKeyboardKey.escape) {
+      // Cancel text editing first.
+      if (widget.annotationState.editingText) {
+        widget.annotationState.cancelTextEdit();
+        return true;
+      }
       if (_popoverVisible) {
         _removePopover();
         return true;
@@ -219,6 +277,8 @@ class _PreviewScreenState extends State<PreviewScreen> {
         }
         _lastImage = image;
 
+        // Keep native toolbar buttons in sync with annotation state.
+        _syncToolbarState();
         _scheduleFocusSync();
         return Focus(
           focusNode: _focusNode,
@@ -262,28 +322,6 @@ class _PreviewScreenState extends State<PreviewScreen> {
               imageDisplayRect: imageDisplayRect,
               imagePixelSize: imageSize,
               enabled: _activeShapeType != null,
-            ),
-
-            // Toolbar.
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: PreviewToolbar(
-                  onCopy: widget.onCopy,
-                  onSave: widget.onSave,
-                  onDiscard: widget.onDiscard,
-                  onToolTap: _handleToolTap,
-                  activeShapeType: _activeShapeType,
-                  hasAnnotations: widget.annotationState.hasAnnotations,
-                  canUndo: widget.annotationState.canUndo,
-                  canRedo: widget.annotationState.canRedo,
-                  onUndo: widget.annotationState.undo,
-                  onRedo: widget.annotationState.redo,
-                  settingsLayerLink: _settingsLayerLink,
-                ),
-              ),
             ),
           ],
         );
@@ -373,37 +411,6 @@ class _PreviewScreenState extends State<PreviewScreen> {
                       ),
                     );
                   },
-                ),
-              ),
-            ),
-
-            // Toolbar.
-            Positioned(
-              bottom: 0,
-              left: 0,
-              right: 0,
-              child: Container(
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [Colors.transparent, Colors.black54],
-                  ),
-                ),
-                child: Center(
-                  child: PreviewToolbar(
-                    onCopy: widget.onCopy,
-                    onSave: widget.onSave,
-                    onDiscard: widget.onDiscard,
-                    onToolTap: _handleToolTap,
-                    activeShapeType: _activeShapeType,
-                    hasAnnotations: widget.annotationState.hasAnnotations,
-                    canUndo: widget.annotationState.canUndo,
-                    canRedo: widget.annotationState.canRedo,
-                    onUndo: widget.annotationState.undo,
-                    onRedo: widget.annotationState.redo,
-                    settingsLayerLink: _settingsLayerLink,
-                  ),
                 ),
               ),
             ),

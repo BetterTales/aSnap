@@ -185,4 +185,95 @@ void main() {
       expect(state.selectedIndex, 0);
     });
   });
+
+  group('text editing', () {
+    test('startTextEdit enters editing mode', () {
+      final state = AnnotationState();
+      expect(state.editingText, isFalse);
+      expect(state.textEditPosition, isNull);
+
+      state.startTextEdit(const Offset(50, 50));
+      expect(state.editingText, isTrue);
+      expect(state.textEditPosition, const Offset(50, 50));
+    });
+
+    test('commitText creates text annotation', () {
+      final state = AnnotationState();
+      // Switch to text tool first (restores per-tool defaults).
+      state.updateSettings(
+        const DrawingSettings(shapeType: ShapeType.text, fontFamily: 'Georgia'),
+      );
+      // Per-tool default applies 9.0 strokeWidth (36px font) for text.
+      expect(state.settings.strokeWidth, 9.0);
+      // Then set the color (within the text tool).
+      state.updateSettings(
+        state.settings.copyWith(color: const Color(0xFF00FF00)),
+      );
+
+      state.startTextEdit(const Offset(10, 20));
+      state.commitText('Hello', const Offset(80, 44));
+
+      expect(state.editingText, isFalse);
+      expect(state.textEditPosition, isNull);
+      expect(state.annotations.length, 1);
+      final a = state.annotations[0];
+      expect(a.type, ShapeType.text);
+      expect(a.text, 'Hello');
+      expect(a.fontFamily, 'Georgia');
+      expect(a.start, const Offset(10, 20));
+      expect(a.end, const Offset(80, 44));
+      expect(a.color, const Color(0xFF00FF00));
+      expect(a.strokeWidth, 9.0);
+    });
+
+    test('commitText with empty text cancels', () {
+      final state = AnnotationState();
+      state.startTextEdit(const Offset(50, 50));
+      state.commitText('   ', const Offset(100, 70));
+
+      expect(state.editingText, isFalse);
+      expect(state.annotations, isEmpty);
+    });
+
+    test('cancelTextEdit exits editing without commit', () {
+      final state = AnnotationState();
+      state.startTextEdit(const Offset(50, 50));
+      state.cancelTextEdit();
+
+      expect(state.editingText, isFalse);
+      expect(state.textEditPosition, isNull);
+      expect(state.annotations, isEmpty);
+    });
+
+    test('text annotation is auto-selected after commit', () {
+      final state = AnnotationState();
+      state.startTextEdit(const Offset(10, 10));
+      state.commitText('Test', const Offset(60, 30));
+
+      expect(state.selectedIndex, 0);
+    });
+
+    test('text annotation supports undo', () {
+      final state = AnnotationState();
+      state.startTextEdit(const Offset(10, 10));
+      state.commitText('Test', const Offset(60, 30));
+      expect(state.annotations.length, 1);
+
+      state.undo();
+      expect(state.annotations, isEmpty);
+
+      state.redo();
+      expect(state.annotations.length, 1);
+      expect(state.annotations[0].text, 'Test');
+    });
+
+    test('clear resets text editing state', () {
+      final state = AnnotationState();
+      state.startTextEdit(const Offset(50, 50));
+      state.clear();
+
+      expect(state.editingText, isFalse);
+      expect(state.textEditPosition, isNull);
+    });
+  });
 }

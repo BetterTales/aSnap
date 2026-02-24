@@ -6,20 +6,16 @@ import '../state/annotation_state.dart';
 
 /// Floating popover for editing annotation settings (color, stroke, corner radius).
 ///
-/// Anchored to a [CompositedTransformTarget] via [layerLink]. Positioned
-/// above the target with [Alignment.topCenter] → [Alignment.bottomCenter].
-///
-/// Shape selection is handled by individual toolbar buttons; this popover
+/// Shape selection is handled by the native toolbar panel; this popover
 /// only exposes the style settings for the currently active tool.
+/// Positioned by the caller (typically bottom-center of the preview window).
 class ShapePopover extends StatelessWidget {
   final AnnotationState annotationState;
-  final LayerLink layerLink;
   final VoidCallback onDismiss;
 
   const ShapePopover({
     super.key,
     required this.annotationState,
-    required this.layerLink,
     required this.onDismiss,
   });
 
@@ -34,57 +30,55 @@ class ShapePopover extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CompositedTransformFollower(
-      link: layerLink,
-      targetAnchor: Alignment.topCenter,
-      followerAnchor: Alignment.bottomCenter,
-      offset: const Offset(0, -8),
-      child: TapRegion(
-        onTapOutside: (_) => onDismiss(),
-        child: ListenableBuilder(
-          listenable: annotationState,
-          builder: (context, _) {
-            final settings = annotationState.settings;
-            return Material(
-              type: MaterialType.transparency,
-              child: Container(
-                width: 220,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: const Color(0xE6202020),
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.4),
-                      blurRadius: 12,
-                      offset: const Offset(0, 4),
-                    ),
+    return TapRegion(
+      onTapOutside: (_) => onDismiss(),
+      child: ListenableBuilder(
+        listenable: annotationState,
+        builder: (context, _) {
+          final settings = annotationState.settings;
+          return Material(
+            type: MaterialType.transparency,
+            child: Container(
+              width: 220,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xE6202020),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.4),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: DefaultTextStyle(
+                style: const TextStyle(
+                  decoration: TextDecoration.none,
+                  color: Colors.white70,
+                  fontSize: 11,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _buildColorRow(context, settings),
+                    const SizedBox(height: 10),
+                    _buildStrokeSlider(settings),
+                    if (settings.shapeType == ShapeType.rectangle) ...[
+                      const SizedBox(height: 10),
+                      _buildCornerRadiusSlider(settings),
+                    ],
+                    if (settings.shapeType == ShapeType.text) ...[
+                      const SizedBox(height: 10),
+                      _buildFontFamilyPicker(settings),
+                    ],
                   ],
                 ),
-                child: DefaultTextStyle(
-                  style: const TextStyle(
-                    decoration: TextDecoration.none,
-                    color: Colors.white70,
-                    fontSize: 11,
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildColorRow(context, settings),
-                      const SizedBox(height: 10),
-                      _buildStrokeSlider(settings),
-                      if (settings.shapeType == ShapeType.rectangle) ...[
-                        const SizedBox(height: 10),
-                        _buildCornerRadiusSlider(settings),
-                      ],
-                    ],
-                  ),
-                ),
               ),
-            );
-          },
-        ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -119,18 +113,23 @@ class ShapePopover extends StatelessWidget {
   }
 
   Widget _buildStrokeSlider(DrawingSettings settings) {
+    final isText = settings.shapeType == ShapeType.text;
+    final label = isText ? 'Size' : 'Stroke';
+    final valueLabel = isText
+        ? '${(settings.strokeWidth * 4).round()}px'
+        : '${settings.strokeWidth.round()}px';
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Text(
-              'Stroke',
-              style: TextStyle(color: Colors.white70, fontSize: 11),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white70, fontSize: 11),
             ),
             Text(
-              '${settings.strokeWidth.round()}px',
+              valueLabel,
               style: const TextStyle(color: Colors.white54, fontSize: 11),
             ),
           ],
@@ -189,6 +188,47 @@ class ShapePopover extends StatelessWidget {
               },
             ),
           ),
+        ),
+      ],
+    );
+  }
+
+  /// Font family options: display name → fontFamily value.
+  static const _fontFamilies = <String, String?>{
+    'Sans-serif': null,
+    'Serif': 'Georgia',
+    'Monospace': 'Courier New',
+    'Handwriting': 'Comic Sans MS',
+  };
+
+  Widget _buildFontFamilyPicker(DrawingSettings settings) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Text(
+          'Font',
+          style: TextStyle(color: Colors.white70, fontSize: 11),
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            for (final entry in _fontFamilies.entries)
+              _FontChip(
+                label: entry.key,
+                fontFamily: entry.value,
+                isSelected: settings.fontFamily == entry.value,
+                onTap: () {
+                  annotationState.updateSettings(
+                    settings.copyWith(
+                      fontFamily: entry.value,
+                      clearFontFamily: entry.value == null,
+                    ),
+                  );
+                },
+              ),
+          ],
         ),
       ],
     );
@@ -317,6 +357,51 @@ class _CustomColorButton extends StatelessWidget {
             child: const Text('OK'),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Font family chip
+// ---------------------------------------------------------------------------
+
+class _FontChip extends StatelessWidget {
+  final String label;
+  final String? fontFamily;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _FontChip({
+    required this.label,
+    required this.fontFamily,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? Colors.white.withValues(alpha: 0.2)
+              : Colors.white.withValues(alpha: 0.05),
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(
+            color: isSelected ? Colors.white54 : Colors.white24,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? Colors.white : Colors.white70,
+            fontSize: 11,
+            fontFamily: fontFamily,
+          ),
+        ),
       ),
     );
   }

@@ -1,7 +1,7 @@
 import 'dart:ui';
 
 /// The type of shape annotation.
-enum ShapeType { rectangle, ellipse, arrow, line, pencil, marker, number }
+enum ShapeType { rectangle, ellipse, arrow, line, pencil, marker, number, text }
 
 /// Immutable representation of a single drawn annotation.
 ///
@@ -35,6 +35,12 @@ class Annotation {
   /// Number label for stamp annotations (null for other types).
   final int? label;
 
+  /// Text content for text annotations (null for other types).
+  final String? text;
+
+  /// Font family for text annotations (null = system default sans-serif).
+  final String? fontFamily;
+
   const Annotation({
     required this.type,
     required this.start,
@@ -46,6 +52,8 @@ class Annotation {
     this.controlPoints = const [],
     this.points = const [],
     this.label,
+    this.text,
+    this.fontFamily,
   });
 
   /// Whether this annotation is a freehand type (pencil or marker).
@@ -53,6 +61,12 @@ class Annotation {
 
   /// Whether this annotation is a point-placed stamp (no drag sizing).
   bool get isStamp => type == ShapeType.number;
+
+  /// Whether this annotation is a text annotation.
+  bool get isText => type == ShapeType.text;
+
+  /// Base font size for text annotations, derived from stroke width.
+  double get fontSize => strokeWidth * 4;
 
   /// Circle radius for number stamps, derived from stroke width.
   double get stampRadius => strokeWidth * 4;
@@ -90,6 +104,8 @@ class Annotation {
     controlPoints: controlPoints,
     points: points,
     label: label,
+    text: text,
+    fontFamily: fontFamily,
   );
 
   Annotation withConstrained(bool value) => Annotation(
@@ -103,6 +119,8 @@ class Annotation {
     controlPoints: controlPoints,
     points: points,
     label: label,
+    text: text,
+    fontFamily: fontFamily,
   );
 
   /// Returns a copy with the control point at [index] replaced by [point].
@@ -120,6 +138,8 @@ class Annotation {
       controlPoints: updated,
       points: points,
       label: label,
+      text: text,
+      fontFamily: fontFamily,
     );
   }
 
@@ -137,6 +157,8 @@ class Annotation {
       controlPoints: [...controlPoints, point],
       points: points,
       label: label,
+      text: text,
+      fontFamily: fontFamily,
     );
   }
 
@@ -154,6 +176,8 @@ class Annotation {
       controlPoints: updated,
       points: points,
       label: label,
+      text: text,
+      fontFamily: fontFamily,
     );
   }
 
@@ -170,6 +194,8 @@ class Annotation {
       controlPoints: controlPoints,
       points: [...points, point],
       label: label,
+      text: text,
+      fontFamily: fontFamily,
     );
   }
 
@@ -186,6 +212,44 @@ class Annotation {
       controlPoints: controlPoints,
       points: newPoints,
       label: label,
+      text: text,
+      fontFamily: fontFamily,
+    );
+  }
+
+  /// Returns a copy with the given [newText] content.
+  Annotation withText(String newText) {
+    return Annotation(
+      type: type,
+      start: start,
+      end: end,
+      color: color,
+      strokeWidth: strokeWidth,
+      cornerRadius: cornerRadius,
+      constrained: constrained,
+      controlPoints: controlPoints,
+      points: points,
+      label: label,
+      text: newText,
+      fontFamily: fontFamily,
+    );
+  }
+
+  /// Returns a copy with all positions shifted by [delta].
+  Annotation translated(Offset delta) {
+    return Annotation(
+      type: type,
+      start: start + delta,
+      end: end + delta,
+      color: color,
+      strokeWidth: strokeWidth,
+      cornerRadius: cornerRadius,
+      constrained: constrained,
+      controlPoints: [for (final cp in controlPoints) cp + delta],
+      points: [for (final p in points) p + delta],
+      label: label,
+      text: text,
+      fontFamily: fontFamily,
     );
   }
 }

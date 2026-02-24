@@ -54,9 +54,57 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
   bool _draggingHandle = false;
   AnnHandle? _activeHandle;
 
+  // Text move drag state.
+  bool _movingAnnotation = false;
+  Offset? _moveStartImagePoint;
+
   // Double-click detection.
   DateTime? _lastPointerDown;
   Offset? _lastPointerDownPos;
+
+  // Text editing.
+  final TextEditingController _textController = TextEditingController();
+  final FocusNode _textFocusNode = FocusNode();
+  bool _wasEditingText = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.annotationState.addListener(_onAnnotationStateChanged);
+  }
+
+  @override
+  void didUpdateWidget(AnnotationOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.annotationState != widget.annotationState) {
+      oldWidget.annotationState.removeListener(_onAnnotationStateChanged);
+      widget.annotationState.addListener(_onAnnotationStateChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.annotationState.removeListener(_onAnnotationStateChanged);
+    _textController.dispose();
+    _textFocusNode.dispose();
+    super.dispose();
+  }
+
+  /// Clears the text controller and requests focus when text editing starts.
+  ///
+  /// This handles both modes: when [handlePointerEvents] is `true` (overlay
+  /// manages events) and `false` (parent calls [AnnotationState.startTextEdit]
+  /// directly without access to the overlay's private controller).
+  void _onAnnotationStateChanged() {
+    final editing = widget.annotationState.editingText;
+    if (editing && !_wasEditingText) {
+      _textController.clear();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _textFocusNode.requestFocus();
+      });
+    }
+    _wasEditingText = editing;
+  }
 
   Offset _widgetToImage(Offset widgetPoint) {
     final scaleX = widget.imagePixelSize.width / widget.imageDisplayRect.width;
@@ -65,6 +113,16 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
     return Offset(
       (widgetPoint.dx - widget.imageDisplayRect.left) * scaleX,
       (widgetPoint.dy - widget.imageDisplayRect.top) * scaleY,
+    );
+  }
+
+  Offset _imageToWidget(Offset imagePoint) {
+    final scaleX = widget.imageDisplayRect.width / widget.imagePixelSize.width;
+    final scaleY =
+        widget.imageDisplayRect.height / widget.imagePixelSize.height;
+    return Offset(
+      widget.imageDisplayRect.left + imagePoint.dx * scaleX,
+      widget.imageDisplayRect.top + imagePoint.dy * scaleY,
     );
   }
 
@@ -78,6 +136,14 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
     if (!widget.enabled) return;
     // Only handle primary button.
     if (event.buttons != kPrimaryButton) return;
+
+    // Commit any in-progress text edit on click-away. Don't start a new
+    // action on the same click — the user must click again.
+    if (widget.annotationState.editingText) {
+      _commitTextEdit();
+      return;
+    }
+
     // Ignore clicks outside the image area.
     if (!widget.imageDisplayRect.contains(event.localPosition)) return;
 
@@ -112,6 +178,17 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
         state.beginEdit();
         return;
       }
+
+      // 3b. Text/stamp body hit on selected annotation → start move drag.
+      if (state.selectedAnnotation!.isText ||
+          state.selectedAnnotation!.isStamp) {
+        if (state.selectedAnnotation!.boundingRect.contains(imagePoint)) {
+          _movingAnnotation = true;
+          _moveStartImagePoint = imagePoint;
+          state.beginEdit();
+          return;
+        }
+      }
     }
 
     // 4. Check shape stroke hit → select.
@@ -121,16 +198,32 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
       return;
     }
 
-    // 5. Empty space → deselect. Stamp tools commit immediately; others drag.
+    // 5. Empty space → deselect. Stamp/text tools commit immediately; others drag.
     state.deselectAnnotation();
     if (state.settings.shapeType == ShapeType.number) {
       state.placeStamp(imagePoint);
+      return;
+    }
+    if (state.settings.shapeType == ShapeType.text) {
+      _beginTextEdit(imagePoint);
       return;
     }
     state.startDrawing(imagePoint);
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    // Move drag for text annotations.
+    if (_movingAnnotation && _moveStartImagePoint != null) {
+      final imagePoint = _widgetToImage(event.localPosition);
+      final delta = imagePoint - _moveStartImagePoint!;
+      _moveStartImagePoint = imagePoint;
+      final selected = widget.annotationState.selectedAnnotation;
+      if (selected != null) {
+        widget.annotationState.updateSelected(selected.translated(delta));
+      }
+      return;
+    }
+
     if (_draggingHandle && _activeHandle != null) {
       final imagePoint = _widgetToImage(event.localPosition);
       final state = widget.annotationState;
@@ -159,6 +252,12 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    if (_movingAnnotation) {
+      _movingAnnotation = false;
+      _moveStartImagePoint = null;
+      widget.annotationState.commitEdit();
+      return;
+    }
     if (_draggingHandle) {
       _draggingHandle = false;
       _activeHandle = null;
@@ -167,6 +266,47 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
     }
     if (widget.annotationState.activeAnnotation == null) return;
     widget.annotationState.finishDrawing();
+  }
+
+  void _beginTextEdit(Offset imagePoint) {
+    // Controller clearing and focus request are handled by
+    // _onAnnotationStateChanged when editingText transitions to true.
+    widget.annotationState.startTextEdit(imagePoint);
+  }
+
+  void _commitTextEdit() {
+    final state = widget.annotationState;
+    if (!state.editingText || state.textEditPosition == null) return;
+
+    final content = _textController.text;
+    if (content.trim().isEmpty) {
+      state.cancelTextEdit();
+      return;
+    }
+
+    // Compute the bounding box end from the text layout.
+    final baseFontSize = state.settings.strokeWidth * 4;
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: content,
+        style: TextStyle(
+          fontSize: baseFontSize,
+          fontFamily: state.settings.fontFamily,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+
+    final start = state.textEditPosition!;
+    final boundingEnd = Offset(
+      start.dx + textPainter.width,
+      start.dy + textPainter.height,
+    );
+    state.commitText(content, boundingEnd);
+  }
+
+  void _cancelTextEdit() {
+    widget.annotationState.cancelTextEdit();
   }
 
   void _handleDoubleClick(Offset imagePoint) {
@@ -206,14 +346,72 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
     state.commitEdit();
   }
 
+  Widget _buildTextEditOverlay() {
+    final state = widget.annotationState;
+    if (!state.editingText || state.textEditPosition == null) {
+      return const SizedBox.shrink();
+    }
+
+    final widgetPos = _imageToWidget(state.textEditPosition!);
+    final scale = widget.imageDisplayRect.width / widget.imagePixelSize.width;
+    final widgetFontSize = state.settings.strokeWidth * 4 * scale;
+
+    return Positioned(
+      left: widgetPos.dx,
+      top: widgetPos.dy,
+      child: Material(
+        type: MaterialType.transparency,
+        child: IntrinsicWidth(
+          child: KeyboardListener(
+            focusNode: FocusNode(), // passive listener, real focus on TextField
+            onKeyEvent: (event) {
+              if (event is KeyDownEvent &&
+                  event.logicalKey == LogicalKeyboardKey.escape) {
+                _cancelTextEdit();
+              }
+            },
+            child: TextField(
+              controller: _textController,
+              focusNode: _textFocusNode,
+              autofocus: true,
+              style: TextStyle(
+                color: state.settings.color,
+                fontSize: widgetFontSize,
+                fontFamily: state.settings.fontFamily,
+                height: 1.0,
+                decoration: TextDecoration.none,
+              ),
+              cursorColor: state.settings.color,
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
+                isDense: true,
+                isCollapsed: true,
+              ),
+              onSubmitted: (_) => _commitTextEdit(),
+              onTapOutside: (_) {
+                if (widget.annotationState.editingText) {
+                  _commitTextEdit();
+                }
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: widget.annotationState,
       builder: (context, _) {
+        final movable =
+            widget.annotationState.selectedAnnotation?.isText == true ||
+            widget.annotationState.selectedAnnotation?.isStamp == true;
         final paint = MouseRegion(
           cursor: widget.enabled
-              ? SystemMouseCursors.precise
+              ? (movable ? SystemMouseCursors.move : SystemMouseCursors.precise)
               : MouseCursor.defer,
           child: CustomPaint(
             painter: _ScaledAnnotationPainter(
@@ -227,14 +425,16 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
           ),
         );
 
-        if (!widget.handlePointerEvents) return paint;
+        final content = Stack(children: [paint, _buildTextEditOverlay()]);
+
+        if (!widget.handlePointerEvents) return content;
 
         return Listener(
           onPointerDown: widget.enabled ? _onPointerDown : null,
           onPointerMove: widget.enabled ? _onPointerMove : null,
           onPointerUp: widget.enabled ? _onPointerUp : null,
           behavior: HitTestBehavior.translucent,
-          child: paint,
+          child: content,
         );
       },
     );

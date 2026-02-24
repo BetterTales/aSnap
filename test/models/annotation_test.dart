@@ -263,4 +263,144 @@ void main() {
       expect(a.label, isNull);
     });
   });
+
+  group('Text annotation', () {
+    test('isText returns true for text type', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 10),
+        end: Offset(100, 40),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+      );
+      expect(a.isText, isTrue);
+      expect(a.isFreehand, isFalse);
+      expect(a.isStamp, isFalse);
+    });
+
+    test('isText returns false for other types', () {
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(0, 0),
+        end: Offset(100, 100),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+      );
+      expect(a.isText, isFalse);
+    });
+
+    test('fontSize is strokeWidth * 4', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 10),
+        end: Offset(100, 40),
+        color: Color(0xFFFF0000),
+        strokeWidth: 5,
+        text: 'Hello',
+      );
+      expect(a.fontSize, 20);
+    });
+
+    test('boundingRect uses start/end for text', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 20),
+        end: Offset(100, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+      );
+      final rect = a.boundingRect;
+      expect(rect.left, 10);
+      expect(rect.top, 20);
+      expect(rect.right, 100);
+      expect(rect.bottom, 50);
+    });
+
+    test('text and fontFamily preserved through copy methods', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 10),
+        end: Offset(100, 40),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+        fontFamily: 'Georgia',
+      );
+      expect(a.withEnd(const Offset(200, 80)).text, 'Hello');
+      expect(a.withEnd(const Offset(200, 80)).fontFamily, 'Georgia');
+      expect(a.withConstrained(true).text, 'Hello');
+      expect(a.withConstrained(true).fontFamily, 'Georgia');
+    });
+
+    test('withText creates copy with new text', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 10),
+        end: Offset(100, 40),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+        fontFamily: 'Georgia',
+      );
+      final b = a.withText('World');
+      expect(b.text, 'World');
+      expect(b.fontFamily, 'Georgia'); // preserved
+      expect(b.color, a.color); // preserved
+      expect(a.text, 'Hello'); // immutable
+    });
+
+    test('text defaults to null', () {
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(0, 0),
+        end: Offset(100, 100),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+      );
+      expect(a.text, isNull);
+      expect(a.fontFamily, isNull);
+    });
+  });
+
+  group('translated', () {
+    test('shifts start and end by delta for text annotation', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 20),
+        end: Offset(100, 50),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+        fontFamily: 'Georgia',
+      );
+      final b = a.translated(const Offset(30, -10));
+      expect(b.start, const Offset(40, 10));
+      expect(b.end, const Offset(130, 40));
+      expect(b.text, 'Hello');
+      expect(b.fontFamily, 'Georgia');
+      expect(b.color, a.color);
+      expect(b.strokeWidth, a.strokeWidth);
+      // Original unchanged (immutable).
+      expect(a.start, const Offset(10, 20));
+    });
+
+    test('shifts controlPoints and points', () {
+      final a = Annotation(
+        type: ShapeType.line,
+        start: const Offset(0, 0),
+        end: const Offset(100, 100),
+        color: const Color(0xFFFF0000),
+        strokeWidth: 2,
+        controlPoints: const [Offset(50, 0)],
+        points: const [Offset(10, 10), Offset(20, 20)],
+      );
+      final b = a.translated(const Offset(10, 20));
+      expect(b.start, const Offset(10, 20));
+      expect(b.end, const Offset(110, 120));
+      expect(b.controlPoints, [const Offset(60, 20)]);
+      expect(b.points, [const Offset(20, 30), const Offset(30, 40)]);
+    });
+  });
 }

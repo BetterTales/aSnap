@@ -114,6 +114,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   // -- Annotation handle drag state --
   bool _draggingAnnotationHandle = false;
   AnnHandle? _activeAnnotationHandle;
+
+  // -- Annotation text move drag state --
+  bool _movingAnnotationText = false;
+  Offset? _moveAnnotationStart;
   DateTime? _lastAnnotationPointerDown;
   Offset? _lastAnnotationPointerDownPos;
 
@@ -239,8 +243,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         // In annotation mode: handle selection, handle drags, and drawing.
         if (_activeShapeType != null && _selectionRect != null) {
           if (_selectionRect!.contains(pos)) {
-            final imagePoint = _widgetToImage(pos);
             final state = widget.annotationState!;
+
+            // Commit text edit on click-away; the overlay's onTapOutside
+            // handles the actual commit since handlePointerEvents is false.
+            if (state.editingText) return;
+
+            final imagePoint = _widgetToImage(pos);
 
             // 1. ALWAYS record timing for double-click detection.
             final now = DateTime.now();
@@ -270,6 +279,19 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
                 _activeAnnotationHandle = hit;
                 state.beginEdit();
                 return;
+              }
+
+              // 3b. Text/stamp body hit on selected annotation → start move drag.
+              if (state.selectedAnnotation!.isText ||
+                  state.selectedAnnotation!.isStamp) {
+                if (state.selectedAnnotation!.boundingRect.contains(
+                  imagePoint,
+                )) {
+                  _movingAnnotationText = true;
+                  _moveAnnotationStart = imagePoint;
+                  state.beginEdit();
+                  return;
+                }
               }
             }
 
@@ -352,6 +374,17 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         break;
 
       case _SelectionPhase.selected:
+        // Handle annotation text move drag.
+        if (_movingAnnotationText && _moveAnnotationStart != null) {
+          final imagePoint = _widgetToImage(pos);
+          final delta = imagePoint - _moveAnnotationStart!;
+          _moveAnnotationStart = imagePoint;
+          final state = widget.annotationState!;
+          if (state.selectedAnnotation != null) {
+            state.updateSelected(state.selectedAnnotation!.translated(delta));
+          }
+          return;
+        }
         // Handle annotation handle drag.
         if (_draggingAnnotationHandle && _activeAnnotationHandle != null) {
           final imagePoint = _widgetToImage(pos);
@@ -400,6 +433,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         break;
 
       case _SelectionPhase.selected:
+        if (_movingAnnotationText) {
+          _movingAnnotationText = false;
+          _moveAnnotationStart = null;
+          widget.annotationState?.commitEdit();
+          return;
+        }
         if (_draggingAnnotationHandle) {
           _draggingAnnotationHandle = false;
           _activeAnnotationHandle = null;
@@ -437,6 +476,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     if (state == null) return;
     if (state.settings.shapeType == ShapeType.number) {
       state.placeStamp(imagePoint);
+      return;
+    }
+    if (state.settings.shapeType == ShapeType.text) {
+      state.startTextEdit(imagePoint);
       return;
     }
     state.startDrawing(imagePoint);
@@ -592,6 +635,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
+      // Don't delete annotation while editing text (Backspace is used in TextField).
+      if (widget.annotationState?.editingText == true) return false;
       if (_activeShapeType != null &&
           widget.annotationState?.selectedIndex != null) {
         widget.annotationState!.deleteSelected();
@@ -600,6 +645,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     }
 
     if (event.logicalKey != LogicalKeyboardKey.escape) return false;
+
+    // Cancel text editing first.
+    if (widget.annotationState?.editingText == true) {
+      widget.annotationState!.cancelTextEdit();
+      return false;
+    }
 
     // In annotation mode, Escape unwinds one step at a time.
     if (_popoverVisible) {
@@ -676,8 +727,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 
       case _SelectionPhase.selected:
         if (_selectionRect == null) return SystemMouseCursors.precise;
-        // In annotation mode, use precise cursor inside selection.
+        // In annotation mode, use precise cursor inside selection
+        // (move cursor when a text annotation is selected).
         if (_activeShapeType != null && _selectionRect!.contains(_current)) {
+          if (widget.annotationState?.selectedAnnotation?.isText == true ||
+              widget.annotationState?.selectedAnnotation?.isStamp == true) {
+            return SystemMouseCursors.move;
+          }
           return SystemMouseCursors.precise;
         }
         final handle = hitTestHandle(_current, _selectionRect!);
@@ -802,17 +858,18 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     _removePopover();
     _popoverVisible = true;
     _popoverEntry = OverlayEntry(
-      builder: (_) => Stack(
-        children: [
-          ShapePopover(
+      builder: (_) => Align(
+        alignment: Alignment.bottomCenter,
+        child: Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: ShapePopover(
             annotationState: widget.annotationState!,
-            layerLink: _settingsLayerLink,
             onDismiss: () {
               _removePopover();
               _popoverVisible = false;
             },
           ),
-        ],
+        ),
       ),
     );
     Overlay.of(context).insert(_popoverEntry!);

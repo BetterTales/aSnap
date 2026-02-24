@@ -29,6 +29,11 @@ class MainFlutterWindow: NSWindow {
   // mouse clicks even though the main overlay has ignoresMouseEvents = true.
   private var scrollStopPanel: NSPanel?
 
+  // Floating toolbar panel (annotation tools + actions), separate from the
+  // preview window so it can be dragged outside preview bounds.
+  private var toolbarPanel: NSPanel?
+  private var toolbarContentView: NSView?  // ToolbarContentView (macOS 11+)
+
   /// Append a debug line to ~/asnap_overlay.log (debug builds only).
   private static func log(_ msg: String) {
     #if DEBUG
@@ -589,6 +594,81 @@ class MainFlutterWindow: NSWindow {
         self.scrollStopPanel?.close()
         self.scrollStopPanel = nil
         result(nil)
+
+      // MARK: Floating toolbar panel
+      case "showToolbarPanel":
+        guard #available(macOS 11.0, *) else { result(nil); return }
+        guard let args = call.arguments as? [String: Double],
+              let centerX = args["centerX"],
+              let belowY = args["belowY"] else {
+          result(nil); return
+        }
+
+        let panelWidth: CGFloat = 500
+        let panelHeight: CGFloat = 44
+        let x = centerX - panelWidth / 2
+
+        // Convert CG coordinates (top-left origin) to NS coordinates (bottom-left).
+        let screenHeight = self.overlayScreenFrame?.height ?? NSScreen.main?.frame.height ?? 0
+        let nsY = screenHeight - belowY - panelHeight
+
+        if let existing = self.toolbarPanel {
+          existing.setFrame(NSRect(x: x, y: nsY, width: panelWidth, height: panelHeight), display: true)
+          existing.orderFront(nil)
+        } else {
+          let panel = NSPanel(
+            contentRect: NSRect(x: x, y: nsY, width: panelWidth, height: panelHeight),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+          )
+          panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+          panel.backgroundColor = .clear
+          panel.isOpaque = false
+          panel.hasShadow = true
+          panel.isMovableByWindowBackground = true
+          panel.collectionBehavior = [.moveToActiveSpace]
+          panel.ignoresMouseEvents = false
+
+          let contentView = ToolbarContentView(
+            frame: NSRect(x: 0, y: 0, width: panelWidth, height: panelHeight)
+          )
+          contentView.autoresizingMask = [.width, .height]
+          contentView.onAction = { [weak self] action in
+            DispatchQueue.main.async {
+              self?.flutterChannel?.invokeMethod("onToolbarAction", arguments: action)
+            }
+          }
+          panel.contentView = contentView
+          self.toolbarPanel = panel
+          self.toolbarContentView = contentView
+          panel.orderFront(nil)
+        }
+        result(nil)
+
+      case "hideToolbarPanel":
+        self.toolbarPanel?.close()
+        self.toolbarPanel = nil
+        self.toolbarContentView = nil
+        result(nil)
+
+      case "updateToolbarState":
+        guard #available(macOS 11.0, *) else { result(nil); return }
+        guard let args = call.arguments as? [String: Any] else {
+          result(nil); return
+        }
+        let activeTool = args["activeTool"] as? String
+        let canUndo = args["canUndo"] as? Bool ?? false
+        let canRedo = args["canRedo"] as? Bool ?? false
+        let hasAnnotations = args["hasAnnotations"] as? Bool ?? false
+        (self.toolbarContentView as? ToolbarContentView)?.updateState(
+          activeTool: activeTool,
+          canUndo: canUndo,
+          canRedo: canRedo,
+          hasAnnotations: hasAnnotations
+        )
+        result(nil)
+
       case "registerTrayShortcuts":
         // Store shortcut mapping; tray_manager handles menu creation and display.
         // We patch keyEquivalent on menu items via didBeginTrackingNotification.
@@ -929,6 +1009,10 @@ class MainFlutterWindow: NSWindow {
     // Remove scroll stop button panel
     self.scrollStopPanel?.close()
     self.scrollStopPanel = nil
+    // Remove floating toolbar panel
+    self.toolbarPanel?.close()
+    self.toolbarPanel = nil
+    self.toolbarContentView = nil
     // Remove space-change observer
     if let obs = self.spaceChangeObserver {
       NSWorkspace.shared.notificationCenter.removeObserver(obs)
@@ -1125,5 +1209,213 @@ private class ScrollStopClickView: NSView {
 
   override func resetCursorRects() {
     addCursorRect(bounds, cursor: .pointingHand)
+  }
+}
+
+// MARK: - ToolbarContentView
+
+/// Native NSView that draws the annotation toolbar as a dark pill with
+/// SF Symbol icon buttons.  Lives inside a borderless NSPanel that floats
+/// independently of the Flutter preview window.
+@available(macOS 11.0, *)
+private class ToolbarContentView: NSView {
+
+  /// Fired when a button is tapped; argument is the action string
+  /// (e.g. "toolTap:rectangle", "undo", "copy").
+  var onAction: ((String) -> Void)?
+
+  // ── Action string mapping ──
+  private static let toolActions: [(symbol: String, action: String, label: String)] = [
+    ("rectangle",            "toolTap:rectangle", "Rectangle"),
+    ("circle",               "toolTap:ellipse",   "Ellipse"),
+    ("arrow.right",          "toolTap:arrow",     "Arrow"),
+    ("minus",                "toolTap:line",      "Line"),
+    ("pencil",               "toolTap:pencil",    "Pencil"),
+    ("paintbrush.pointed",   "toolTap:marker",    "Marker"),
+    ("1.circle",             "toolTap:number",    "Number"),
+    ("textformat",           "toolTap:text",      "Text"),
+  ]
+
+  // ── Buttons ──
+  private var toolButtons: [NSButton] = []
+  private var undoButton: NSButton!
+  private var redoButton: NSButton!
+  private var copyButton: NSButton!
+  private var saveButton: NSButton!
+  private var discardButton: NSButton!
+
+  // ── Active-tool highlight layers (one per tool button) ──
+  private var highlightLayers: [CALayer] = []
+  private var activeTool: String?
+
+  override var isOpaque: Bool { false }
+  override func draw(_ dirtyRect: NSRect) { /* empty — layer draws background */ }
+
+  override init(frame: NSRect) {
+    super.init(frame: frame)
+    wantsLayer = true
+
+    // Pill background — drawn by the layer itself.
+    // masksToBounds clips any AppKit subview backgrounds to the rounded rect.
+    layer!.backgroundColor = NSColor(white: 0.125, alpha: 0.9).cgColor
+    layer!.cornerRadius = 22
+    layer!.masksToBounds = true
+
+    // Build horizontal stack of buttons.
+    let stack = NSStackView()
+    stack.orientation = .horizontal
+    stack.spacing = 2
+    stack.alignment = .centerY
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(stack)
+
+    // Pad 8px horizontally, center vertically.
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+      stack.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+      stack.centerYAnchor.constraint(equalTo: centerYAnchor),
+    ])
+
+    // ── Tool buttons ──
+    for (index, tool) in Self.toolActions.enumerated() {
+      let btn = makeButton(symbol: tool.symbol, tooltip: tool.label, tag: index)
+      toolButtons.append(btn)
+      stack.addArrangedSubview(btn)
+    }
+
+    // ── Spacing before undo/redo ──
+    let spacer1 = NSView()
+    spacer1.translatesAutoresizingMaskIntoConstraints = false
+    spacer1.widthAnchor.constraint(equalToConstant: 2).isActive = true
+    stack.addArrangedSubview(spacer1)
+
+    // ── Undo / Redo ──
+    undoButton = makeButton(symbol: "arrow.uturn.backward", tooltip: "Undo", tag: 100)
+    redoButton = makeButton(symbol: "arrow.uturn.forward", tooltip: "Redo", tag: 101)
+    undoButton.isEnabled = false
+    redoButton.isEnabled = false
+    stack.addArrangedSubview(undoButton)
+    stack.addArrangedSubview(redoButton)
+
+    // ── Divider ──
+    let divider = NSView()
+    divider.wantsLayer = true
+    divider.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.2).cgColor
+    divider.translatesAutoresizingMaskIntoConstraints = false
+    divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+    divider.heightAnchor.constraint(equalToConstant: 18).isActive = true
+    let dividerWrap = NSStackView()
+    dividerWrap.orientation = .horizontal
+    dividerWrap.spacing = 4
+    dividerWrap.addArrangedSubview(NSView()) // spacer
+    dividerWrap.addArrangedSubview(divider)
+    dividerWrap.addArrangedSubview(NSView()) // spacer
+    // Make the spacer views collapse to zero width
+    for v in dividerWrap.arrangedSubviews where v !== divider {
+      v.widthAnchor.constraint(equalToConstant: 2).isActive = true
+    }
+    stack.addArrangedSubview(dividerWrap)
+
+    // ── Action buttons ──
+    copyButton = makeButton(symbol: "doc.on.doc", tooltip: "Copy", tag: 200)
+    saveButton = makeButton(symbol: "square.and.arrow.down", tooltip: "Save", tag: 201)
+    discardButton = makeButton(symbol: "xmark", tooltip: "Discard", tag: 202)
+    discardButton.contentTintColor = NSColor(red: 0.94, green: 0.6, blue: 0.6, alpha: 1.0)
+    stack.addArrangedSubview(copyButton)
+    stack.addArrangedSubview(saveButton)
+    stack.addArrangedSubview(discardButton)
+
+    // ── Highlight layers for tool buttons ──
+    for btn in toolButtons {
+      let hl = CALayer()
+      hl.backgroundColor = NSColor.clear.cgColor
+      hl.cornerRadius = 17
+      btn.layer?.insertSublayer(hl, at: 0)
+      highlightLayers.append(hl)
+    }
+  }
+
+  required init?(coder: NSCoder) { fatalError("init(coder:) not implemented") }
+
+  // ── Layout ──
+
+  override func layout() {
+    super.layout()
+    // Resize highlight layers to match button bounds.
+    for (index, btn) in toolButtons.enumerated() {
+      highlightLayers[index].frame = btn.bounds
+    }
+  }
+
+  // ── Button factory ──
+
+  private func makeButton(symbol: String, tooltip: String, tag: Int) -> NSButton {
+    let btn = NSButton(frame: NSRect(x: 0, y: 0, width: 34, height: 34))
+    btn.bezelStyle = .regularSquare
+    btn.isBordered = false
+    btn.imagePosition = .imageOnly
+    btn.imageScaling = .scaleNone
+    btn.toolTip = tooltip
+    btn.tag = tag
+    btn.target = self
+    btn.action = #selector(buttonClicked(_:))
+    btn.wantsLayer = true
+    btn.layer?.backgroundColor = NSColor.clear.cgColor
+    btn.translatesAutoresizingMaskIntoConstraints = false
+    btn.widthAnchor.constraint(equalToConstant: 34).isActive = true
+    btn.heightAnchor.constraint(equalToConstant: 34).isActive = true
+
+    let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+    if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip) {
+      btn.image = img.withSymbolConfiguration(config) ?? img
+    }
+    btn.contentTintColor = .white
+    return btn
+  }
+
+  // ── Click handler ──
+
+  @objc private func buttonClicked(_ sender: NSButton) {
+    let tag = sender.tag
+    let action: String
+    if tag < Self.toolActions.count {
+      action = Self.toolActions[tag].action
+    } else {
+      switch tag {
+      case 100: action = "undo"
+      case 101: action = "redo"
+      case 200: action = "copy"
+      case 201: action = "save"
+      case 202: action = "discard"
+      default: return
+      }
+    }
+    onAction?(action)
+  }
+
+  // ── State sync ──
+
+  func updateState(activeTool: String?, canUndo: Bool, canRedo: Bool, hasAnnotations: Bool) {
+    self.activeTool = activeTool
+
+    // Tool highlight
+    for (index, tool) in Self.toolActions.enumerated() {
+      let isActive = (tool.action == "toolTap:\(activeTool ?? "")")
+      highlightLayers[index].backgroundColor = isActive
+        ? NSColor.white.withAlphaComponent(0.15).cgColor
+        : NSColor.clear.cgColor
+    }
+
+    // Undo / Redo
+    undoButton.isEnabled = canUndo
+    undoButton.alphaValue = canUndo ? 1.0 : 0.3
+    redoButton.isEnabled = canRedo
+    redoButton.alphaValue = canRedo ? 1.0 : 0.3
+  }
+
+  // ── Cursor ──
+
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: .arrow)
   }
 }

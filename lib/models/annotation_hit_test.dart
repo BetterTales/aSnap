@@ -38,6 +38,10 @@ bool _hitTestShape(Offset point, Annotation annotation, double threshold) {
       return _distanceToPolyline(point, annotation) <= t;
     case ShapeType.number:
       return (point - annotation.start).distance <= annotation.stampRadius + 2;
+    case ShapeType.text:
+      // Hit test against the text bounding box with padding.
+      final textRect = annotation.boundingRect.inflate(t);
+      return textRect.contains(point);
   }
 }
 

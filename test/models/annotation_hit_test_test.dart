@@ -259,6 +259,54 @@ void main() {
     });
   });
 
+  group('Text annotation hit test', () {
+    test('hits text inside bounding box', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.text,
+          start: Offset(10, 10),
+          end: Offset(100, 40),
+          color: Color(0xFFFF0000),
+          strokeWidth: 6,
+          text: 'Hello',
+        ),
+      ];
+      final idx = hitTestAnnotations(const Offset(50, 25), annotations);
+      expect(idx, 0);
+    });
+
+    test('hits text near edge of bounding box', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.text,
+          start: Offset(10, 10),
+          end: Offset(100, 40),
+          color: Color(0xFFFF0000),
+          strokeWidth: 6,
+          text: 'Hello',
+        ),
+      ];
+      // Near right edge, within inflated threshold
+      final idx = hitTestAnnotations(const Offset(103, 25), annotations);
+      expect(idx, 0);
+    });
+
+    test('misses text when far outside bounding box', () {
+      final annotations = [
+        const Annotation(
+          type: ShapeType.text,
+          start: Offset(10, 10),
+          end: Offset(100, 40),
+          color: Color(0xFFFF0000),
+          strokeWidth: 6,
+          text: 'Hello',
+        ),
+      ];
+      final idx = hitTestAnnotations(const Offset(200, 200), annotations);
+      expect(idx, isNull);
+    });
+  });
+
   group('distanceToLineSegment', () {
     test('point perpendicular to segment', () {
       final d = distanceToLineSegment(

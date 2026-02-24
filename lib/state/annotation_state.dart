@@ -11,12 +11,14 @@ class DrawingSettings {
   final Color color;
   final double strokeWidth;
   final double cornerRadius;
+  final String? fontFamily;
 
   const DrawingSettings({
     this.shapeType = ShapeType.rectangle,
     this.color = const Color(0xFFFF0000),
     this.strokeWidth = 6.0,
     this.cornerRadius = 20,
+    this.fontFamily,
   });
 
   DrawingSettings copyWith({
@@ -24,11 +26,14 @@ class DrawingSettings {
     Color? color,
     double? strokeWidth,
     double? cornerRadius,
+    String? fontFamily,
+    bool clearFontFamily = false,
   }) => DrawingSettings(
     shapeType: shapeType ?? this.shapeType,
     color: color ?? this.color,
     strokeWidth: strokeWidth ?? this.strokeWidth,
     cornerRadius: cornerRadius ?? this.cornerRadius,
+    fontFamily: clearFontFamily ? null : (fontFamily ?? this.fontFamily),
   );
 }
 
@@ -48,6 +53,12 @@ class AnnotationState extends ChangeNotifier {
   /// Current drawing settings (persist across shapes).
   DrawingSettings _settings = const DrawingSettings();
   DrawingSettings get settings => _settings;
+
+  /// Per-tool settings memory (preserved across tool switches).
+  final Map<ShapeType, double> _toolStrokeWidth = {
+    ShapeType.text: 9.0, // 9 × 4 = 36px default
+  };
+  final Map<ShapeType, Color> _toolColor = {};
 
   /// All committed annotations.
   List<Annotation> get annotations => _history[_historyIndex];
@@ -95,6 +106,59 @@ class AnnotationState extends ChangeNotifier {
     );
     _commitAnnotation(stamp);
     _selectedIndex = annotations.length - 1;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Text editing
+  // ---------------------------------------------------------------------------
+
+  /// Whether inline text editing is active (TextField overlay shown).
+  bool _editingText = false;
+  bool get editingText => _editingText;
+
+  /// Position in image coordinates where the text is being placed.
+  Offset? _textEditPosition;
+  Offset? get textEditPosition => _textEditPosition;
+
+  /// Starts inline text editing at [point] (image pixel coordinates).
+  void startTextEdit(Offset point) {
+    _editingText = true;
+    _textEditPosition = point;
+    notifyListeners();
+  }
+
+  /// Commits the text annotation with the given [content].
+  ///
+  /// [boundingEnd] is the bottom-right of the text bounding box in image
+  /// coordinates, computed by the overlay from the TextPainter layout.
+  void commitText(String content, Offset boundingEnd) {
+    if (!_editingText || _textEditPosition == null) return;
+    _editingText = false;
+    if (content.trim().isEmpty) {
+      _textEditPosition = null;
+      notifyListeners();
+      return;
+    }
+    final annotation = Annotation(
+      type: ShapeType.text,
+      start: _textEditPosition!,
+      end: boundingEnd,
+      color: _settings.color,
+      strokeWidth: _settings.strokeWidth,
+      text: content,
+      fontFamily: _settings.fontFamily,
+    );
+    _textEditPosition = null;
+    _commitAnnotation(annotation);
+    _selectedIndex = annotations.length - 1;
+  }
+
+  /// Cancels the current text editing session.
+  void cancelTextEdit() {
+    if (!_editingText) return;
+    _editingText = false;
+    _textEditPosition = null;
+    notifyListeners();
   }
 
   // ---------------------------------------------------------------------------
@@ -186,6 +250,18 @@ class AnnotationState extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   void updateSettings(DrawingSettings newSettings) {
+    // Save/restore per-tool color and strokeWidth when switching tools.
+    if (newSettings.shapeType != _settings.shapeType) {
+      // Save current tool's settings.
+      _toolStrokeWidth[_settings.shapeType] = _settings.strokeWidth;
+      _toolColor[_settings.shapeType] = _settings.color;
+      // Restore target tool's settings (fall back to defaults).
+      final target = newSettings.shapeType;
+      newSettings = newSettings.copyWith(
+        strokeWidth: _toolStrokeWidth[target] ?? _settings.strokeWidth,
+        color: _toolColor[target] ?? _settings.color,
+      );
+    }
     _settings = newSettings;
     notifyListeners();
   }
@@ -270,6 +346,12 @@ class AnnotationState extends ChangeNotifier {
     _selectedIndex = null;
     _editing = false;
     _preEditSnapshot = null;
+    _editingText = false;
+    _textEditPosition = null;
+    _toolStrokeWidth
+      ..clear()
+      ..[ShapeType.text] = 9.0;
+    _toolColor.clear();
     notifyListeners();
   }
 }

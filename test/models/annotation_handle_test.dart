@@ -83,6 +83,19 @@ void main() {
       final handles = annotationHandles(a);
       expect(handles, isEmpty);
     });
+
+    test('text returns no handles (size via slider, move via drag)', () {
+      const a = Annotation(
+        type: ShapeType.text,
+        start: Offset(10, 10),
+        end: Offset(100, 40),
+        color: Color(0xFFFF0000),
+        strokeWidth: 6,
+        text: 'Hello',
+      );
+      final handles = annotationHandles(a);
+      expect(handles, isEmpty);
+    });
   });
 
   group('hitTestAnnotationHandle', () {
@@ -181,5 +194,7 @@ void main() {
       final result = applyAnnotationHandleDrag(a, handle, const Offset(50, 30));
       expect(result.controlPoints, [const Offset(50, 30)]);
     });
+
+    // Text no longer has handles (removed in favor of move-drag and size slider).
   });
 }

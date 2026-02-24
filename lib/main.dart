@@ -80,6 +80,7 @@ void main() async {
     ASnapApp(
       appState: _appState,
       annotationState: _annotationState,
+      windowService: _windowService,
       onCopy: _handleCopy,
       onSave: _handleSave,
       onDiscard: _handleDiscard,
@@ -214,12 +215,23 @@ Future<void> _showPreviewWithImage(
   required Offset targetScreenOrigin,
 }) async {
   _appState.setCapturedImage(image);
-  await _windowService.showPreview(
+  final previewSize = await _windowService.showPreview(
     imageWidth: image.width,
     imageHeight: image.height,
     screenSize: targetScreenSize,
     screenOrigin: targetScreenOrigin,
   );
+  // Show native floating toolbar below the preview window.
+  if (previewSize != null) {
+    final centerX = targetScreenOrigin.dx + targetScreenSize.width / 2;
+    final previewTop =
+        targetScreenOrigin.dy +
+        (targetScreenSize.height - previewSize.height) / 2;
+    final belowY = previewTop + previewSize.height + 8;
+    unawaited(
+      _windowService.showToolbarPanel(centerX: centerX, belowY: belowY),
+    );
+  }
   // setCapturedImage() happens before the window is visible. Rebuild once more
   // after show/focus so PreviewScreen can re-run focus sync reliably.
   _appState.nudge();
@@ -251,6 +263,7 @@ Future<void> _handleFullScreenCapture() async {
   _escActionInProgress = false;
   await _windowService.stopEscMonitor();
   _appState.setCapturing();
+  unawaited(_windowService.hideToolbarPanel());
   await _windowService.hidePreview();
 
   // Native capture targets the display under the cursor
@@ -274,6 +287,7 @@ Future<void> _handleRegionCapture() async {
   // Allow re-entry from selecting state (display-change re-trigger).
   _appState.setCapturing();
   _regionCaptureCancelled = false;
+  unawaited(_windowService.hideToolbarPanel());
   await _windowService.hidePreview();
   _clearDisplayCaches();
 
@@ -523,6 +537,14 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
     } else {
       _appState.setCapturedImage(cropped);
       await _windowService.showPreviewInPlace(selectionRect: logicalRect);
+      // Show native toolbar below the in-place preview.
+      final clampedH = logicalRect.height.clamp(300.0, double.infinity);
+      final centerX = logicalRect.center.dx + screenOrigin.dx;
+      final bottom =
+          logicalRect.center.dy - clampedH / 2 + clampedH + screenOrigin.dy;
+      unawaited(
+        _windowService.showToolbarPanel(centerX: centerX, belowY: bottom + 8),
+      );
       // Window is resized/focused after setCapturedImage(); force another
       // rebuild so focus sync runs with the visible window.
       _appState.nudge();
@@ -673,7 +695,8 @@ Future<void> _handleCopy() async {
   // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
   final annotations = _annotationState.annotations;
-  // Hide window BEFORE clearing state.
+  // Hide toolbar + window BEFORE clearing state.
+  unawaited(_windowService.hideToolbarPanel());
   await _windowService.hidePreview();
   _appState.clear();
   _annotationState.clear();
@@ -717,6 +740,7 @@ Future<void> _handleSave() async {
     }
   }
   // Save dialog closed — now hide + clear.
+  unawaited(_windowService.hideToolbarPanel());
   await _windowService.hidePreview();
   _appState.clear();
   _annotationState.clear();
@@ -727,7 +751,8 @@ Future<void> _handleSave() async {
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
-  // Hide window BEFORE clearing state.
+  // Hide toolbar + window BEFORE clearing state.
+  unawaited(_windowService.hideToolbarPanel());
   await _windowService.hidePreview();
   _appState.clear();
   _annotationState.clear();
@@ -930,12 +955,22 @@ Future<void> _handleScrollFinish() async {
     // Calling hidePreview() first fires
     // setAlwaysOnTop(false) via unawaited() which can race with the property
     // changes in showScrollPreview.
-    await _windowService.showScrollPreview(
+    final scrollSize = await _windowService.showScrollPreview(
       imageWidth: imageWidth,
       imageHeight: imageHeight,
       screenSize: screenSize,
       screenOrigin: screenOrigin,
     );
+    // Show native toolbar below the scroll preview.
+    if (scrollSize != null) {
+      final centerX = screenOrigin.dx + screenSize.width / 2;
+      final previewTop =
+          screenOrigin.dy + (screenSize.height - scrollSize.height) / 2;
+      final belowY = previewTop + scrollSize.height + 8;
+      unawaited(
+        _windowService.showToolbarPanel(centerX: centerX, belowY: belowY),
+      );
+    }
     _appState.nudge();
     // No native Esc monitor — PreviewScreen handles Escape via
     // HardwareKeyboard (supports shapes mode unwinding).

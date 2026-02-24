@@ -84,6 +84,9 @@ class AnnotationPainter extends CustomPainter {
 
       case ShapeType.number:
         _drawNumberStamp(canvas, annotation);
+
+      case ShapeType.text:
+        _drawText(canvas, annotation);
     }
   }
 
@@ -257,6 +260,25 @@ class AnnotationPainter extends CustomPainter {
     );
   }
 
+  void _drawText(Canvas canvas, Annotation a) {
+    final content = a.text;
+    if (content == null || content.isEmpty) return;
+
+    final textPainter = TextPainter(
+      text: TextSpan(
+        text: content,
+        style: TextStyle(
+          color: a.color,
+          fontSize: a.fontSize,
+          fontFamily: a.fontFamily,
+        ),
+      ),
+      textDirection: ui.TextDirection.ltr,
+    )..layout();
+
+    textPainter.paint(canvas, a.start);
+  }
+
   void _drawFreehandSelectionBox(Canvas canvas, Annotation annotation) {
     final rect = annotation.boundingRect;
     if (rect.isEmpty) return;
@@ -270,8 +292,8 @@ class AnnotationPainter extends CustomPainter {
   }
 
   void _drawSelectionHandles(Canvas canvas, Annotation annotation) {
-    // Freehand types and stamps get a bounding box highlight instead of handles.
-    if (annotation.isFreehand || annotation.isStamp) {
+    // Freehand types, stamps, and text get a bounding box instead of handles.
+    if (annotation.isFreehand || annotation.isStamp || annotation.isText) {
       _drawFreehandSelectionBox(canvas, annotation);
       return;
     }
