@@ -1,6 +1,5 @@
 import 'dart:ui' as ui;
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -11,6 +10,10 @@ import '../widgets/annotation_overlay.dart';
 import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
+/// Floating preview window for normal (non-scroll) captures.
+///
+/// Scroll capture results are handled by [ScrollResultScreen] in a fullscreen
+/// overlay instead.
 class PreviewScreen extends StatefulWidget {
   final AppState appState;
   final AnnotationState annotationState;
@@ -33,7 +36,6 @@ class PreviewScreen extends StatefulWidget {
 
 class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
   final _focusNode = FocusNode();
-  final _scrollController = ScrollController();
   bool _focusRetryRunning = false;
 
   final _popoverAnchorLink = LayerLink();
@@ -50,9 +52,6 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
   @override
   void initState() {
     super.initState();
-    // Use HardwareKeyboard for focus-independent key handling.
-    // This avoids issues where SingleChildScrollView's Scrollable steals
-    // focus from KeyboardListener, breaking Escape and shortcuts.
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
   }
 
@@ -60,10 +59,13 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
   void dispose() {
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     removePopover();
-    _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
   }
+
+  // ---------------------------------------------------------------------------
+  // Focus management
+  // ---------------------------------------------------------------------------
 
   void _scheduleFocusSync() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -177,190 +179,70 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
         return Focus(
           focusNode: _focusNode,
           autofocus: true,
-          child: widget.appState.isScrollCapture
-              ? _buildScrollPreview(image)
-              : _buildNormalPreview(image),
-        );
-      },
-    );
-  }
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              // Compute the actual rect where the image renders with BoxFit.contain.
+              final imageSize = Size(
+                image.width.toDouble(),
+                image.height.toDouble(),
+              );
+              final fitted = applyBoxFit(
+                BoxFit.contain,
+                imageSize,
+                constraints.biggest,
+              );
+              final imageDisplayRect = Alignment.center.inscribe(
+                fitted.destination,
+                Offset.zero & constraints.biggest,
+              );
 
-  Widget _buildNormalPreview(ui.Image image) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Compute the actual rect where the image renders with BoxFit.contain.
-        final imageSize = Size(image.width.toDouble(), image.height.toDouble());
-        final fitted = applyBoxFit(
-          BoxFit.contain,
-          imageSize,
-          constraints.biggest,
-        );
-        final imageDisplayRect = Alignment.center.inscribe(
-          fitted.destination,
-          Offset.zero & constraints.biggest,
-        );
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  // Window drag area (only when NOT drawing).
+                  if (activeShapeType == null)
+                    DragToMoveArea(child: const SizedBox.expand()),
 
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            // Window drag area (only when NOT drawing).
-            if (activeShapeType == null)
-              DragToMoveArea(child: const SizedBox.expand()),
+                  // Screenshot image.
+                  RawImage(image: image, fit: BoxFit.contain),
 
-            // Screenshot image.
-            RawImage(image: image, fit: BoxFit.contain),
-
-            // Annotation overlay.
-            AnnotationOverlay(
-              annotationState: widget.annotationState,
-              imageDisplayRect: imageDisplayRect,
-              imagePixelSize: imageSize,
-              enabled: activeShapeType != null,
-              sourceImage: image,
-            ),
-
-            // Toolbar (Flutter) — bottom center of the window.
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 12,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.basic,
-                child: Center(
-                  child: SelectionToolbar(
-                    onCopy: widget.onCopy,
-                    onSave: widget.onSave,
-                    onClose: widget.onDiscard,
-                    onToolTap: handleToolTap,
-                    onUndo: widget.annotationState.undo,
-                    onRedo: widget.annotationState.redo,
-                    activeShapeType: activeShapeType,
-                    hasAnnotations: widget.annotationState.hasAnnotations,
-                    canUndo: widget.annotationState.canUndo,
-                    canRedo: widget.annotationState.canRedo,
-                    settingsLayerLink: _popoverAnchorLink,
+                  // Annotation overlay.
+                  AnnotationOverlay(
+                    annotationState: widget.annotationState,
+                    imageDisplayRect: imageDisplayRect,
+                    imagePixelSize: imageSize,
+                    enabled: activeShapeType != null,
+                    sourceImage: image,
                   ),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
 
-  Widget _buildScrollPreview(ui.Image image) {
-    // Scrollable layout for tall stitched images — no DragToMoveArea
-    // (conflicts with scroll gesture).
-    //
-    // The annotation overlay sits OUTSIDE the scroll view so it can block
-    // drag gestures (for drawing) while still allowing trackpad scroll.
-    // It adjusts imageDisplayRect by the scroll offset so annotations
-    // stay anchored to image pixels.
-    final imagePixelSize = Size(
-      image.width.toDouble(),
-      image.height.toDouble(),
-    );
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final imageHeight = constraints.maxWidth * (image.height / image.width);
-
-        return Stack(
-          children: [
-            // Scrollable image.
-            Positioned.fill(
-              child: SingleChildScrollView(
-                controller: _scrollController,
-                child: SizedBox(
-                  width: constraints.maxWidth,
-                  height: imageHeight,
-                  child: RawImage(image: image, fit: BoxFit.fitWidth),
-                ),
-              ),
-            ),
-
-            // Annotation overlay — outside the scroll view.
-            // When a tool is active: opaque blocks drag-to-scroll, forwards
-            // trackpad scroll to controller. When inactive: IgnorePointer
-            // lets all events through to the scroll view while still
-            // rendering committed annotations.
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: activeShapeType == null,
-                child: ListenableBuilder(
-                  listenable: Listenable.merge([
-                    _scrollController,
-                    widget.annotationState,
-                  ]),
-                  builder: (context, _) {
-                    final scrollOffset = _scrollController.hasClients
-                        ? _scrollController.offset
-                        : 0.0;
-                    final imageDisplayRect = Rect.fromLTWH(
-                      0,
-                      -scrollOffset,
-                      constraints.maxWidth,
-                      imageHeight,
-                    );
-                    final toolActive = activeShapeType != null;
-                    return Listener(
-                      behavior: toolActive
-                          ? HitTestBehavior.opaque
-                          : HitTestBehavior.translucent,
-                      onPointerSignal: toolActive
-                          ? (event) {
-                              // Forward trackpad scroll to the scroll view.
-                              if (event is PointerScrollEvent &&
-                                  _scrollController.hasClients) {
-                                final max =
-                                    _scrollController.position.maxScrollExtent;
-                                _scrollController.jumpTo(
-                                  (_scrollController.offset +
-                                          event.scrollDelta.dy)
-                                      .clamp(0.0, max),
-                                );
-                              }
-                            }
-                          : null,
-                      child: AnnotationOverlay(
-                        annotationState: widget.annotationState,
-                        imageDisplayRect: imageDisplayRect,
-                        imagePixelSize: imagePixelSize,
-                        enabled: toolActive,
-                        sourceImage: image,
+                  // Toolbar — bottom center of the window.
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 12,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.basic,
+                      child: Center(
+                        child: SelectionToolbar(
+                          onCopy: widget.onCopy,
+                          onSave: widget.onSave,
+                          onClose: widget.onDiscard,
+                          onToolTap: handleToolTap,
+                          onUndo: widget.annotationState.undo,
+                          onRedo: widget.annotationState.redo,
+                          activeShapeType: activeShapeType,
+                          hasAnnotations: widget.annotationState.hasAnnotations,
+                          canUndo: widget.annotationState.canUndo,
+                          canRedo: widget.annotationState.canRedo,
+                          settingsLayerLink: _popoverAnchorLink,
+                        ),
                       ),
-                    );
-                  },
-                ),
-              ),
-            ),
-
-            // Toolbar (Flutter) — bottom center of the window.
-            Positioned(
-              left: 0,
-              right: 0,
-              bottom: 12,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.basic,
-                child: Center(
-                  child: SelectionToolbar(
-                    onCopy: widget.onCopy,
-                    onSave: widget.onSave,
-                    onClose: widget.onDiscard,
-                    onToolTap: handleToolTap,
-                    onUndo: widget.annotationState.undo,
-                    onRedo: widget.annotationState.redo,
-                    activeShapeType: activeShapeType,
-                    hasAnnotations: widget.annotationState.hasAnnotations,
-                    canUndo: widget.annotationState.canUndo,
-                    canRedo: widget.annotationState.canRedo,
-                    settingsLayerLink: _popoverAnchorLink,
+                    ),
                   ),
-                ),
-              ),
-            ),
-          ],
+                ],
+              );
+            },
+          ),
         );
       },
     );

@@ -76,6 +76,9 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
   final FocusNode _keyListenerFocusNode = FocusNode();
   bool _wasEditingText = false;
 
+  // Cursor tracking for annotation handle hover.
+  Offset? _lastHoverPosition;
+
   // Pre-loaded raw RGBA pixel data for mosaic pixelation.
   ByteData? _sourcePixels;
   ui.Image? _pixelsForImage;
@@ -448,18 +451,45 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
     );
   }
 
+  MouseCursor _computeCursor() {
+    if (!widget.enabled) return MouseCursor.defer;
+    // When pointer events are handled by the parent (e.g. RegionSelectionScreen),
+    // defer cursor management so the parent's MouseRegion controls the cursor.
+    if (!widget.handlePointerEvents) return MouseCursor.defer;
+    final state = widget.annotationState;
+    // Check annotation handle hover.
+    if (state.selectedAnnotation != null && _lastHoverPosition != null) {
+      final imagePoint = _widgetToImage(_lastHoverPosition!);
+      final handles = annotationHandles(state.selectedAnnotation!);
+      final hit = hitTestAnnotationHandle(imagePoint, handles);
+      if (hit != null) {
+        if (isCornerAnnotationHandle(hit.type)) {
+          return MouseCursor.uncontrolled;
+        }
+        return cursorForAnnotationHandle(hit.type);
+      }
+      // Move cursor for text/stamp body hover.
+      if (state.selectedAnnotation!.isText ||
+          state.selectedAnnotation!.isStamp) {
+        if (state.selectedAnnotation!.boundingRect.contains(imagePoint)) {
+          return SystemMouseCursors.move;
+        }
+      }
+    }
+    return SystemMouseCursors.precise;
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
       listenable: widget.annotationState,
       builder: (context, _) {
-        final movable =
-            widget.annotationState.selectedAnnotation?.isText == true ||
-            widget.annotationState.selectedAnnotation?.isStamp == true;
         final paint = MouseRegion(
-          cursor: widget.enabled
-              ? (movable ? SystemMouseCursors.move : SystemMouseCursors.precise)
-              : MouseCursor.defer,
+          cursor: _computeCursor(),
+          onHover: widget.handlePointerEvents
+              ? (event) =>
+                    setState(() => _lastHoverPosition = event.localPosition)
+              : null,
           child: CustomPaint(
             painter: _ScaledAnnotationPainter(
               annotations: widget.annotationState.annotations,
@@ -529,6 +559,10 @@ class _ScaledAnnotationPainter extends CustomPainter {
       imageDisplayRect.height / imagePixelSize.height,
     );
 
+    // Compute inverse scale so handles render at a fixed screen-pixel size.
+    final scaleX = imageDisplayRect.width / imagePixelSize.width;
+    final inverseScale = scaleX > 0 ? 1.0 / scaleX : 1.0;
+
     // Delegate to the shared painter.
     final painter = AnnotationPainter(
       annotations: annotations,
@@ -537,6 +571,7 @@ class _ScaledAnnotationPainter extends CustomPainter {
       sourceImage: sourceImage,
       sourcePixels: sourcePixels,
       sourceImageOffset: sourceImageOffset,
+      inverseScale: inverseScale,
     );
     painter.paint(canvas, imagePixelSize);
 

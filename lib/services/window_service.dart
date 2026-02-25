@@ -38,8 +38,8 @@ class ScreenCapture {
 }
 
 class WindowService {
-  /// Minimum preview window size. Toolbar is now a separate native panel,
-  /// so the preview only needs room for the image + settings popover.
+  /// Minimum preview window size for normal (non-scroll) captures.
+  /// Scroll captures use a fullscreen overlay instead of this window.
   static const _minPreviewSize = Size(400, 300);
   static const _channel = MethodChannel('com.asnap/window');
 
@@ -412,6 +412,12 @@ class WindowService {
   /// renders the rainbow border and live preview panel.
   Future<void> enterScrollCaptureMode() async {
     await _channel.invokeMethod('enterScrollCaptureMode');
+  }
+
+  /// Transition from scroll capture mode back to interactive overlay.
+  /// Re-enables mouse events while keeping the window fullscreen and borderless.
+  Future<void> exitScrollCaptureMode() async {
+    await _channel.invokeMethod('exitScrollCaptureMode');
   }
 
   /// Show scroll capture preview: fixed window sized for tall images.

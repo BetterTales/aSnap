@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
+import 'screens/scroll_result_screen.dart';
 import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
@@ -92,6 +93,17 @@ class ASnapApp extends StatelessWidget {
               screenSize: appState.screenSize ?? const Size(1920, 1080),
               onDone: onScrollCaptureDone,
               onStopButtonRect: onScrollStopButtonRect,
+            );
+          }
+          if (appState.status == CaptureStatus.scrollResult &&
+              appState.capturedImage != null) {
+            return ScrollResultScreen(
+              stitchedImage: appState.capturedImage!,
+              screenSize: appState.screenSize ?? const Size(1920, 1080),
+              annotationState: annotationState,
+              onCopy: onCopy,
+              onSave: onSave,
+              onDiscard: onDiscard,
             );
           }
           return PreviewScreen(

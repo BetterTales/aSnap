@@ -8,6 +8,7 @@ enum CaptureStatus {
   selecting,
   scrollSelecting,
   scrollCapturing,
+  scrollResult,
   captured,
 }
 
@@ -138,6 +139,22 @@ class AppState extends ChangeNotifier {
     _scrollPreviewImage = null; // Service owns it; just clear reference
     _isScrollCapture = true;
     _status = CaptureStatus.captured;
+    notifyListeners();
+  }
+
+  /// Transition to scroll result displayed in the fullscreen overlay.
+  /// Keeps [screenSize] and [screenOrigin] because the overlay is still active.
+  void setScrollResult(Image stitchedImage) {
+    _capturedImage?.dispose();
+    _capturedImage = stitchedImage;
+    _decodedFullScreen?.dispose();
+    _decodedFullScreen = null;
+    _windowRects = null;
+    _scrollTargetBounds = null;
+    _scrollPreviewImage = null; // Service owns it; just clear reference
+    _isScrollCapture = true;
+    // Keep _screenSize and _screenOrigin — overlay is still active.
+    _status = CaptureStatus.scrollResult;
     notifyListeners();
   }
 

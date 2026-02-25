@@ -19,6 +19,11 @@ class AnnotationPainter extends CustomPainter {
   final ByteData? sourcePixels; // Raw RGBA pixels for mosaic pixelation
   final Offset sourceImageOffset; // Annotation-space origin in sourceImage.
 
+  /// Inverse of the canvas scale factor. Used to draw handles at a constant
+  /// screen-pixel size regardless of image-to-widget scaling. Defaults to 1.0
+  /// (no compensation, handles sized in image pixels).
+  final double inverseScale;
+
   AnnotationPainter({
     required this.annotations,
     this.activeAnnotation,
@@ -26,6 +31,7 @@ class AnnotationPainter extends CustomPainter {
     this.sourceImage,
     this.sourcePixels,
     this.sourceImageOffset = Offset.zero,
+    this.inverseScale = 1.0,
   });
 
   @override
@@ -52,7 +58,7 @@ class AnnotationPainter extends CustomPainter {
 
     switch (annotation.type) {
       case ShapeType.rectangle:
-        final rect = _normalizedRect(annotation);
+        final rect = _shapeRect(annotation);
         if (annotation.cornerRadius > 0) {
           canvas.drawRRect(
             RRect.fromRectAndRadius(
@@ -66,7 +72,7 @@ class AnnotationPainter extends CustomPainter {
         }
 
       case ShapeType.ellipse:
-        final rect = _ellipseRect(annotation);
+        final rect = _shapeRect(annotation);
         canvas.drawOval(rect, paint);
 
       case ShapeType.line:
@@ -100,17 +106,15 @@ class AnnotationPainter extends CustomPainter {
     }
   }
 
-  /// Normalized rect that handles backwards drags (right-to-left, bottom-to-top).
-  static Rect _normalizedRect(Annotation annotation) {
-    return Rect.fromPoints(annotation.start, annotation.end);
-  }
-
-  /// Compute the ellipse bounding rect, constraining to a circle when needed.
-  static Rect _ellipseRect(Annotation annotation) {
+  /// Compute bounding rect, constraining to a square when Shift is held.
+  ///
+  /// Used for rectangles, ellipses, and mosaics. When `annotation.constrained`
+  /// is true, the rect is forced to equal width/height (perfect square / circle)
+  /// using `min(|dx|, |dy|)` while preserving drag direction.
+  static Rect _shapeRect(Annotation annotation) {
     if (!annotation.constrained) {
       return Rect.fromPoints(annotation.start, annotation.end);
     }
-    // Constrained: equal width/height, preserving drag direction.
     final dx = (annotation.end.dx - annotation.start.dx).abs();
     final dy = (annotation.end.dy - annotation.start.dy).abs();
     final side = min(dx, dy);
@@ -235,7 +239,7 @@ class AnnotationPainter extends CustomPainter {
   }
 
   void _drawMosaic(Canvas canvas, Annotation a) {
-    final rect = _normalizedRect(a);
+    final rect = _shapeRect(a);
     final rrect = a.cornerRadius > 0
         ? RRect.fromRectAndRadius(rect, Radius.circular(a.cornerRadius))
         : RRect.fromRectAndRadius(rect, Radius.zero);
@@ -416,7 +420,7 @@ class AnnotationPainter extends CustomPainter {
     final dashPaint = Paint()
       ..color = annotation.color.withValues(alpha: 0.5)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
+      ..strokeWidth = 1.5 * inverseScale;
     canvas.drawRect(expanded, dashPaint);
   }
 
@@ -427,7 +431,10 @@ class AnnotationPainter extends CustomPainter {
       return;
     }
     final handles = annotationHandles(annotation);
-    final handleRadius = max(4.0, annotation.strokeWidth * 0.6);
+    // Use inverseScale so handles appear at a fixed ~5px screen size
+    // regardless of image-to-widget zoom level.
+    final handleRadius = 5.0 * inverseScale;
+    final strokeWidth = 1.5 * inverseScale;
     for (final handle in handles) {
       final isControlPoint = handle.type == AnnHandleType.controlPoint;
       // White fill with shape-colored border.
@@ -444,7 +451,7 @@ class AnnotationPainter extends CustomPainter {
               ? const Color(0xFF2979FF) // blue for control points
               : annotation.color
           ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.5,
+          ..strokeWidth = strokeWidth,
       );
     }
     // Draw control polygon guide lines (after all handles are drawn).
@@ -454,7 +461,7 @@ class AnnotationPainter extends CustomPainter {
             annotation.type == ShapeType.arrow)) {
       final guidePaint = Paint()
         ..color = const Color(0xFF2979FF).withValues(alpha: 0.4)
-        ..strokeWidth = 1;
+        ..strokeWidth = 1 * inverseScale;
       // Control polygon: start → cp0 → [cp1 →] end
       canvas.drawLine(annotation.start, cps[0], guidePaint);
       if (cps.length == 1) {
@@ -473,6 +480,7 @@ class AnnotationPainter extends CustomPainter {
         selectedIndex != oldDelegate.selectedIndex ||
         !identical(sourceImage, oldDelegate.sourceImage) ||
         !identical(sourcePixels, oldDelegate.sourcePixels) ||
-        sourceImageOffset != oldDelegate.sourceImageOffset;
+        sourceImageOffset != oldDelegate.sourceImageOffset ||
+        inverseScale != oldDelegate.inverseScale;
   }
 }

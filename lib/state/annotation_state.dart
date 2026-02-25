@@ -62,6 +62,7 @@ class AnnotationState extends ChangeNotifier {
   final Map<ShapeType, double> _toolStrokeWidth = {
     ShapeType.text: 9.0, // 9 × 4 = 36px default
     ShapeType.mosaic: 8.0, // default block size / blur intensity
+    ShapeType.number: 6.0, // 6 × 4 = 24px stamp radius
   };
   final Map<ShapeType, Color> _toolColor = {};
   final Map<ShapeType, MosaicMode> _toolMosaicMode = {};

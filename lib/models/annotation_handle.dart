@@ -1,4 +1,6 @@
-import 'dart:ui';
+import 'dart:math' show min;
+
+import 'package:flutter/services.dart';
 
 import 'annotation.dart';
 
@@ -32,9 +34,28 @@ class AnnHandle {
   const AnnHandle(this.type, this.position, {this.controlPointIndex});
 }
 
+/// Compute the display rect for an annotation, constraining to a square
+/// when [Annotation.constrained] is true (Shift held during drawing).
+Rect _constrainedRect(Annotation annotation) {
+  final raw = Rect.fromPoints(annotation.start, annotation.end);
+  if (!annotation.constrained) return raw;
+  final dx = (annotation.end.dx - annotation.start.dx).abs();
+  final dy = (annotation.end.dy - annotation.start.dy).abs();
+  final side = min(dx, dy);
+  final signX = (annotation.end.dx - annotation.start.dx).sign;
+  final signY = (annotation.end.dy - annotation.start.dy).sign;
+  return Rect.fromPoints(
+    annotation.start,
+    Offset(
+      annotation.start.dx + side * (signX == 0 ? 1 : signX),
+      annotation.start.dy + side * (signY == 0 ? 1 : signY),
+    ),
+  );
+}
+
 /// Returns all handles for the given annotation.
 List<AnnHandle> annotationHandles(Annotation annotation) {
-  final rect = Rect.fromPoints(annotation.start, annotation.end);
+  final rect = _constrainedRect(annotation);
   switch (annotation.type) {
     case ShapeType.rectangle:
       return [
@@ -68,10 +89,6 @@ List<AnnHandle> annotationHandles(Annotation annotation) {
         AnnHandle(AnnHandleType.topRight, rect.topRight),
         AnnHandle(AnnHandleType.bottomLeft, rect.bottomLeft),
         AnnHandle(AnnHandleType.bottomRight, rect.bottomRight),
-        AnnHandle(AnnHandleType.top, Offset(rect.center.dx, rect.top)),
-        AnnHandle(AnnHandleType.right, Offset(rect.right, rect.center.dy)),
-        AnnHandle(AnnHandleType.bottom, Offset(rect.center.dx, rect.bottom)),
-        AnnHandle(AnnHandleType.left, Offset(rect.left, rect.center.dy)),
       ];
     case ShapeType.text:
     case ShapeType.pencil:
@@ -184,6 +201,41 @@ Annotation applyAnnotationHandleDrag(
       );
   }
 }
+
+/// Whether [type] is one of the four corner handles.
+bool isCornerAnnotationHandle(AnnHandleType type) => switch (type) {
+  AnnHandleType.topLeft ||
+  AnnHandleType.topRight ||
+  AnnHandleType.bottomLeft ||
+  AnnHandleType.bottomRight => true,
+  _ => false,
+};
+
+/// Returns the appropriate resize cursor for an annotation [handle].
+///
+/// Corner handles return `resizeUpLeft`/etc. but note that on macOS these
+/// silently fall back to the arrow cursor — use [nativeDiagonalCursorType]
+/// with the platform channel for diagonal cursors on macOS.
+MouseCursor cursorForAnnotationHandle(AnnHandleType type) => switch (type) {
+  AnnHandleType.topLeft => SystemMouseCursors.resizeUpLeft,
+  AnnHandleType.topRight => SystemMouseCursors.resizeUpRight,
+  AnnHandleType.bottomLeft => SystemMouseCursors.resizeDownLeft,
+  AnnHandleType.bottomRight => SystemMouseCursors.resizeDownRight,
+  AnnHandleType.top => SystemMouseCursors.resizeUp,
+  AnnHandleType.bottom => SystemMouseCursors.resizeDown,
+  AnnHandleType.left => SystemMouseCursors.resizeLeft,
+  AnnHandleType.right => SystemMouseCursors.resizeRight,
+  AnnHandleType.startPoint || AnnHandleType.endPoint => SystemMouseCursors.grab,
+  AnnHandleType.controlPoint => SystemMouseCursors.grab,
+};
+
+/// Returns the native macOS diagonal cursor type string ('nwse' or 'nesw')
+/// for corner handles, or null for non-corner handles.
+String? nativeDiagonalCursorType(AnnHandleType type) => switch (type) {
+  AnnHandleType.topLeft || AnnHandleType.bottomRight => 'nwse',
+  AnnHandleType.topRight || AnnHandleType.bottomLeft => 'nesw',
+  _ => null,
+};
 
 Annotation _withStartEnd(Annotation a, Offset start, Offset end) {
   return Annotation(

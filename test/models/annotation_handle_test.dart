@@ -23,6 +23,30 @@ void main() {
       });
     });
 
+    test('constrained rectangle handles use square rect', () {
+      // Drag from (10,10) to (110,60) → raw rect is 100×50.
+      // Constrained: side = min(100,50) = 50 → square (10,10)–(60,60).
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(10, 10),
+        end: Offset(110, 60),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+        constrained: true,
+      );
+      final handles = annotationHandles(a);
+      expect(handles.length, 4);
+      final tl = handles.firstWhere((h) => h.type == AnnHandleType.topLeft);
+      final tr = handles.firstWhere((h) => h.type == AnnHandleType.topRight);
+      final bl = handles.firstWhere((h) => h.type == AnnHandleType.bottomLeft);
+      final br =
+          handles.firstWhere((h) => h.type == AnnHandleType.bottomRight);
+      expect(tl.position, const Offset(10, 10));
+      expect(tr.position, const Offset(60, 10));
+      expect(bl.position, const Offset(10, 60));
+      expect(br.position, const Offset(60, 60));
+    });
+
     test('ellipse returns 4 edge midpoint handles', () {
       const a = Annotation(
         type: ShapeType.ellipse,
@@ -39,6 +63,30 @@ void main() {
         AnnHandleType.bottom,
         AnnHandleType.left,
       });
+    });
+
+    test('constrained ellipse handles use square rect, not raw drag rect', () {
+      // Drag from (10,10) to (110,60) → raw rect is 100×50.
+      // Constrained: side = min(100,50) = 50 → square (10,10)–(60,60).
+      const a = Annotation(
+        type: ShapeType.ellipse,
+        start: Offset(10, 10),
+        end: Offset(110, 60),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+        constrained: true,
+      );
+      final handles = annotationHandles(a);
+      expect(handles.length, 4);
+      // Constrained square: (10,10)–(60,60), center = (35,35).
+      final top = handles.firstWhere((h) => h.type == AnnHandleType.top);
+      final right = handles.firstWhere((h) => h.type == AnnHandleType.right);
+      final bottom = handles.firstWhere((h) => h.type == AnnHandleType.bottom);
+      final left = handles.firstWhere((h) => h.type == AnnHandleType.left);
+      expect(top.position, const Offset(35, 10));
+      expect(right.position, const Offset(60, 35));
+      expect(bottom.position, const Offset(35, 60));
+      expect(left.position, const Offset(10, 35));
     });
 
     test('line returns 2 endpoint handles', () {
@@ -71,7 +119,7 @@ void main() {
       expect(handles.any((h) => h.type == AnnHandleType.controlPoint), true);
     });
 
-    test('mosaic returns 8 handles (corners + edge midpoints)', () {
+    test('mosaic returns 4 corner handles', () {
       const a = Annotation(
         type: ShapeType.mosaic,
         start: Offset(10, 10),
@@ -80,16 +128,12 @@ void main() {
         strokeWidth: 8,
       );
       final handles = annotationHandles(a);
-      expect(handles.length, 8);
+      expect(handles.length, 4);
       expect(handles.map((h) => h.type).toSet(), {
         AnnHandleType.topLeft,
         AnnHandleType.topRight,
         AnnHandleType.bottomLeft,
         AnnHandleType.bottomRight,
-        AnnHandleType.top,
-        AnnHandleType.right,
-        AnnHandleType.bottom,
-        AnnHandleType.left,
       });
     });
 

@@ -124,6 +124,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   DateTime? _lastAnnotationPointerDown;
   Offset? _lastAnnotationPointerDownPos;
 
+  /// True while a native diagonal resize cursor is active (set via platform
+  /// channel). Used to reset the cursor when leaving corner handles.
+  bool _nativeCursorActive = false;
+
   /// True while a platform-channel AX hit-test is in flight.
   bool _axQueryInFlight = false;
 
@@ -233,37 +237,62 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         });
 
       case _SelectionPhase.selected:
-        // Always check handles first — even in annotation mode.
-        if (_selectionRect != null) {
-          final handle = hitTestHandle(pos, _selectionRect!);
-          if (handle != null) {
-            widget.annotationState?.finishDrawing();
+        // In annotation mode: check annotation handles BEFORE selection
+        // rect handles so mosaic/rect resize handles take priority over
+        // the overlapping selection-resize handles.
+        if (activeShapeType != null && _selectionRect != null) {
+          final state = widget.annotationState!;
+
+          // Commit text edit on click-away; the overlay's onTapOutside
+          // handles the actual commit since handlePointerEvents is false.
+          if (state.editingText) return;
+
+          // Check annotation handles first (even outside selection rect,
+          // since edge handles sit right on the selection boundary).
+          if (state.selectedAnnotation != null) {
+            final imagePoint = _widgetToImage(pos);
+            final handles = annotationHandles(state.selectedAnnotation!);
+            final hit = hitTestAnnotationHandle(imagePoint, handles);
+            if (hit != null) {
+              _draggingAnnotationHandle = true;
+              _activeAnnotationHandle = hit;
+              if (isCornerAnnotationHandle(hit.type)) {
+                final cursorType = nativeDiagonalCursorType(hit.type);
+                if (cursorType != null) {
+                  _nativeCursorActive = true;
+                  unawaited(
+                    _channel.invokeMethod('setResizeCursor', {
+                      'type': cursorType,
+                    }),
+                  );
+                }
+              }
+              state.beginEdit();
+              return;
+            }
+          }
+
+          // Fall back to selection rect handles (for resizing the crop
+          // region itself, e.g. at corners where no annotation handle sits).
+          final selHandle = hitTestHandle(pos, _selectionRect!);
+          if (selHandle != null) {
+            state.finishDrawing();
             setState(() {
               _phase = _SelectionPhase.resizing;
-              _activeHandle = handle;
+              _activeHandle = selHandle;
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            // Set native diagonal cursor for corner resizing (Flutter's
-            // SystemMouseCursors don't work for diagonals on macOS).
-            if (isCornerHandle(handle)) {
-              _setNativeDiagonalCursor(handle);
+            if (isCornerHandle(selHandle)) {
+              _setNativeDiagonalCursor(selHandle);
             }
             return;
           }
-        }
-        // In annotation mode: handle selection, handle drags, and drawing.
-        if (activeShapeType != null && _selectionRect != null) {
+
           if (_selectionRect!.contains(pos)) {
-            final state = widget.annotationState!;
-
-            // Commit text edit on click-away; the overlay's onTapOutside
-            // handles the actual commit since handlePointerEvents is false.
-            if (state.editingText) return;
-
             final imagePoint = _widgetToImage(pos);
 
-            // 1. ALWAYS record timing for double-click detection.
+            // Record timing for double-click detection.
             final now = DateTime.now();
             final dpr = MediaQuery.devicePixelRatioOf(context);
             final doubleClickThreshold = 10.0 * dpr;
@@ -277,7 +306,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             _lastAnnotationPointerDown = now;
             _lastAnnotationPointerDownPos = imagePoint;
 
-            // 2. Double-click BEFORE handle hit (so adding 2nd CP works).
             if (isDoubleClick) {
               _handleAnnotationDoubleClick(imagePoint);
               _lastAnnotationPointerDown = null;
@@ -285,18 +313,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               return;
             }
 
-            // 3. Handle hit on selected annotation.
+            // Text/stamp body hit on selected annotation → start move drag.
             if (state.selectedAnnotation != null) {
-              final handles = annotationHandles(state.selectedAnnotation!);
-              final hit = hitTestAnnotationHandle(imagePoint, handles);
-              if (hit != null) {
-                _draggingAnnotationHandle = true;
-                _activeAnnotationHandle = hit;
-                state.beginEdit();
-                return;
-              }
-
-              // 3b. Text/stamp body hit on selected annotation → start move drag.
               if (state.selectedAnnotation!.isText ||
                   state.selectedAnnotation!.isStamp) {
                 if (state.selectedAnnotation!.boundingRect.contains(
@@ -310,20 +328,37 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               }
             }
 
-            // 4. Shape stroke hit → select.
+            // Shape stroke hit → select.
             final hitIdx = hitTestAnnotations(imagePoint, state.annotations);
             if (hitIdx != null) {
               state.selectAnnotation(hitIdx);
               return;
             }
 
-            // 5. Empty space → deselect, start new drawing.
+            // Empty space → deselect, start new drawing.
             state.deselectAnnotation();
             _startAnnotationDrawing(pos);
             return;
           }
           // Outside selection in annotation mode — ignore.
           return;
+        }
+        // Not in annotation mode: check selection rect handles.
+        if (_selectionRect != null) {
+          final handle = hitTestHandle(pos, _selectionRect!);
+          if (handle != null) {
+            widget.annotationState?.finishDrawing();
+            setState(() {
+              _phase = _SelectionPhase.resizing;
+              _activeHandle = handle;
+              _dragStartOffset = pos;
+              _dragStartRect = _selectionRect;
+            });
+            if (isCornerHandle(handle)) {
+              _setNativeDiagonalCursor(handle);
+            }
+            return;
+          }
         }
         // Inside selection -> move.
         if (_selectionRect != null && _selectionRect!.contains(pos)) {
@@ -742,15 +777,43 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
       case _SelectionPhase.selected:
         if (_selectionRect == null) return SystemMouseCursors.precise;
-        // In annotation mode, use precise cursor inside selection
-        // (move cursor when a text annotation is selected).
-        if (activeShapeType != null && _selectionRect!.contains(_current)) {
-          if (widget.annotationState?.selectedAnnotation?.isText == true ||
-              widget.annotationState?.selectedAnnotation?.isStamp == true) {
-            return SystemMouseCursors.move;
+        // In annotation mode: show resize cursors for annotation handles,
+        // move cursor for text/stamps, and precise for everything else.
+        if (activeShapeType != null) {
+          // Check annotation handles first.
+          if (widget.annotationState?.selectedAnnotation != null) {
+            final imagePoint = _widgetToImage(_current);
+            final handles = annotationHandles(
+              widget.annotationState!.selectedAnnotation!,
+            );
+            final hit = hitTestAnnotationHandle(imagePoint, handles);
+            if (hit != null) {
+              if (isCornerAnnotationHandle(hit.type)) {
+                return MouseCursor.uncontrolled;
+              }
+              return cursorForAnnotationHandle(hit.type);
+            }
+            // Move cursor for text/stamp body hover.
+            if (widget.annotationState!.selectedAnnotation!.isText ||
+                widget.annotationState!.selectedAnnotation!.isStamp) {
+              if (widget.annotationState!.selectedAnnotation!.boundingRect
+                  .contains(imagePoint)) {
+                return SystemMouseCursors.move;
+              }
+            }
+          }
+          // Fall back to selection rect handles.
+          final selHandle = hitTestHandle(_current, _selectionRect!);
+          if (selHandle != null) {
+            if (isCornerHandle(selHandle)) return MouseCursor.uncontrolled;
+            return cursorForHandle(selHandle);
+          }
+          if (_selectionRect!.contains(_current)) {
+            return SystemMouseCursors.precise;
           }
           return SystemMouseCursors.precise;
         }
+        // Not in annotation mode.
         final handle = hitTestHandle(_current, _selectionRect!);
         if (handle != null) {
           if (isCornerHandle(handle)) return MouseCursor.uncontrolled;
@@ -772,6 +835,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       _ => null,
     };
     if (type != null) {
+      _nativeCursorActive = true;
       unawaited(_channel.invokeMethod('setResizeCursor', {'type': type}));
     }
   }
@@ -865,11 +929,42 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
           // Set native diagonal cursor for corner handles (Flutter's macOS
           // implementation doesn't support diagonal resize cursors).
+          // Track whether we hit a corner this cycle so we can reset the
+          // native cursor when leaving.
+          var hitCorner = false;
           if (_phase == _SelectionPhase.selected && _selectionRect != null) {
+            // Annotation handles take priority in annotation mode.
+            if (activeShapeType != null &&
+                widget.annotationState?.selectedAnnotation != null) {
+              final imagePoint = _widgetToImage(pos);
+              final handles = annotationHandles(
+                widget.annotationState!.selectedAnnotation!,
+              );
+              final hit = hitTestAnnotationHandle(imagePoint, handles);
+              if (hit != null && isCornerAnnotationHandle(hit.type)) {
+                final cursorType = nativeDiagonalCursorType(hit.type);
+                if (cursorType != null) {
+                  _nativeCursorActive = true;
+                  hitCorner = true;
+                  unawaited(
+                    _channel.invokeMethod('setResizeCursor', {
+                      'type': cursorType,
+                    }),
+                  );
+                }
+                return;
+              }
+            }
             final handle = hitTestHandle(pos, _selectionRect!);
             if (handle != null && isCornerHandle(handle)) {
               _setNativeDiagonalCursor(handle);
+              hitCorner = true;
             }
+          }
+          // Reset the native cursor when leaving a corner handle.
+          if (!hitCorner && _nativeCursorActive) {
+            _nativeCursorActive = false;
+            unawaited(_channel.invokeMethod('resetResizeCursor'));
           }
 
           // Only fire AX/geometric hit tests during hovering phase.

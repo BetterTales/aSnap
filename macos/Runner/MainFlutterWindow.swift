@@ -227,6 +227,11 @@ class MainFlutterWindow: NSWindow {
         let type = args?["type"] as? String ?? ""
         self.setDiagonalResizeCursor(nwse: type == "nwse")
         result(nil)
+      case "resetResizeCursor":
+        // Clear the native diagonal resize cursor so Flutter can reclaim
+        // cursor management (e.g., when the mouse leaves a corner handle).
+        NSCursor.arrow.set()
+        result(nil)
       case "suspendOverlay":
         // Make overlay invisible for display switching. Uses alphaValue instead
         // of orderOut so the window stays in the compositor and Flutter keeps
@@ -577,6 +582,15 @@ class MainFlutterWindow: NSWindow {
           self?.setFlutterSurfaceOpaque(false)
         }
         MainFlutterWindow.log("enterScrollCaptureMode: frame=\(NSStringFromRect(self.frame))")
+        result(nil)
+      case "exitScrollCaptureMode":
+        // Inverse of enterScrollCaptureMode: re-enable mouse interaction
+        // while keeping the window fullscreen, borderless, and transparent.
+        self.ignoresMouseEvents = false
+        self.acceptsMouseMovedEvents = true
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        MainFlutterWindow.log("exitScrollCaptureMode: frame=\(NSStringFromRect(self.frame))")
         result(nil)
       case "showScrollStopButton":
         guard let args = call.arguments as? [String: Double],
@@ -1379,6 +1393,7 @@ private class ToolbarContentView: NSView {
     static let brushOutlined = 0xef02
     static let blurOnRounded = 0xf5c9
     static let textFieldsRounded = 0xf021e
+    static let titleRounded = 0xf023d
     static let undoRounded = 0xf0261
     static let redoRounded = 0xf00e7
     static let copyRounded = 0xf66c
@@ -1395,7 +1410,7 @@ private class ToolbarContentView: NSView {
     (.material(MaterialIcon.brushOutlined), "toolTap:marker", "Marker"),
     (.material(MaterialIcon.blurOnRounded), "toolTap:mosaic", "Mosaic"),
     (.circledOne, "toolTap:number", "Number"),
-    (.material(MaterialIcon.textFieldsRounded), "toolTap:text", "Text"),
+    (.material(MaterialIcon.titleRounded), "toolTap:text", "Text"),
   ]
 
   // ── Buttons ──

@@ -171,6 +171,7 @@ void _handleEscPressed() {
       );
       return;
     case CaptureStatus.captured:
+    case CaptureStatus.scrollResult:
       if (_escActionInProgress) return;
       _escActionInProgress = true;
       unawaited(
@@ -673,6 +674,7 @@ Future<void> _handleRegionCancel() async {
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
+  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
   // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
   final annotations = _annotationState.annotations;
@@ -696,11 +698,13 @@ Future<void> _handleCopy() async {
   }
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
+  if (wasScrollResult) unawaited(_windowService.cleanupOverlay());
   unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
+  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
   // Composite annotations if any, then encode.
   final image = _appState.capturedImage;
   final annotations = _annotationState.annotations;
@@ -725,11 +729,13 @@ Future<void> _handleSave() async {
   _annotationState.clear();
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
+  if (wasScrollResult) unawaited(_windowService.cleanupOverlay());
   unawaited(_windowService.startRectPolling());
 }
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
+  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
   // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
   _appState.clear();
@@ -737,6 +743,7 @@ Future<void> _handleDiscard() async {
   // Non-blocking cleanup after window is gone.
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
+  if (wasScrollResult) unawaited(_windowService.cleanupOverlay());
   unawaited(_windowService.startRectPolling());
 }
 
@@ -920,28 +927,11 @@ Future<void> _handleScrollFinish() async {
       return;
     }
 
-    // Use the screen info from the capture region for preview positioning.
-    Size screenSize = const Size(1920, 1080);
-    Offset screenOrigin = Offset.zero;
-
-    if (_appState.screenSize != null && _appState.screenOrigin != null) {
-      screenSize = _appState.screenSize!;
-      screenOrigin = _appState.screenOrigin!;
-    }
-
-    _appState.setCapturedScrollImage(result);
-    // Don't call hidePreview() here — showScrollPreview handles overlay cleanup.
-    // Calling hidePreview() first fires
-    // setAlwaysOnTop(false) via unawaited() which can race with the property
-    // changes in showScrollPreview.
-    await _windowService.showScrollPreview(
-      imageWidth: imageWidth,
-      imageHeight: imageHeight,
-      screenSize: screenSize,
-      screenOrigin: screenOrigin,
-    );
+    // Stay in fullscreen overlay — just re-enable mouse interaction.
+    _appState.setScrollResult(result);
+    await _windowService.exitScrollCaptureMode();
     _appState.nudge();
-    // No native Esc monitor — PreviewScreen handles Escape via
+    // No native Esc monitor — ScrollResultScreen handles Escape via
     // HardwareKeyboard (supports shapes mode unwinding).
   } else {
     _appState.clear();
