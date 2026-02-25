@@ -251,6 +251,7 @@ Future<void> _handleFullScreenCapture() async {
   if (_appState.status == CaptureStatus.capturing) return;
   _escActionInProgress = false;
   await _windowService.stopEscMonitor();
+  _annotationState.clear();
   _appState.setCapturing();
   await _windowService.hidePreview();
 
@@ -273,6 +274,7 @@ Future<void> _handleRegionCapture() async {
   _escActionInProgress = false;
   await _windowService.stopEscMonitor();
   // Allow re-entry from selecting state (display-change re-trigger).
+  _annotationState.clear();
   _appState.setCapturing();
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
@@ -761,6 +763,7 @@ Future<void> _handleScrollCapture() async {
   }
   _escActionInProgress = false;
   await _windowService.stopEscMonitor();
+  _annotationState.clear();
   _appState.setCapturing();
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
