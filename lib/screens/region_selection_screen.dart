@@ -5,8 +5,15 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/annotation.dart';
+import '../models/annotation_handle.dart';
+import '../models/annotation_hit_test.dart';
 import '../models/selection_handle.dart';
+import '../services/window_service.dart';
+import '../state/annotation_state.dart';
+import '../widgets/annotation_overlay.dart';
 import '../widgets/selection_toolbar.dart';
+import '../widgets/tool_popover_mixin.dart';
 
 /// Internal phase of the selection interaction.
 enum _SelectionPhase {
@@ -57,24 +64,33 @@ class RegionSelectionScreen extends StatefulWidget {
   /// accessible element rect in local coordinates (or null).
   final Future<Rect?> Function(Offset localPoint)? onHitTest;
 
+  /// Annotation state for drawing shapes on the selected region.
+  final AnnotationState? annotationState;
+  final WindowService windowService;
+
   const RegionSelectionScreen({
     super.key,
     required this.decodedImage,
     required this.windowRects,
     required this.onCancel,
+    required this.windowService,
     this.onCopy,
     this.onSave,
     this.onRegionSelected,
     this.onHitTest,
     this.isScrollSelection = false,
+    this.annotationState,
   });
 
   @override
   State<RegionSelectionScreen> createState() => _RegionSelectionScreenState();
 }
 
-class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
+class _RegionSelectionScreenState extends State<RegionSelectionScreen>
+    with ToolPopoverMixin {
   static const _channel = MethodChannel('com.asnap/window');
+  static const _toolbarSize = Size(536, 44);
+  static const _toolbarGap = 8.0;
   final _focusNode = FocusNode();
 
   // -- Interaction state --
@@ -95,11 +111,45 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   // Hovering phase: detected window/element under cursor.
   Rect? _detectedWindowRect;
 
+  // -- Annotation mode --
+  final _popoverAnchorLink = LayerLink();
+
+  // -- Annotation handle drag state --
+  bool _draggingAnnotationHandle = false;
+  AnnHandle? _activeAnnotationHandle;
+
+  // -- Annotation text move drag state --
+  bool _movingAnnotationText = false;
+  Offset? _moveAnnotationStart;
+  DateTime? _lastAnnotationPointerDown;
+  Offset? _lastAnnotationPointerDownPos;
+
+  /// True while a native diagonal resize cursor is active (set via platform
+  /// channel). Used to reset the cursor when leaving corner handles.
+  bool _nativeCursorActive = false;
+
   /// True while a platform-channel AX hit-test is in flight.
   bool _axQueryInFlight = false;
 
   @override
+  AnnotationState? get popoverAnnotationState => widget.annotationState;
+
+  @override
+  LayerLink get popoverAnchor => _popoverAnchorLink;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+    widget.annotationState?.addListener(_handleAnnotationStateChange);
+  }
+
+  @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
+    widget.annotationState?.removeListener(_handleAnnotationStateChange);
+    unawaited(widget.windowService.hideToolbarPanel());
+    removePopover();
     _focusNode.dispose();
     super.dispose();
   }
@@ -187,34 +237,140 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         });
 
       case _SelectionPhase.selected:
-        // Check handles first.
+        // In annotation mode: check annotation handles BEFORE selection
+        // rect handles so mosaic/rect resize handles take priority over
+        // the overlapping selection-resize handles.
+        if (activeShapeType != null && _selectionRect != null) {
+          final state = widget.annotationState!;
+
+          // Commit text edit on click-away; the overlay's onTapOutside
+          // handles the actual commit since handlePointerEvents is false.
+          if (state.editingText) return;
+
+          // Check annotation handles first (even outside selection rect,
+          // since edge handles sit right on the selection boundary).
+          if (state.selectedAnnotation != null) {
+            final imagePoint = _widgetToImage(pos);
+            final handles = annotationHandles(state.selectedAnnotation!);
+            final hit = hitTestAnnotationHandle(imagePoint, handles);
+            if (hit != null) {
+              _draggingAnnotationHandle = true;
+              _activeAnnotationHandle = hit;
+              if (isCornerAnnotationHandle(hit.type)) {
+                final cursorType = nativeDiagonalCursorType(hit.type);
+                if (cursorType != null) {
+                  _nativeCursorActive = true;
+                  unawaited(
+                    _channel.invokeMethod('setResizeCursor', {
+                      'type': cursorType,
+                    }),
+                  );
+                }
+              }
+              state.beginEdit();
+              return;
+            }
+          }
+
+          // Fall back to selection rect handles (for resizing the crop
+          // region itself, e.g. at corners where no annotation handle sits).
+          final selHandle = hitTestHandle(pos, _selectionRect!);
+          if (selHandle != null) {
+            state.finishDrawing();
+            setState(() {
+              _phase = _SelectionPhase.resizing;
+              _activeHandle = selHandle;
+              _dragStartOffset = pos;
+              _dragStartRect = _selectionRect;
+            });
+            if (isCornerHandle(selHandle)) {
+              _setNativeDiagonalCursor(selHandle);
+            }
+            return;
+          }
+
+          if (_selectionRect!.contains(pos)) {
+            final imagePoint = _widgetToImage(pos);
+
+            // Record timing for double-click detection.
+            final now = DateTime.now();
+            final dpr = MediaQuery.devicePixelRatioOf(context);
+            final doubleClickThreshold = 10.0 * dpr;
+            final isDoubleClick =
+                _lastAnnotationPointerDown != null &&
+                _lastAnnotationPointerDownPos != null &&
+                now.difference(_lastAnnotationPointerDown!) <
+                    const Duration(milliseconds: 400) &&
+                (imagePoint - _lastAnnotationPointerDownPos!).distance <
+                    doubleClickThreshold;
+            _lastAnnotationPointerDown = now;
+            _lastAnnotationPointerDownPos = imagePoint;
+
+            if (isDoubleClick) {
+              _handleAnnotationDoubleClick(imagePoint);
+              _lastAnnotationPointerDown = null;
+              _lastAnnotationPointerDownPos = null;
+              return;
+            }
+
+            // Text/stamp body hit on selected annotation → start move drag.
+            if (state.selectedAnnotation != null) {
+              if (state.selectedAnnotation!.isText ||
+                  state.selectedAnnotation!.isStamp) {
+                if (state.selectedAnnotation!.boundingRect.contains(
+                  imagePoint,
+                )) {
+                  _movingAnnotationText = true;
+                  _moveAnnotationStart = imagePoint;
+                  state.beginEdit();
+                  return;
+                }
+              }
+            }
+
+            // Shape stroke hit → select.
+            final hitIdx = hitTestAnnotations(imagePoint, state.annotations);
+            if (hitIdx != null) {
+              state.selectAnnotation(hitIdx);
+              return;
+            }
+
+            // Empty space → deselect, start new drawing.
+            state.deselectAnnotation();
+            _startAnnotationDrawing(pos);
+            return;
+          }
+          // Outside selection in annotation mode — ignore.
+          return;
+        }
+        // Not in annotation mode: check selection rect handles.
         if (_selectionRect != null) {
           final handle = hitTestHandle(pos, _selectionRect!);
           if (handle != null) {
+            widget.annotationState?.finishDrawing();
             setState(() {
               _phase = _SelectionPhase.resizing;
               _activeHandle = handle;
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            // Set native diagonal cursor for corner resizing (Flutter's
-            // SystemMouseCursors don't work for diagonals on macOS).
             if (isCornerHandle(handle)) {
               _setNativeDiagonalCursor(handle);
             }
             return;
           }
-          // Inside selection -> move.
-          if (_selectionRect!.contains(pos)) {
-            setState(() {
-              _phase = _SelectionPhase.moving;
-              _dragStartOffset = pos;
-              _dragStartRect = _selectionRect;
-            });
-            return;
-          }
+        }
+        // Inside selection -> move.
+        if (_selectionRect != null && _selectionRect!.contains(pos)) {
+          setState(() {
+            _phase = _SelectionPhase.moving;
+            _dragStartOffset = pos;
+            _dragStartRect = _selectionRect;
+          });
+          return;
         }
         // Outside selection -> start a new one.
+        widget.annotationState?.clear();
         setState(() {
           _selectionRect = null;
           _drawStart = pos;
@@ -265,8 +421,47 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         }
 
       case _SelectionPhase.hovering:
-      case _SelectionPhase.selected:
         break;
+
+      case _SelectionPhase.selected:
+        // Handle annotation text move drag.
+        if (_movingAnnotationText && _moveAnnotationStart != null) {
+          final imagePoint = _widgetToImage(pos);
+          final delta = imagePoint - _moveAnnotationStart!;
+          _moveAnnotationStart = imagePoint;
+          final state = widget.annotationState!;
+          if (state.selectedAnnotation != null) {
+            state.updateSelected(state.selectedAnnotation!.translated(delta));
+          }
+          return;
+        }
+        // Handle annotation handle drag.
+        if (_draggingAnnotationHandle && _activeAnnotationHandle != null) {
+          final imagePoint = _widgetToImage(pos);
+          final state = widget.annotationState!;
+          if (state.selectedAnnotation != null) {
+            final updated = applyAnnotationHandleDrag(
+              state.selectedAnnotation!,
+              _activeAnnotationHandle!,
+              imagePoint,
+            );
+            _activeAnnotationHandle = AnnHandle(
+              _activeAnnotationHandle!.type,
+              imagePoint,
+              controlPointIndex: _activeAnnotationHandle!.controlPointIndex,
+            );
+            state.updateSelected(updated);
+          }
+          return;
+        }
+        // Handle active annotation drawing.
+        if (widget.annotationState?.activeAnnotation != null) {
+          final imagePoint = _widgetToImage(pos);
+          widget.annotationState!.updateDrawing(
+            imagePoint,
+            constrained: _isShiftHeld(),
+          );
+        }
     }
   }
 
@@ -285,10 +480,102 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         });
 
       case _SelectionPhase.hovering:
-      case _SelectionPhase.selected:
         break;
+
+      case _SelectionPhase.selected:
+        if (_movingAnnotationText) {
+          _movingAnnotationText = false;
+          _moveAnnotationStart = null;
+          widget.annotationState?.commitEdit();
+          return;
+        }
+        if (_draggingAnnotationHandle) {
+          _draggingAnnotationHandle = false;
+          _activeAnnotationHandle = null;
+          widget.annotationState?.commitEdit();
+          return;
+        }
+        if (widget.annotationState?.activeAnnotation != null) {
+          widget.annotationState!.finishDrawing();
+        }
     }
   }
+
+  // -----------------------------------------------------------------------
+  // Annotation drawing helpers (used when handlePointerEvents is false
+  // on AnnotationOverlay and this widget routes events directly).
+  // -----------------------------------------------------------------------
+
+  Offset _widgetToImage(Offset widgetPoint) {
+    final dpr = MediaQuery.devicePixelRatioOf(context);
+    return Offset(
+      (widgetPoint.dx - _selectionRect!.left) * dpr,
+      (widgetPoint.dy - _selectionRect!.top) * dpr,
+    );
+  }
+
+  bool _isShiftHeld() {
+    final keys = HardwareKeyboard.instance.logicalKeysPressed;
+    return keys.contains(LogicalKeyboardKey.shiftLeft) ||
+        keys.contains(LogicalKeyboardKey.shiftRight);
+  }
+
+  void _startAnnotationDrawing(Offset widgetPos) {
+    final imagePoint = _widgetToImage(widgetPos);
+    final state = widget.annotationState;
+    if (state == null) return;
+    if (state.settings.shapeType == ShapeType.number) {
+      state.placeStamp(imagePoint);
+      return;
+    }
+    if (state.settings.shapeType == ShapeType.text) {
+      state.startTextEdit(imagePoint);
+      return;
+    }
+    state.startDrawing(imagePoint);
+  }
+
+  void _handleAnnotationDoubleClick(Offset imagePoint) {
+    final state = widget.annotationState;
+    if (state == null) return;
+
+    // Cancel any accidental drawing from the first click's empty-space path.
+    if (state.activeAnnotation != null) {
+      state.cancelDrawing();
+    }
+
+    // Use selected annotation if it's a valid target.
+    if (state.selectedAnnotation != null) {
+      final a = state.selectedAnnotation!;
+      if ((a.type == ShapeType.line || a.type == ShapeType.arrow) &&
+          a.controlPoints.length < 2) {
+        state.beginEdit();
+        state.updateSelected(a.addControlPoint(imagePoint));
+        state.commitEdit();
+        return;
+      }
+    }
+
+    // Fallback: find a nearby line/arrow to add CP to (generous threshold).
+    final hitIdx = hitTestAnnotations(
+      imagePoint,
+      state.annotations,
+      threshold: 20,
+    );
+    if (hitIdx == null) return;
+    final target = state.annotations[hitIdx];
+    if (target.type != ShapeType.line && target.type != ShapeType.arrow) return;
+    if (target.controlPoints.length >= 2) return;
+
+    state.selectAnnotation(hitIdx);
+    state.beginEdit();
+    state.updateSelected(target.addControlPoint(imagePoint));
+    state.commitEdit();
+  }
+
+  // -----------------------------------------------------------------------
+  // Selection drawing
+  // -----------------------------------------------------------------------
 
   void _finishDrawing(Offset upPosition) {
     final rect = _drawingRect;
@@ -366,11 +653,67 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
   // Keyboard
   // -----------------------------------------------------------------------
 
-  void _onKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent) return;
-    if (event.logicalKey != LogicalKeyboardKey.escape) return;
-    // Escape always exits the overlay immediately — no multi-step unwind.
+  bool _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+
+    final meta =
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.metaLeft,
+        ) ||
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.metaRight,
+        );
+    final shift =
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftLeft,
+        ) ||
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftRight,
+        );
+
+    // Cmd+Shift+Z → redo
+    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      widget.annotationState?.redo();
+      return true;
+    }
+    // Cmd+Z → undo
+    if (meta && event.logicalKey == LogicalKeyboardKey.keyZ) {
+      widget.annotationState?.undo();
+      return true;
+    }
+
+    // Delete/Backspace → delete selected annotation.
+    if (event.logicalKey == LogicalKeyboardKey.delete ||
+        event.logicalKey == LogicalKeyboardKey.backspace) {
+      // Don't delete annotation while editing text (Backspace is used in TextField).
+      if (widget.annotationState?.editingText == true) return false;
+      if (activeShapeType != null &&
+          widget.annotationState?.selectedIndex != null) {
+        widget.annotationState!.deleteSelected();
+        return true;
+      }
+    }
+
+    if (event.logicalKey != LogicalKeyboardKey.escape) return false;
+
+    // Cancel text editing first.
+    if (widget.annotationState?.editingText == true) {
+      widget.annotationState!.cancelTextEdit();
+      return true;
+    }
+
+    // In annotation mode, Escape unwinds one step at a time.
+    if (popoverVisible) {
+      removePopover();
+      return true;
+    }
+    if (activeShapeType != null) {
+      setState(() => activeShapeType = null);
+      return true;
+    }
+    // Escape exits the overlay.
     widget.onCancel();
+    return true;
   }
 
   /// Go back one step (right-click behavior).
@@ -389,6 +732,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         });
 
       case _SelectionPhase.selected:
+        if (activeShapeType != null) {
+          // Exit annotation mode first; keep selection.
+          removePopover();
+          setState(() => activeShapeType = null);
+          return;
+        }
+        widget.annotationState?.clear();
         setState(() {
           _selectionRect = null;
           _phase = _SelectionPhase.hovering;
@@ -427,6 +777,43 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 
       case _SelectionPhase.selected:
         if (_selectionRect == null) return SystemMouseCursors.precise;
+        // In annotation mode: show resize cursors for annotation handles,
+        // move cursor for text/stamps, and precise for everything else.
+        if (activeShapeType != null) {
+          // Check annotation handles first.
+          if (widget.annotationState?.selectedAnnotation != null) {
+            final imagePoint = _widgetToImage(_current);
+            final handles = annotationHandles(
+              widget.annotationState!.selectedAnnotation!,
+            );
+            final hit = hitTestAnnotationHandle(imagePoint, handles);
+            if (hit != null) {
+              if (isCornerAnnotationHandle(hit.type)) {
+                return MouseCursor.uncontrolled;
+              }
+              return cursorForAnnotationHandle(hit.type);
+            }
+            // Move cursor for text/stamp body hover.
+            if (widget.annotationState!.selectedAnnotation!.isText ||
+                widget.annotationState!.selectedAnnotation!.isStamp) {
+              if (widget.annotationState!.selectedAnnotation!.boundingRect
+                  .contains(imagePoint)) {
+                return SystemMouseCursors.move;
+              }
+            }
+          }
+          // Fall back to selection rect handles.
+          final selHandle = hitTestHandle(_current, _selectionRect!);
+          if (selHandle != null) {
+            if (isCornerHandle(selHandle)) return MouseCursor.uncontrolled;
+            return cursorForHandle(selHandle);
+          }
+          if (_selectionRect!.contains(_current)) {
+            return SystemMouseCursors.precise;
+          }
+          return SystemMouseCursors.precise;
+        }
+        // Not in annotation mode.
         final handle = hitTestHandle(_current, _selectionRect!);
         if (handle != null) {
           if (isCornerHandle(handle)) return MouseCursor.uncontrolled;
@@ -448,33 +835,34 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
       _ => null,
     };
     if (type != null) {
+      _nativeCursorActive = true;
       unawaited(_channel.invokeMethod('setResizeCursor', {'type': type}));
     }
   }
 
   // -----------------------------------------------------------------------
-  // Toolbar positioning
+  // Native toolbar panel
   // -----------------------------------------------------------------------
 
-  /// Compute toolbar position relative to the selection rect.
+  bool get _shouldShowToolbar {
+    if (widget.isScrollSelection) return false;
+    if (_selectionRect == null) return false;
+    return _phase == _SelectionPhase.selected;
+  }
+
+  /// Compute native toolbar rect relative to the selection rect.
   /// Priority: below selection → above selection → inside (bottom edge).
-  /// Returns null if no selection exists.
-  Offset? _toolbarOffset(Size screenSize) {
+  Rect? _toolbarRect(Size screenSize) {
     final sel = _selectionRect;
     if (sel == null) return null;
 
-    // Estimate toolbar size (3 buttons * 34px + 2 gaps * 4px + padding 16px).
-    const toolbarWidth = 130.0;
-    const toolbarHeight = 42.0;
-    const gap = 8.0;
-
-    var x = sel.center.dx - toolbarWidth / 2;
+    var x = sel.center.dx - _toolbarSize.width / 2;
     double y;
 
-    final belowY = sel.bottom + gap;
-    final aboveY = sel.top - toolbarHeight - gap;
+    final belowY = sel.bottom + _toolbarGap;
+    final aboveY = sel.top - _toolbarSize.height - _toolbarGap;
 
-    if (belowY + toolbarHeight <= screenSize.height) {
+    if (belowY + _toolbarSize.height <= screenSize.height) {
       // Fits below the selection.
       y = belowY;
     } else if (aboveY >= 0) {
@@ -483,17 +871,21 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     } else {
       // Neither above nor below works — place inside the selection,
       // anchored to the bottom edge with an inset.
-      y = sel.bottom - toolbarHeight - gap;
+      y = sel.bottom - _toolbarSize.height - _toolbarGap;
       // Ensure it doesn't go above the selection top.
-      if (y < sel.top + gap) {
-        y = sel.top + gap;
+      if (y < sel.top + _toolbarGap) {
+        y = sel.top + _toolbarGap;
       }
     }
 
     // Clamp horizontally.
-    x = x.clamp(0, screenSize.width - toolbarWidth);
+    x = x.clamp(0, screenSize.width - _toolbarSize.width);
 
-    return Offset(x, y);
+    return Rect.fromLTWH(x, y, _toolbarSize.width, _toolbarSize.height);
+  }
+
+  void _handleAnnotationStateChange() {
+    if (mounted) setState(() {});
   }
 
   // -----------------------------------------------------------------------
@@ -523,10 +915,9 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
-    return KeyboardListener(
+    return Focus(
       focusNode: _focusNode,
       autofocus: true,
-      onKeyEvent: _onKeyEvent,
       child: MouseRegion(
         cursor: _currentCursor,
         onHover: (event) {
@@ -538,11 +929,42 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
 
           // Set native diagonal cursor for corner handles (Flutter's macOS
           // implementation doesn't support diagonal resize cursors).
+          // Track whether we hit a corner this cycle so we can reset the
+          // native cursor when leaving.
+          var hitCorner = false;
           if (_phase == _SelectionPhase.selected && _selectionRect != null) {
+            // Annotation handles take priority in annotation mode.
+            if (activeShapeType != null &&
+                widget.annotationState?.selectedAnnotation != null) {
+              final imagePoint = _widgetToImage(pos);
+              final handles = annotationHandles(
+                widget.annotationState!.selectedAnnotation!,
+              );
+              final hit = hitTestAnnotationHandle(imagePoint, handles);
+              if (hit != null && isCornerAnnotationHandle(hit.type)) {
+                final cursorType = nativeDiagonalCursorType(hit.type);
+                if (cursorType != null) {
+                  _nativeCursorActive = true;
+                  hitCorner = true;
+                  unawaited(
+                    _channel.invokeMethod('setResizeCursor', {
+                      'type': cursorType,
+                    }),
+                  );
+                }
+                return;
+              }
+            }
             final handle = hitTestHandle(pos, _selectionRect!);
             if (handle != null && isCornerHandle(handle)) {
               _setNativeDiagonalCursor(handle);
+              hitCorner = true;
             }
+          }
+          // Reset the native cursor when leaving a corner handle.
+          if (!hitCorner && _nativeCursorActive) {
+            _nativeCursorActive = false;
+            unawaited(_channel.invokeMethod('resetResizeCursor'));
           }
 
           // Only fire AX/geometric hit tests during hovering phase.
@@ -560,54 +982,99 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen> {
         },
         child: Stack(
           children: [
-            // Listener wraps ONLY the canvas — toolbar sits as a sibling
-            // so toolbar clicks are not intercepted by _onPointerDown.
+            // Canvas — visual only (no event handling).
+            Positioned.fill(
+              child: CustomPaint(
+                painter: _SelectionPainter(
+                  backgroundImage: widget.decodedImage,
+                  selectionRect: _displayRect,
+                  detectedWindowRect: _phase == _SelectionPhase.hovering
+                      ? _detectedWindowRect
+                      : null,
+                  cursorPosition: _current,
+                  isDrawing:
+                      _phase == _SelectionPhase.hovering ||
+                      _phase == _SelectionPhase.drawing,
+                  showHandles: _showHandles,
+                  devicePixelRatio: dpr,
+                  screenSize: screenSize,
+                ),
+                isComplex: true,
+                willChange: true,
+              ),
+            ),
+
+            // Annotation overlay — visual only (pointer events handled
+            // by the transparent Listener below). Stays visible during
+            // resizing/moving so annotations render while adjusting.
+            if ((_phase == _SelectionPhase.selected ||
+                    _phase == _SelectionPhase.resizing ||
+                    _phase == _SelectionPhase.moving) &&
+                _selectionRect != null &&
+                widget.annotationState != null)
+              Positioned.fill(
+                child: AnnotationOverlay(
+                  annotationState: widget.annotationState!,
+                  imageDisplayRect: _selectionRect!,
+                  imagePixelSize: Size(
+                    _selectionRect!.width * dpr,
+                    _selectionRect!.height * dpr,
+                  ),
+                  enabled: activeShapeType != null,
+                  handlePointerEvents: false,
+                  sourceImage: widget.decodedImage,
+                  sourceImageOffset: Offset(
+                    _selectionRect!.left * dpr,
+                    _selectionRect!.top * dpr,
+                  ),
+                ),
+              ),
+
+            // Transparent Listener — routes ALL pointer events (handles,
+            // annotation drawing, selection). Sits above the overlay so
+            // it always receives events, but returns false from hitTest
+            // (translucent + childless) so the Stack continues testing
+            // children for hover/cursor.
             Positioned.fill(
               child: Listener(
                 onPointerDown: _onPointerDown,
                 onPointerMove: _onPointerMove,
                 onPointerUp: _onPointerUp,
-                child: CustomPaint(
-                  painter: _SelectionPainter(
-                    backgroundImage: widget.decodedImage,
-                    selectionRect: _displayRect,
-                    detectedWindowRect: _phase == _SelectionPhase.hovering
-                        ? _detectedWindowRect
-                        : null,
-                    cursorPosition: _current,
-                    isDrawing:
-                        _phase == _SelectionPhase.hovering ||
-                        _phase == _SelectionPhase.drawing,
-                    showHandles: _showHandles,
-                    devicePixelRatio: dpr,
-                    screenSize: screenSize,
-                  ),
-                  isComplex: true,
-                  willChange: true,
-                ),
+                behavior: HitTestBehavior.translucent,
+                child: const SizedBox.expand(),
               ),
             ),
 
-            // Toolbar (only visible in selected phase) — outside the
-            // Listener so clicks reach the buttons without interference.
-            if (_phase == _SelectionPhase.selected &&
-                _selectionRect != null) ...[
+            if (_shouldShowToolbar)
               Builder(
                 builder: (context) {
-                  final offset = _toolbarOffset(screenSize);
-                  if (offset == null) return const SizedBox.shrink();
+                  final rect = _toolbarRect(screenSize);
+                  if (rect == null) return const SizedBox.shrink();
                   return Positioned(
-                    left: offset.dx,
-                    top: offset.dy,
-                    child: SelectionToolbar(
-                      onCopy: _handleToolbarCopy,
-                      onSave: _handleToolbarSave,
-                      onClose: _handleToolbarClose,
+                    left: rect.left,
+                    top: rect.top,
+                    child: MouseRegion(
+                      cursor: SystemMouseCursors.basic,
+                      child: SelectionToolbar(
+                        onCopy: _handleToolbarCopy,
+                        onSave: _handleToolbarSave,
+                        onClose: _handleToolbarClose,
+                        onToolTap: widget.annotationState == null
+                            ? null
+                            : (type) => handleToolTap(type),
+                        onUndo: widget.annotationState?.undo,
+                        onRedo: widget.annotationState?.redo,
+                        activeShapeType: activeShapeType,
+                        hasAnnotations:
+                            widget.annotationState?.hasAnnotations ?? false,
+                        canUndo: widget.annotationState?.canUndo ?? false,
+                        canRedo: widget.annotationState?.canRedo ?? false,
+                        settingsLayerLink: _popoverAnchorLink,
+                      ),
                     ),
                   );
                 },
               ),
-            ],
           ],
         ),
       ),

@@ -38,6 +38,8 @@ class ScreenCapture {
 }
 
 class WindowService {
+  /// Minimum preview window size for normal (non-scroll) captures.
+  /// Scroll captures use a fullscreen overlay instead of this window.
   static const _minPreviewSize = Size(400, 300);
   static const _channel = MethodChannel('com.asnap/window');
 
@@ -57,6 +59,10 @@ class WindowService {
   /// Rects are in global CG coordinates (top-left origin).
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
 
+  /// Called when a native toolbar button is tapped.
+  /// Action string identifies the button (e.g. "toolTap:rectangle", "copy").
+  void Function(String action)? onToolbarAction;
+
   Future<void> ensureInitialized() async {
     await windowManager.ensureInitialized();
 
@@ -70,6 +76,9 @@ class WindowService {
         onEscPressed?.call();
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
+      } else if (call.method == 'onToolbarAction') {
+        final action = call.arguments as String?;
+        if (action != null) onToolbarAction?.call(action);
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -106,13 +115,15 @@ class WindowService {
     );
   }
 
-  Future<void> showPreview({
+  /// Show the preview window sized to the image. Returns the computed window
+  /// size in logical points (needed to position the native toolbar below it).
+  Future<Size?> showPreview({
     required int imageWidth,
     required int imageHeight,
     required Size screenSize,
     required Offset screenOrigin,
   }) async {
-    if (imageWidth <= 0 || imageHeight <= 0) return;
+    if (imageWidth <= 0 || imageHeight <= 0) return null;
 
     // Ensure hidden before cleanup to avoid any transient redraw while
     // transitioning from full-screen overlay to preview.
@@ -173,6 +184,8 @@ class WindowService {
     // overlay -> preview transitions.
     await Future<void>.delayed(const Duration(milliseconds: 40));
     await _focusAndActivateWindow();
+
+    return previewSize;
   }
 
   /// Show the overlay window covering the entire screen including the menu bar.
@@ -401,15 +414,21 @@ class WindowService {
     await _channel.invokeMethod('enterScrollCaptureMode');
   }
 
+  /// Transition from scroll capture mode back to interactive overlay.
+  /// Re-enables mouse events while keeping the window fullscreen and borderless.
+  Future<void> exitScrollCaptureMode() async {
+    await _channel.invokeMethod('exitScrollCaptureMode');
+  }
+
   /// Show scroll capture preview: fixed window sized for tall images.
-  /// Uses 50% screen width × 75% screen height.
-  Future<void> showScrollPreview({
+  /// Returns the computed window size for toolbar positioning.
+  Future<Size?> showScrollPreview({
     required int imageWidth,
     required int imageHeight,
     required Size screenSize,
     required Offset screenOrigin,
   }) async {
-    if (imageWidth <= 0 || imageHeight <= 0) return;
+    if (imageWidth <= 0 || imageHeight <= 0) return null;
 
     // Ensure hidden before cleanup to avoid transition flash.
     await windowManager.hide();
@@ -466,6 +485,8 @@ class WindowService {
     await _focusAndActivateWindow();
     await Future<void>.delayed(const Duration(milliseconds: 40));
     await _focusAndActivateWindow();
+
+    return previewSize;
   }
 
   Future<void> hidePreview() async {
@@ -475,6 +496,42 @@ class WindowService {
     await windowManager.hide();
     // Window is already invisible — no need to block on this.
     unawaited(windowManager.setAlwaysOnTop(false));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Native floating toolbar panel
+  // ---------------------------------------------------------------------------
+
+  /// Show the native toolbar panel centered at [centerX] with its top at
+  /// [belowY]. Coordinates are in CG coordinate space (top-left origin).
+  Future<void> showToolbarPanel({
+    required double centerX,
+    required double belowY,
+  }) async {
+    await _channel.invokeMethod('showToolbarPanel', {
+      'centerX': centerX,
+      'belowY': belowY,
+    });
+  }
+
+  /// Hide and destroy the native toolbar panel.
+  Future<void> hideToolbarPanel() async {
+    await _channel.invokeMethod('hideToolbarPanel');
+  }
+
+  /// Update the native toolbar's button states (active tool, undo/redo).
+  Future<void> updateToolbarState({
+    String? activeTool,
+    required bool canUndo,
+    required bool canRedo,
+    required bool hasAnnotations,
+  }) async {
+    await _channel.invokeMethod('updateToolbarState', {
+      'activeTool': activeTool,
+      'canUndo': canUndo,
+      'canRedo': canRedo,
+      'hasAnnotations': hasAnnotations,
+    });
   }
 
   Future<void> _focusAndActivateWindow() async {

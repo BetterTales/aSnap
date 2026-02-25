@@ -2,11 +2,16 @@ import 'package:flutter/material.dart';
 
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
+import 'screens/scroll_result_screen.dart';
+import 'services/window_service.dart';
+import 'state/annotation_state.dart';
 import 'state/app_state.dart';
 import 'widgets/scroll_progress_badge.dart';
 
 class ASnapApp extends StatelessWidget {
   final AppState appState;
+  final AnnotationState annotationState;
+  final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
   final VoidCallback onDiscard;
@@ -24,6 +29,8 @@ class ASnapApp extends StatelessWidget {
   const ASnapApp({
     super.key,
     required this.appState,
+    required this.annotationState,
+    required this.windowService,
     required this.onCopy,
     required this.onSave,
     required this.onDiscard,
@@ -58,9 +65,11 @@ class ASnapApp extends StatelessWidget {
               decodedImage: appState.decodedFullScreen!,
               windowRects: appState.windowRects ?? const [],
               onCancel: onRegionCancel,
+              windowService: windowService,
               onCopy: onRegionCopy,
               onSave: onRegionSave,
               onHitTest: onHitTest,
+              annotationState: annotationState,
             );
           }
           if (appState.status == CaptureStatus.scrollSelecting &&
@@ -69,6 +78,7 @@ class ASnapApp extends StatelessWidget {
               decodedImage: appState.decodedFullScreen!,
               windowRects: appState.windowRects ?? const [],
               onCancel: onRegionCancel,
+              windowService: windowService,
               onRegionSelected: onScrollRegionSelected ?? onRegionSelected,
               onHitTest: onHitTest,
               isScrollSelection: true,
@@ -85,8 +95,20 @@ class ASnapApp extends StatelessWidget {
               onStopButtonRect: onScrollStopButtonRect,
             );
           }
+          if (appState.status == CaptureStatus.scrollResult &&
+              appState.capturedImage != null) {
+            return ScrollResultScreen(
+              stitchedImage: appState.capturedImage!,
+              screenSize: appState.screenSize ?? const Size(1920, 1080),
+              annotationState: annotationState,
+              onCopy: onCopy,
+              onSave: onSave,
+              onDiscard: onDiscard,
+            );
+          }
           return PreviewScreen(
             appState: appState,
+            annotationState: annotationState,
             onCopy: onCopy,
             onSave: onSave,
             onDiscard: onDiscard,

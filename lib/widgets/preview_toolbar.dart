@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+/// Fixed action bar for the preview screen: Copy / Save / Discard.
+///
+/// Sits at the bottom of the preview window. Annotation tool buttons
+/// live in the separate [FloatingToolbar].
 class PreviewToolbar extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onSave;
@@ -57,19 +61,28 @@ class PreviewToolbar extends StatelessWidget {
 class _ActionButton extends StatelessWidget {
   final IconData icon;
   final String label;
-  final VoidCallback onPressed;
+  final VoidCallback? onPressed;
   final bool isDestructive;
 
   const _ActionButton({
     required this.icon,
     required this.label,
-    required this.onPressed,
+    this.onPressed,
     this.isDestructive = false,
   });
 
   @override
   Widget build(BuildContext context) {
-    final foreground = isDestructive ? Colors.red[300]! : Colors.white;
+    final disabled = onPressed == null;
+    final Color foreground;
+    if (disabled) {
+      foreground = Colors.white.withValues(alpha: 0.3);
+    } else if (isDestructive) {
+      foreground = Colors.red[300]!;
+    } else {
+      foreground = Colors.white;
+    }
+
     return Tooltip(
       message: label,
       waitDuration: const Duration(milliseconds: 400),
@@ -78,8 +91,10 @@ class _ActionButton extends StatelessWidget {
         child: InkWell(
           onTap: onPressed,
           borderRadius: BorderRadius.circular(22),
-          hoverColor: Colors.white.withValues(alpha: 0.1),
-          child: Padding(
+          hoverColor: disabled
+              ? Colors.transparent
+              : Colors.white.withValues(alpha: 0.1),
+          child: Container(
             padding: const EdgeInsets.all(8),
             child: Icon(icon, color: foreground, size: 18),
           ),
