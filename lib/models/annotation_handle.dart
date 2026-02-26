@@ -220,10 +220,6 @@ bool isCornerAnnotationHandle(AnnHandleType type) => switch (type) {
 };
 
 /// Returns the appropriate resize cursor for an annotation [handle].
-///
-/// Corner handles return `resizeUpLeft`/etc. but note that on macOS these
-/// silently fall back to the arrow cursor — use [nativeDiagonalCursorType]
-/// with the platform channel for diagonal cursors on macOS.
 MouseCursor cursorForAnnotationHandle(AnnHandleType type) => switch (type) {
   AnnHandleType.topLeft => SystemMouseCursors.resizeUpLeft,
   AnnHandleType.topRight => SystemMouseCursors.resizeUpRight,
@@ -235,14 +231,6 @@ MouseCursor cursorForAnnotationHandle(AnnHandleType type) => switch (type) {
   AnnHandleType.right => SystemMouseCursors.resizeRight,
   AnnHandleType.startPoint || AnnHandleType.endPoint => SystemMouseCursors.grab,
   AnnHandleType.controlPoint => SystemMouseCursors.grab,
-};
-
-/// Returns the native macOS diagonal cursor type string ('nwse' or 'nesw')
-/// for corner handles, or null for non-corner handles.
-String? nativeDiagonalCursorType(AnnHandleType type) => switch (type) {
-  AnnHandleType.topLeft || AnnHandleType.bottomRight => 'nwse',
-  AnnHandleType.topRight || AnnHandleType.bottomLeft => 'nesw',
-  _ => null,
 };
 
 Annotation _withStartEnd(Annotation a, Offset start, Offset end) {

@@ -463,9 +463,6 @@ class _AnnotationOverlayState extends State<AnnotationOverlay> {
       final handles = annotationHandles(state.selectedAnnotation!);
       final hit = hitTestAnnotationHandle(imagePoint, handles);
       if (hit != null) {
-        if (isCornerAnnotationHandle(hit.type)) {
-          return MouseCursor.uncontrolled;
-        }
         return cursorForAnnotationHandle(hit.type);
       }
       // Move cursor for text/stamp body hover.

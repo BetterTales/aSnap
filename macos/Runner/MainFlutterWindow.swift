@@ -228,20 +228,6 @@ class MainFlutterWindow: NSWindow {
       case "exitOverlayMode":
         self.cleanupOverlayState(restoreStyleMask: true)
         result(nil)
-      case "setResizeCursor":
-        // Set a diagonal resize cursor via private NSCursor API.
-        // Flutter's SystemMouseCursors diagonal variants silently fall back
-        // to the arrow cursor on macOS; calling the private API directly
-        // from Swift works reliably.
-        let args = call.arguments as? [String: Any]
-        let type = args?["type"] as? String ?? ""
-        self.setDiagonalResizeCursor(nwse: type == "nwse")
-        result(nil)
-      case "resetResizeCursor":
-        // Clear the native diagonal resize cursor so Flutter can reclaim
-        // cursor management (e.g., when the mouse leaves a corner handle).
-        NSCursor.arrow.set()
-        result(nil)
       case "suspendOverlay":
         // Make overlay invisible for display switching. Uses alphaValue instead
         // of orderOut so the window stays in the compositor and Flutter keeps
@@ -1092,29 +1078,6 @@ class MainFlutterWindow: NSWindow {
     self.collectionBehavior = [.moveToActiveSpace]
     self.ignoresMouseEvents = false
     self.acceptsMouseMovedEvents = false
-  }
-
-  // MARK: - Cursor helpers
-
-  /// Set a diagonal resize cursor using private NSCursor API.
-  ///
-  /// Flutter's `SystemMouseCursors.resizeUpLeft` etc. silently fall back to
-  /// the arrow cursor on macOS because the Flutter engine's Obj-C bridge
-  /// can't reliably invoke the private `_windowResizeNorthWest…` selectors.
-  /// Calling them directly from Swift works.
-  ///
-  /// - Parameter nwse: `true` for NW↔SE diagonal (topLeft / bottomRight),
-  ///                   `false` for NE↔SW diagonal (topRight / bottomLeft).
-  private func setDiagonalResizeCursor(nwse: Bool) {
-    let selectorName = nwse
-      ? "_windowResizeNorthWestSouthEastCursor"
-      : "_windowResizeNorthEastSouthWestCursor"
-    let sel = NSSelectorFromString(selectorName)
-    guard NSCursor.responds(to: sel),
-          let result = NSCursor.perform(sel),
-          let cursor = result.takeUnretainedValue() as? NSCursor
-    else { return }  // Unavailable — cursor stays as-is (no regression).
-    cursor.set()
   }
 
   // MARK: - Overlay helpers

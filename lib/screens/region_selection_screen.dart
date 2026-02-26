@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -92,7 +91,6 @@ class RegionSelectionScreen extends StatefulWidget {
 
 class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     with ToolPopoverMixin {
-  static const _channel = MethodChannel('com.asnap/window');
   final _focusNode = FocusNode();
 
   // -- Interaction state --
@@ -125,10 +123,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   Offset? _moveAnnotationStart;
   DateTime? _lastAnnotationPointerDown;
   Offset? _lastAnnotationPointerDownPos;
-
-  /// True while a native diagonal resize cursor is active (set via platform
-  /// channel). Used to reset the cursor when leaving corner handles.
-  bool _nativeCursorActive = false;
 
   /// True while the pointer hovers over the selection toolbar.
   bool _isHoveringToolbar = false;
@@ -261,11 +255,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             if (hit != null) {
               _draggingAnnotationHandle = true;
               _activeAnnotationHandle = hit;
-              if (isCornerAnnotationHandle(hit.type)) {
-                _setNativeDiagonalCursorType(
-                  nativeDiagonalCursorType(hit.type),
-                );
-              }
               state.beginEdit();
               return;
             }
@@ -282,9 +271,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            if (isCornerHandle(selHandle)) {
-              _setNativeDiagonalCursor(selHandle);
-            }
             return;
           }
 
@@ -353,9 +339,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            if (isCornerHandle(handle)) {
-              _setNativeDiagonalCursor(handle);
-            }
             return;
           }
         }
@@ -773,12 +756,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         return SystemMouseCursors.precise;
 
       case _SelectionPhase.resizing:
-        // Corner handles use native diagonal cursors (Flutter's macOS
-        // implementation silently falls back to the arrow cursor).
-        if (isCornerHandle(_activeHandle!)) {
-          if (Platform.isMacOS) return MouseCursor.uncontrolled;
-          return cursorForHandle(_activeHandle!);
-        }
         return cursorForHandle(_activeHandle!);
 
       case _SelectionPhase.moving:
@@ -797,10 +774,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             );
             final hit = hitTestAnnotationHandle(imagePoint, handles);
             if (hit != null) {
-              if (isCornerAnnotationHandle(hit.type)) {
-                if (Platform.isMacOS) return MouseCursor.uncontrolled;
-                return cursorForAnnotationHandle(hit.type);
-              }
               return cursorForAnnotationHandle(hit.type);
             }
             // Move cursor for text/stamp body hover.
@@ -815,10 +788,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           // Fall back to selection rect handles.
           final selHandle = hitTestHandle(_current, _selectionRect!);
           if (selHandle != null) {
-            if (isCornerHandle(selHandle)) {
-              if (Platform.isMacOS) return MouseCursor.uncontrolled;
-              return cursorForHandle(selHandle);
-            }
             return cursorForHandle(selHandle);
           }
           if (_selectionRect!.contains(_current)) {
@@ -829,33 +798,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         // Not in annotation mode.
         final handle = hitTestHandle(_current, _selectionRect!);
         if (handle != null) {
-          if (isCornerHandle(handle)) {
-            if (Platform.isMacOS) return MouseCursor.uncontrolled;
-            return cursorForHandle(handle);
-          }
           return cursorForHandle(handle);
         }
         if (_selectionRect!.contains(_current)) return SystemMouseCursors.move;
         return SystemMouseCursors.precise;
     }
-  }
-
-  /// Set a diagonal resize cursor via native macOS API.
-  ///
-  /// Flutter's `SystemMouseCursors.resizeUpLeft` etc. don't work on macOS,
-  /// so we call the private NSCursor API directly through the platform channel.
-  void _setNativeDiagonalCursor(SelectionHandle handle) {
-    _setNativeDiagonalCursorType(switch (handle) {
-      SelectionHandle.topLeft || SelectionHandle.bottomRight => 'nwse',
-      SelectionHandle.topRight || SelectionHandle.bottomLeft => 'nesw',
-      _ => null,
-    });
-  }
-
-  void _setNativeDiagonalCursorType(String? type) {
-    if (!Platform.isMacOS || type == null) return;
-    _nativeCursorActive = true;
-    unawaited(_channel.invokeMethod('setResizeCursor', {'type': type}));
   }
 
   // -----------------------------------------------------------------------
@@ -930,42 +877,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           setState(() {
             _current = pos;
           });
-
-          // Set native diagonal cursor for corner handles (Flutter's macOS
-          // implementation doesn't support diagonal resize cursors).
-          // Track whether we hit a corner this cycle so we can reset the
-          // native cursor when leaving.
-          var hitCorner = false;
-          if (_phase == _SelectionPhase.selected && _selectionRect != null) {
-            // Annotation handles take priority in annotation mode.
-            if (activeShapeType != null &&
-                widget.annotationState?.selectedAnnotation != null) {
-              final imagePoint = _widgetToImage(pos);
-              final handles = annotationHandles(
-                widget.annotationState!.selectedAnnotation!,
-              );
-              final hit = hitTestAnnotationHandle(imagePoint, handles);
-              if (hit != null && isCornerAnnotationHandle(hit.type)) {
-                hitCorner = true;
-                _setNativeDiagonalCursorType(
-                  nativeDiagonalCursorType(hit.type),
-                );
-                return;
-              }
-            }
-            final handle = hitTestHandle(pos, _selectionRect!);
-            if (handle != null && isCornerHandle(handle)) {
-              _setNativeDiagonalCursor(handle);
-              hitCorner = true;
-            }
-          }
-          // Reset the native cursor when leaving a corner handle.
-          if (!hitCorner && _nativeCursorActive) {
-            _nativeCursorActive = false;
-            if (Platform.isMacOS) {
-              unawaited(_channel.invokeMethod('resetResizeCursor'));
-            }
-          }
 
           // Only fire AX/geometric hit tests during hovering phase.
           if (_phase == _SelectionPhase.hovering) {
