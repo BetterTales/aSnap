@@ -11,6 +11,7 @@ import '../models/annotation.dart';
 class SelectionToolbar extends StatelessWidget {
   final VoidCallback onCopy;
   final VoidCallback onSave;
+  final VoidCallback? onPin;
   final VoidCallback onClose;
 
   /// Called when a tool button is tapped. Null disables all tool buttons.
@@ -34,6 +35,7 @@ class SelectionToolbar extends StatelessWidget {
     super.key,
     required this.onCopy,
     required this.onSave,
+    this.onPin,
     required this.onClose,
     this.onToolTap,
     this.onUndo,
@@ -102,6 +104,14 @@ class SelectionToolbar extends StatelessWidget {
             label: 'Save',
             onPressed: onSave,
           ),
+          if (onPin != null) ...[
+            const SizedBox(width: 4),
+            _ActionButton(
+              icon: Icons.push_pin_outlined,
+              label: 'Pin',
+              onPressed: onPin,
+            ),
+          ],
           const SizedBox(width: 4),
           _ActionButton(
             icon: Icons.close_rounded,

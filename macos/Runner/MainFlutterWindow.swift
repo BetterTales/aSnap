@@ -37,6 +37,9 @@ class MainFlutterWindow: NSWindow {
   private var toolbarHitTestMonitor: Any?
   private var overlayIgnoresMouseForToolbar = false
 
+  // Pinned image panel — floating sticker that persists across captures.
+  private var pinnedPanel: PinnedImagePanel?
+
   private func screenAndBounds(forCGPoint point: CGPoint) -> (NSScreen, CGRect)? {
     for screen in NSScreen.screens {
       guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
@@ -746,6 +749,133 @@ class MainFlutterWindow: NSWindow {
           hasAnnotations: hasAnnotations
         )
         result(nil)
+
+      // MARK: Pinned image panel
+      case "pinImage":
+        guard let args = call.arguments as? [String: Any],
+              let typedData = args["bytes"] as? FlutterStandardTypedData,
+              let width = args["width"] as? Int,
+              let height = args["height"] as? Int else {
+          MainFlutterWindow.log("pinImage: INVALID ARGS — missing bytes/width/height")
+          result(nil); return
+        }
+        let bytes = typedData.data
+        MainFlutterWindow.log("pinImage: \(width)x\(height), bytes=\(bytes.count)")
+        guard width > 0, height > 0, bytes.count >= width * height * 4 else {
+          MainFlutterWindow.log("pinImage: INVALID size or bytes too short")
+          result(nil); return
+        }
+
+        // Close any existing pin panel first.
+        self.pinnedPanel?.close()
+        self.pinnedPanel = nil
+
+        // Create NSImage from raw RGBA bytes.
+        guard let bitmapRep = NSBitmapImageRep(
+          bitmapDataPlanes: nil,
+          pixelsWide: width,
+          pixelsHigh: height,
+          bitsPerSample: 8,
+          samplesPerPixel: 4,
+          hasAlpha: true,
+          isPlanar: false,
+          colorSpaceName: .deviceRGB,
+          bytesPerRow: width * 4,
+          bitsPerPixel: 32
+        ) else { result(nil); return }
+        bytes.withUnsafeBytes { rawPtr in
+          guard let src = rawPtr.baseAddress else { return }
+          memcpy(bitmapRep.bitmapData!, src, width * height * 4)
+        }
+        let nsImage = NSImage(size: NSSize(width: width, height: height))
+        nsImage.addRepresentation(bitmapRep)
+
+        // Determine panel frame: use explicit CG frame if provided, else
+        // fall back to the current main window frame.
+        let panelFrame: NSRect
+        if let fx = args["frameX"] as? Double,
+           let fy = args["frameY"] as? Double,
+           let fw = args["frameWidth"] as? Double,
+           let fh = args["frameHeight"] as? Double {
+          // CG coordinates (top-left origin) → NS coordinates (bottom-left origin).
+          let cgRect = CGRect(x: fx, y: fy, width: fw, height: fh)
+          let nsOrig = self.nsOrigin(forCGTopLeftRect: cgRect)
+          panelFrame = NSRect(origin: nsOrig, size: cgRect.size)
+        } else {
+          panelFrame = self.frame
+        }
+        let panel = PinnedImagePanel(
+          contentRect: panelFrame,
+          styleMask: [.borderless, .nonactivatingPanel],
+          backing: .buffered,
+          defer: false
+        )
+        panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = true
+        panel.collectionBehavior = [.moveToActiveSpace]
+
+        let imageView = PinnedImageView(frame: NSRect(origin: .zero, size: panelFrame.size))
+        imageView.autoresizingMask = [.width, .height]
+        imageView.displayImage = nsImage
+        panel.contentView = imageView
+
+        // Wire keyboard callbacks.
+        panel.onEdit = { [weak self] in
+          DispatchQueue.main.async {
+            self?.flutterChannel?.invokeMethod("onEditPinnedImage", arguments: nil)
+          }
+        }
+        panel.onClose = { [weak self] in
+          DispatchQueue.main.async {
+            self?.pinnedPanel = nil
+            self?.flutterChannel?.invokeMethod("onPinnedImageClosed", arguments: nil)
+          }
+        }
+
+        self.pinnedPanel = panel
+        panel.makeKeyAndOrderFront(nil)
+        MainFlutterWindow.log("pinImage: panel created at \(NSStringFromRect(panelFrame))")
+        result(nil)
+
+      case "closePinnedImage":
+        self.pinnedPanel?.close()
+        self.pinnedPanel = nil
+        result(nil)
+
+      case "getPinnedPanelFrame":
+        guard let panel = self.pinnedPanel else { result(nil); return }
+        // Convert NS frame (bottom-left origin) to CG frame (top-left origin).
+        let nsFrame = panel.frame
+        let screenHeight = panel.screen?.frame.height ?? NSScreen.main?.frame.height ?? 0
+        let cgX = Double(nsFrame.origin.x)
+        let cgY = Double(screenHeight - nsFrame.origin.y - nsFrame.height)
+        result([
+          "x": cgX,
+          "y": cgY,
+          "width": Double(nsFrame.width),
+          "height": Double(nsFrame.height),
+        ])
+
+      case "getScreenInfo":
+        // Return logical size and CG origin of the display under the cursor.
+        // Lightweight alternative to captureScreen when only screen info is needed.
+        let mouseLocation = NSEvent.mouseLocation
+        let allScreens = NSScreen.screens
+        let target = allScreens.first(where: { $0.frame.contains(mouseLocation) })
+          ?? NSScreen.main ?? allScreens.first!
+        guard let displayID = (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else {
+          result(nil); return
+        }
+        let cgBounds = CGDisplayBounds(displayID)
+        result([
+          "screenWidth": Double(target.frame.size.width),
+          "screenHeight": Double(target.frame.size.height),
+          "screenOriginX": Double(cgBounds.origin.x),
+          "screenOriginY": Double(cgBounds.origin.y),
+        ])
 
       case "registerTrayShortcuts":
         // Store shortcut mapping; tray_manager handles menu creation and display.
@@ -1733,5 +1863,57 @@ private class ToolbarContentView: NSView {
 
   override func cursorUpdate(with event: NSEvent) {
     NSCursor.arrow.set()
+  }
+}
+
+// MARK: - PinnedImagePanel
+
+/// Floating panel that displays a pinned screenshot as a sticker.
+/// Supports drag-to-move, Space to edit, Escape to close.
+private class PinnedImagePanel: NSPanel {
+  var onEdit: (() -> Void)?
+  var onClose: (() -> Void)?
+
+  override var canBecomeKey: Bool { true }
+
+  override func keyDown(with event: NSEvent) {
+    switch event.keyCode {
+    case 49: // Space → edit
+      onEdit?()
+    case 53: // Escape → close
+      let closeCallback = onClose
+      self.close()
+      closeCallback?()
+    default:
+      break // Suppress system beep for all keys.
+    }
+  }
+}
+
+// MARK: - PinnedImageView
+
+/// NSView that draws a pinned image scaled to fill its bounds.
+private class PinnedImageView: NSView {
+  var displayImage: NSImage?
+
+  override var isOpaque: Bool { true }
+  override var mouseDownCanMoveWindow: Bool { true }
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+  override func mouseDown(with event: NSEvent) {
+    // Make the panel key so it receives keyboard events (Space/Escape)
+    // BEFORE the drag gesture starts. Without this, isMovableByWindowBackground
+    // consumes the click and the panel never becomes key.
+    window?.makeKey()
+    super.mouseDown(with: event)
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    guard let image = displayImage else {
+      NSColor.black.setFill()
+      dirtyRect.fill()
+      return
+    }
+    image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1.0)
   }
 }

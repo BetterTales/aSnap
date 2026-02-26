@@ -63,6 +63,12 @@ class WindowService {
   /// Action string identifies the button (e.g. "toolTap:rectangle", "copy").
   void Function(String action)? onToolbarAction;
 
+  /// Called when the user presses Space on a pinned image panel (edit request).
+  VoidCallback? onEditPinnedImage;
+
+  /// Called when the user presses Escape on a pinned image panel (close/destroy).
+  VoidCallback? onPinnedImageClosed;
+
   Future<void> ensureInitialized() async {
     await windowManager.ensureInitialized();
 
@@ -79,6 +85,10 @@ class WindowService {
       } else if (call.method == 'onToolbarAction') {
         final action = call.arguments as String?;
         if (action != null) onToolbarAction?.call(action);
+      } else if (call.method == 'onEditPinnedImage') {
+        onEditPinnedImage?.call();
+      } else if (call.method == 'onPinnedImageClosed') {
+        onPinnedImageClosed?.call();
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -234,6 +244,40 @@ class WindowService {
   /// Also re-activates the window and reinstalls display-change monitors.
   Future<void> revealOverlay() async {
     await _channel.invokeMethod('revealOverlay');
+  }
+
+  /// Show the preview window at an exact position and size.
+  ///
+  /// Unlike [showPreview] (which centers + scales), this method positions the
+  /// window at the given [rect] in CG coordinates (top-left origin, absolute).
+  /// It performs full window cleanup (overlay teardown, opacity restoration)
+  /// making it safe to call after [suspendOverlay].
+  Future<void> showPreviewAtRect({required Rect rect}) async {
+    await windowManager.hide();
+    await _channel.invokeMethod('cleanupOverlayMode');
+
+    final size = Size(rect.width, rect.height);
+    await windowManager.setMinimumSize(const Size(0, 0));
+    await windowManager.setMaximumSize(
+      const Size(double.infinity, double.infinity),
+    );
+    await windowManager.setTitleBarStyle(
+      TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    );
+    await windowManager.setSize(size);
+    await windowManager.setMinimumSize(size);
+    await windowManager.setMaximumSize(size);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setHasShadow(true);
+    await windowManager.setPosition(Offset(rect.left, rect.top));
+
+    await windowManager.setOpacity(1.0);
+    await windowManager.show();
+    await _focusAndActivateWindow();
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    await _focusAndActivateWindow();
   }
 
   /// Shrink the overlay window in-place to the selection rect for preview.
@@ -532,6 +576,72 @@ class WindowService {
       'canRedo': canRedo,
       'hasAnnotations': hasAnnotations,
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Pinned image panel
+  // ---------------------------------------------------------------------------
+
+  /// Create a native floating panel displaying the pinned image at the current
+  /// main window position. [bytes] must be raw RGBA pixel data.
+  /// Pin an image as a floating native panel.
+  ///
+  /// [cgFrame] is an optional CG-coordinate rect (top-left origin) specifying
+  /// the panel's screen position and size. If omitted, the panel appears at the
+  /// current main Flutter window frame.
+  Future<void> pinImage({
+    required Uint8List bytes,
+    required int width,
+    required int height,
+    Rect? cgFrame,
+  }) async {
+    final args = <String, dynamic>{
+      'bytes': bytes,
+      'width': width,
+      'height': height,
+    };
+    if (cgFrame != null) {
+      args['frameX'] = cgFrame.left;
+      args['frameY'] = cgFrame.top;
+      args['frameWidth'] = cgFrame.width;
+      args['frameHeight'] = cgFrame.height;
+    }
+    await _channel.invokeMethod('pinImage', args);
+  }
+
+  /// Close and destroy the native pinned image panel.
+  Future<void> closePinnedImage() async {
+    await _channel.invokeMethod('closePinnedImage');
+  }
+
+  /// Get the current CG-coordinate frame of the pinned image panel.
+  /// Returns null if no panel exists.
+  Future<Rect?> getPinnedPanelFrame() async {
+    final result = await _channel.invokeMethod<Map>('getPinnedPanelFrame');
+    if (result == null) return null;
+    return Rect.fromLTWH(
+      (result['x'] as num).toDouble(),
+      (result['y'] as num).toDouble(),
+      (result['width'] as num).toDouble(),
+      (result['height'] as num).toDouble(),
+    );
+  }
+
+  /// Get screen info (logical size + CG origin) for the display under the cursor.
+  /// Lightweight alternative to [captureScreen] when only screen info is needed.
+  Future<({Size screenSize, Offset screenOrigin})?> getScreenInfo() async {
+    final result = await _channel.invokeMethod<Map>('getScreenInfo');
+    if (result == null) return null;
+    return (
+      screenSize: Size(
+        (result['screenWidth'] as num).toDouble(),
+        (result['screenHeight'] as num).toDouble(),
+      ),
+      screenOrigin: Offset(
+        (result['screenOriginX'] as num).toDouble(),
+        (result['screenOriginY'] as num).toDouble(),
+      ),
+    );
   }
 
   Future<void> _focusAndActivateWindow() async {

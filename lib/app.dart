@@ -14,12 +14,14 @@ class ASnapApp extends StatelessWidget {
   final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
+  final VoidCallback? onPin;
   final VoidCallback onDiscard;
   final void Function(Rect selectionRect) onRegionSelected;
 
   /// Snipaste-style overlay actions for region capture.
   final void Function(Rect selectionRect)? onRegionCopy;
   final void Function(Rect selectionRect)? onRegionSave;
+  final void Function(Rect selectionRect)? onRegionPin;
 
   final void Function(Rect selectionRect)? onScrollRegionSelected;
   final VoidCallback onRegionCancel;
@@ -33,10 +35,12 @@ class ASnapApp extends StatelessWidget {
     required this.windowService,
     required this.onCopy,
     required this.onSave,
+    this.onPin,
     required this.onDiscard,
     required this.onRegionSelected,
     this.onRegionCopy,
     this.onRegionSave,
+    this.onRegionPin,
     this.onScrollRegionSelected,
     required this.onRegionCancel,
     this.onHitTest,
@@ -68,6 +72,7 @@ class ASnapApp extends StatelessWidget {
               windowService: windowService,
               onCopy: onRegionCopy,
               onSave: onRegionSave,
+              onPin: onRegionPin,
               onHitTest: onHitTest,
               annotationState: annotationState,
             );
@@ -111,6 +116,7 @@ class ASnapApp extends StatelessWidget {
             annotationState: annotationState,
             onCopy: onCopy,
             onSave: onSave,
+            onPin: onPin,
             onDiscard: onDiscard,
           );
         },

@@ -39,8 +39,7 @@ void main() {
       final tl = handles.firstWhere((h) => h.type == AnnHandleType.topLeft);
       final tr = handles.firstWhere((h) => h.type == AnnHandleType.topRight);
       final bl = handles.firstWhere((h) => h.type == AnnHandleType.bottomLeft);
-      final br =
-          handles.firstWhere((h) => h.type == AnnHandleType.bottomRight);
+      final br = handles.firstWhere((h) => h.type == AnnHandleType.bottomRight);
       expect(tl.position, const Offset(10, 10));
       expect(tr.position, const Offset(60, 10));
       expect(bl.position, const Offset(10, 60));

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:tray_manager/tray_manager.dart';
 
@@ -11,6 +12,7 @@ class TrayService with TrayListener {
   VoidCallback? onCaptureFullScreen;
   VoidCallback? onCaptureRegion;
   VoidCallback? onCaptureScroll;
+  VoidCallback? onPin;
   VoidCallback? onQuit;
 
   Future<void> init() async {
@@ -25,6 +27,8 @@ class TrayService with TrayListener {
         MenuItem(key: 'capture_region', label: 'Region'),
         MenuItem(key: 'capture_scroll', label: 'Scroll'),
         MenuItem(key: 'capture_full_screen', label: 'Full Screen'),
+        MenuItem.separator(),
+        MenuItem(key: 'pin', label: 'Pin'),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit $kAppName'),
       ],
@@ -48,6 +52,11 @@ class TrayService with TrayListener {
           'keyEquivalent': '3',
           'modifiers': ['command', 'shift'],
         },
+        {
+          'label': 'Pin',
+          'keyEquivalent': 'p',
+          'modifiers': ['command', 'shift'],
+        },
       ]);
     }
 
@@ -56,6 +65,7 @@ class TrayService with TrayListener {
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) {
+    debugPrint('[aSnap] tray click: key=${menuItem.key}');
     switch (menuItem.key) {
       case 'capture_full_screen':
         onCaptureFullScreen?.call();
@@ -63,6 +73,9 @@ class TrayService with TrayListener {
         onCaptureRegion?.call();
       case 'capture_scroll':
         onCaptureScroll?.call();
+      case 'pin':
+        debugPrint('[aSnap] tray: calling onPin (null=${onPin == null})');
+        onPin?.call();
       case 'quit':
         onQuit?.call();
     }

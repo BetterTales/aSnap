@@ -19,6 +19,7 @@ class PreviewScreen extends StatefulWidget {
   final AnnotationState annotationState;
   final VoidCallback onCopy;
   final VoidCallback onSave;
+  final VoidCallback? onPin;
   final VoidCallback onDiscard;
 
   const PreviewScreen({
@@ -27,6 +28,7 @@ class PreviewScreen extends StatefulWidget {
     required this.annotationState,
     required this.onCopy,
     required this.onSave,
+    this.onPin,
     required this.onDiscard,
   });
 
@@ -119,6 +121,11 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
     // Cmd+Z → undo
     if (meta && event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState.undo();
+      return true;
+    }
+    // Cmd+Shift+P → pin to screen
+    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+      widget.onPin?.call();
       return true;
     }
 
@@ -226,6 +233,7 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
                         child: SelectionToolbar(
                           onCopy: widget.onCopy,
                           onSave: widget.onSave,
+                          onPin: widget.onPin,
                           onClose: widget.onDiscard,
                           onToolTap: handleToolTap,
                           onUndo: widget.annotationState.undo,

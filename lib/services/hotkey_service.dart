@@ -10,6 +10,7 @@ class HotkeyService {
     required VoidCallback onFullScreen,
     required VoidCallback onRegion,
     required VoidCallback onScrollCapture,
+    required VoidCallback onPin,
   }) async {
     await hotKeyManager.unregisterAll();
     await hotKeyManager.register(
@@ -24,6 +25,7 @@ class HotkeyService {
       kScrollCaptureHotkey,
       keyDownHandler: (_) => onScrollCapture(),
     );
+    await hotKeyManager.register(kPinHotkey, keyDownHandler: (_) => onPin());
     _registered = true;
   }
 

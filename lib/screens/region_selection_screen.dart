@@ -51,6 +51,7 @@ class RegionSelectionScreen extends StatefulWidget {
   /// Callbacks for Snipaste-style toolbar actions (normal region capture).
   final void Function(Rect selectionRect)? onCopy;
   final void Function(Rect selectionRect)? onSave;
+  final void Function(Rect selectionRect)? onPin;
 
   /// Legacy callback for draw-once selection (scroll capture compatibility).
   final void Function(Rect selectionRect)? onRegionSelected;
@@ -76,6 +77,7 @@ class RegionSelectionScreen extends StatefulWidget {
     required this.windowService,
     this.onCopy,
     this.onSave,
+    this.onPin,
     this.onRegionSelected,
     this.onHitTest,
     this.isScrollSelection = false,
@@ -682,6 +684,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       return true;
     }
 
+    // Cmd+Shift+P → pin to screen
+    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+      _handleToolbarPin();
+      return true;
+    }
+
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
@@ -902,6 +910,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     widget.onSave?.call(_selectionRect!);
   }
 
+  void _handleToolbarPin() {
+    if (_selectionRect == null) return;
+    widget.onPin?.call(_selectionRect!);
+  }
+
   void _handleToolbarClose() {
     widget.onCancel();
   }
@@ -1058,6 +1071,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                       child: SelectionToolbar(
                         onCopy: _handleToolbarCopy,
                         onSave: _handleToolbarSave,
+                        onPin: widget.onPin != null ? _handleToolbarPin : null,
                         onClose: _handleToolbarClose,
                         onToolTap: widget.annotationState == null
                             ? null
