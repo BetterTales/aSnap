@@ -343,4 +343,23 @@ void main() {
       expect(state.settings.color, const Color(0xFF2979FF));
     });
   });
+
+  group('applySettingsToSelected', () {
+    test('keeps marker thickness scaling when updating selected marker', () {
+      final state = AnnotationState();
+      state.updateSettings(
+        state.settings.copyWith(shapeType: ShapeType.marker, strokeWidth: 6),
+      );
+      state.startDrawing(const Offset(10, 10));
+      state.updateDrawing(const Offset(100, 100));
+      state.finishDrawing();
+      expect(state.annotations.single.strokeWidth, 18.0);
+
+      state.updateSettings(state.settings.copyWith(strokeWidth: 8));
+      final applied = state.applySettingsToSelected(state.settings);
+
+      expect(applied, isTrue);
+      expect(state.annotations.single.strokeWidth, 24.0);
+    });
+  });
 }

@@ -888,6 +888,7 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
       format: ui.ImageByteFormat.rawStraightRgba,
     );
     if (byteData != null) {
+      _pinnedFlutterImage?.dispose();
       _pinnedFlutterImage = cropped;
       await _windowService.pinImage(
         bytes: byteData.buffer.asUint8List(),
@@ -982,6 +983,7 @@ Future<void> _handlePin() async {
   }
 
   // Keep a Dart-side reference for fast re-edit via Space.
+  _pinnedFlutterImage?.dispose();
   if (fromPreview) {
     if (identical(finalImage, sourceImage)) {
       _appState.detachCapturedImage();

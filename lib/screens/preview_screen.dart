@@ -400,6 +400,13 @@ class _PreviewScreenState extends State<PreviewScreen>
                     sourceImage: image,
                   ),
 
+                  // Window drag area (only when NOT drawing). Keep this below
+                  // the in-window toolbar so action buttons remain clickable.
+                  if (activeShapeType == null)
+                    Positioned.fill(
+                      child: DragToMoveArea(child: const SizedBox.expand()),
+                    ),
+
                   if (widget.useNativeToolbar)
                     Positioned(
                       left:
@@ -439,13 +446,6 @@ class _PreviewScreenState extends State<PreviewScreen>
                           settingsLayerLink: _popoverAnchorLink,
                         ),
                       ),
-                    ),
-
-                  // Window drag area (only when NOT drawing) — keep on top so it
-                  // receives pointer events even when the image covers the window.
-                  if (activeShapeType == null)
-                    Positioned.fill(
-                      child: DragToMoveArea(child: const SizedBox.expand()),
                     ),
                 ],
               );

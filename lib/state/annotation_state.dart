@@ -414,10 +414,9 @@ class AnnotationState extends ChangeNotifier {
     if (_editing) {
       updateSelected(updated);
     } else {
-      final list = [...annotations];
-      list[idx] = updated;
-      _history[_historyIndex] = list;
-      notifyListeners();
+      beginEdit();
+      updateSelected(updated);
+      commitEdit();
     }
     return true;
   }
@@ -437,11 +436,15 @@ class AnnotationState extends ChangeNotifier {
       case ShapeType.arrow:
       case ShapeType.line:
       case ShapeType.pencil:
-      case ShapeType.marker:
       case ShapeType.number:
         return annotation.copyWith(
           color: settings.color,
           strokeWidth: settings.strokeWidth,
+        );
+      case ShapeType.marker:
+        return annotation.copyWith(
+          color: settings.color,
+          strokeWidth: settings.strokeWidth * 3,
         );
       case ShapeType.text:
         final updated = annotation.copyWith(

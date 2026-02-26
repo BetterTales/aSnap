@@ -25,7 +25,12 @@ Rect computeToolbarRect({required Rect anchorRect, required Size screenSize}) {
     }
   }
 
-  x = x.clamp(0.0, screenSize.width - kToolbarSize.width);
+  final maxX = screenSize.width - kToolbarSize.width;
+  if (maxX <= 0) {
+    x = 0.0;
+  } else {
+    x = x.clamp(0.0, maxX);
+  }
   return Rect.fromLTWH(x, y, kToolbarSize.width, kToolbarSize.height);
 }
 
@@ -34,7 +39,13 @@ Rect computeToolbarRectBelowWindow({
   required Rect screenRect,
 }) {
   var x = windowRect.center.dx - kToolbarSize.width / 2;
-  x = x.clamp(screenRect.left, screenRect.right - kToolbarSize.width);
+  final minX = screenRect.left;
+  final maxX = screenRect.right - kToolbarSize.width;
+  if (maxX <= minX) {
+    x = minX;
+  } else {
+    x = x.clamp(minX, maxX);
+  }
 
   final minY = windowRect.bottom + kToolbarGap;
   final maxY = screenRect.bottom - kToolbarSize.height;
