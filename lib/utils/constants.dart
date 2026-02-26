@@ -32,6 +32,14 @@ HotKey get kFullScreenHotkey => HotKey(
   scope: HotKeyScope.system,
 );
 
+HotKey get kPinHotkey => HotKey(
+  key: PhysicalKeyboardKey.keyP,
+  modifiers: Platform.isMacOS
+      ? [HotKeyModifier.meta, HotKeyModifier.shift]
+      : [HotKeyModifier.control, HotKeyModifier.shift],
+  scope: HotKeyScope.system,
+);
+
 // Scroll capture tuning constants
 const int kScrollMaxFrames = 150;
 const int kScrollTimeoutSeconds = 30;

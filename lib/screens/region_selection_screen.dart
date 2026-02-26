@@ -11,7 +11,9 @@ import '../models/annotation_hit_test.dart';
 import '../models/selection_handle.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
+import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
+import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
@@ -51,6 +53,7 @@ class RegionSelectionScreen extends StatefulWidget {
   /// Callbacks for Snipaste-style toolbar actions (normal region capture).
   final void Function(Rect selectionRect)? onCopy;
   final void Function(Rect selectionRect)? onSave;
+  final void Function(Rect selectionRect)? onPin;
 
   /// Legacy callback for draw-once selection (scroll capture compatibility).
   final void Function(Rect selectionRect)? onRegionSelected;
@@ -67,6 +70,8 @@ class RegionSelectionScreen extends StatefulWidget {
   /// Annotation state for drawing shapes on the selected region.
   final AnnotationState? annotationState;
   final WindowService windowService;
+  final Offset screenOrigin;
+  final bool useNativeToolbar;
 
   const RegionSelectionScreen({
     super.key,
@@ -74,8 +79,11 @@ class RegionSelectionScreen extends StatefulWidget {
     required this.windowRects,
     required this.onCancel,
     required this.windowService,
+    required this.screenOrigin,
+    required this.useNativeToolbar,
     this.onCopy,
     this.onSave,
+    this.onPin,
     this.onRegionSelected,
     this.onHitTest,
     this.isScrollSelection = false,
@@ -87,10 +95,8 @@ class RegionSelectionScreen extends StatefulWidget {
 }
 
 class _RegionSelectionScreenState extends State<RegionSelectionScreen>
-    with ToolPopoverMixin {
+    with ToolPopoverMixin, NativeToolbarMixin {
   static const _channel = MethodChannel('com.asnap/window');
-  static const _toolbarSize = Size(536, 44);
-  static const _toolbarGap = 8.0;
   final _focusNode = FocusNode();
 
   // -- Interaction state --
@@ -138,17 +144,55 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   LayerLink get popoverAnchor => _popoverAnchorLink;
 
   @override
+  bool get useNativeToolbar => widget.useNativeToolbar;
+
+  @override
+  WindowService get nativeToolbarWindowService => widget.windowService;
+
+  @override
+  AnnotationState? get nativeToolbarAnnotationState => widget.annotationState;
+
+  @override
+  bool get nativeToolbarShowsPin => widget.onPin != null;
+
+  @override
+  void handleNativeAction(String action) {
+    switch (action) {
+      case 'undo':
+        widget.annotationState?.undo();
+        break;
+      case 'redo':
+        widget.annotationState?.redo();
+        break;
+      case 'copy':
+        _handleToolbarCopy();
+        break;
+      case 'save':
+        _handleToolbarSave();
+        break;
+      case 'pin':
+        _handleToolbarPin();
+        break;
+      case 'discard':
+        _handleToolbarClose();
+        break;
+    }
+  }
+
+  @override
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
     widget.annotationState?.addListener(_handleAnnotationStateChange);
+    initNativeToolbar();
   }
 
   @override
   void dispose() {
+    widget.windowService.overlaySelectionActive = false;
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     widget.annotationState?.removeListener(_handleAnnotationStateChange);
-    unawaited(widget.windowService.hideToolbarPanel());
+    disposeNativeToolbar();
     removePopover();
     _focusNode.dispose();
     super.dispose();
@@ -682,6 +726,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       return true;
     }
 
+    // Cmd+Shift+P → pin to screen
+    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+      _handleToolbarPin();
+      return true;
+    }
+
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
@@ -847,45 +897,23 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   bool get _shouldShowToolbar {
     if (widget.isScrollSelection) return false;
     if (_selectionRect == null) return false;
-    return _phase == _SelectionPhase.selected;
+    return _phase == _SelectionPhase.selected ||
+        _phase == _SelectionPhase.resizing ||
+        _phase == _SelectionPhase.moving;
   }
 
-  /// Compute native toolbar rect relative to the selection rect.
-  /// Priority: below selection → above selection → inside (bottom edge).
   Rect? _toolbarRect(Size screenSize) {
     final sel = _selectionRect;
     if (sel == null) return null;
-
-    var x = sel.center.dx - _toolbarSize.width / 2;
-    double y;
-
-    final belowY = sel.bottom + _toolbarGap;
-    final aboveY = sel.top - _toolbarSize.height - _toolbarGap;
-
-    if (belowY + _toolbarSize.height <= screenSize.height) {
-      // Fits below the selection.
-      y = belowY;
-    } else if (aboveY >= 0) {
-      // Fits above the selection.
-      y = aboveY;
-    } else {
-      // Neither above nor below works — place inside the selection,
-      // anchored to the bottom edge with an inset.
-      y = sel.bottom - _toolbarSize.height - _toolbarGap;
-      // Ensure it doesn't go above the selection top.
-      if (y < sel.top + _toolbarGap) {
-        y = sel.top + _toolbarGap;
-      }
-    }
-
-    // Clamp horizontally.
-    x = x.clamp(0, screenSize.width - _toolbarSize.width);
-
-    return Rect.fromLTWH(x, y, _toolbarSize.width, _toolbarSize.height);
+    return computeToolbarRect(anchorRect: sel, screenSize: screenSize);
   }
 
   void _handleAnnotationStateChange() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    if (widget.useNativeToolbar) {
+      syncNativeToolbarState();
+    }
+    setState(() {});
   }
 
   // -----------------------------------------------------------------------
@@ -902,6 +930,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     widget.onSave?.call(_selectionRect!);
   }
 
+  void _handleToolbarPin() {
+    if (_selectionRect == null) return;
+    widget.onPin?.call(_selectionRect!);
+  }
+
   void _handleToolbarClose() {
     widget.onCancel();
   }
@@ -912,6 +945,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
   @override
   Widget build(BuildContext context) {
+    final selectionActive = !widget.isScrollSelection && _selectionRect != null;
+    if (widget.windowService.overlaySelectionActive != selectionActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        widget.windowService.overlaySelectionActive = selectionActive;
+      });
+    }
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
 
@@ -1050,6 +1089,26 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                 builder: (context) {
                   final rect = _toolbarRect(screenSize);
                   if (rect == null) return const SizedBox.shrink();
+                  if (widget.useNativeToolbar) {
+                    WidgetsBinding.instance.addPostFrameCallback((_) {
+                      if (mounted) {
+                        showNativeToolbarBelow(rect, widget.screenOrigin);
+                      }
+                    });
+                    return Positioned(
+                      left: rect.left,
+                      top: rect.top,
+                      width: rect.width,
+                      height: rect.height,
+                      child: Align(
+                        alignment: Alignment.topCenter,
+                        child: CompositedTransformTarget(
+                          link: _popoverAnchorLink,
+                          child: const SizedBox(width: 1, height: 1),
+                        ),
+                      ),
+                    );
+                  }
                   return Positioned(
                     left: rect.left,
                     top: rect.top,
@@ -1058,6 +1117,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                       child: SelectionToolbar(
                         onCopy: _handleToolbarCopy,
                         onSave: _handleToolbarSave,
+                        onPin: widget.onPin != null ? _handleToolbarPin : null,
                         onClose: _handleToolbarClose,
                         onToolTap: widget.annotationState == null
                             ? null
@@ -1073,6 +1133,15 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                       ),
                     ),
                   );
+                },
+              )
+            else if (widget.useNativeToolbar)
+              Builder(
+                builder: (context) {
+                  WidgetsBinding.instance.addPostFrameCallback((_) {
+                    if (mounted) hideNativeToolbar();
+                  });
+                  return const SizedBox.shrink();
                 },
               ),
           ],

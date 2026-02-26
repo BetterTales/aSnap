@@ -23,7 +23,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        wrapWithMaterial(ShapePopover(annotationState: state, onDismiss: () {})),
+        wrapWithMaterial(
+          ShapePopover(annotationState: state, onDismiss: () {}),
+        ),
       );
 
       expect(find.text('Color'), findsNothing);
@@ -39,7 +41,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        wrapWithMaterial(ShapePopover(annotationState: state, onDismiss: () {})),
+        wrapWithMaterial(
+          ShapePopover(annotationState: state, onDismiss: () {}),
+        ),
       );
 
       expect(find.text('Color'), findsNothing);
@@ -55,7 +59,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        wrapWithMaterial(ShapePopover(annotationState: state, onDismiss: () {})),
+        wrapWithMaterial(
+          ShapePopover(annotationState: state, onDismiss: () {}),
+        ),
       );
 
       expect(find.text('Color'), findsOneWidget);
