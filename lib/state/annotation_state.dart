@@ -57,8 +57,8 @@ class AnnotationState extends ChangeNotifier {
   DrawingSettings _settings = const DrawingSettings();
   DrawingSettings get settings => _settings;
 
-  /// Per-tool settings memory (preserved across tool switches).
-  final Map<ShapeType, double> _toolStrokeWidth = {
+  /// Default stroke widths per tool (shared between initializer and clear()).
+  static const _defaultToolStrokeWidth = <ShapeType, double>{
     ShapeType.rectangle: 6.0,
     ShapeType.ellipse: 6.0,
     ShapeType.arrow: 6.0,
@@ -69,6 +69,9 @@ class AnnotationState extends ChangeNotifier {
     ShapeType.mosaic: 8.0, // default block size / blur intensity
     ShapeType.number: 6.0, // 6 × 4 = 24px stamp radius
   };
+
+  /// Per-tool settings memory (preserved across tool switches).
+  final Map<ShapeType, double> _toolStrokeWidth = {..._defaultToolStrokeWidth};
   final Map<ShapeType, Color> _toolColor = {};
   final Map<ShapeType, MosaicMode> _toolMosaicMode = {};
   final Map<MosaicMode, Color> _mosaicModeColor = {};
@@ -508,15 +511,7 @@ class AnnotationState extends ChangeNotifier {
     _textEditPosition = null;
     _toolStrokeWidth
       ..clear()
-      ..[ShapeType.rectangle] = 6.0
-      ..[ShapeType.ellipse] = 6.0
-      ..[ShapeType.arrow] = 6.0
-      ..[ShapeType.line] = 6.0
-      ..[ShapeType.pencil] = 6.0
-      ..[ShapeType.marker] = 6.0
-      ..[ShapeType.text] = 9.0
-      ..[ShapeType.mosaic] = 8.0
-      ..[ShapeType.number] = 6.0;
+      ..addAll(_defaultToolStrokeWidth);
     _toolColor.clear();
     _toolMosaicMode.clear();
     _mosaicModeColor.clear();

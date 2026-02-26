@@ -965,6 +965,10 @@ Future<void> _handlePin() async {
   if (byteData == null) {
     if (!identical(finalImage, sourceImage)) finalImage.dispose();
     sourceImage.dispose();
+    if (!fromPreview) {
+      _lastCopiedImage = null;
+      _lastCopiedCgFrame = null;
+    }
     return;
   }
 
