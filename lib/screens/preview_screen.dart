@@ -313,7 +313,10 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
                 image.width.toDouble(),
                 image.height.toDouble(),
               );
-              final toolbarSize = kToolbarSize;
+              final toolbarSize = computeNativeToolbarSize(
+                showPin: widget.onPin != null,
+                showHistoryControls: widget.annotationState.showHistoryControls,
+              );
               final imageViewport = constraints.biggest;
               final fitted = applyBoxFit(
                 BoxFit.scaleDown,

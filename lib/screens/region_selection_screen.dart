@@ -868,34 +868,12 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   }
 
   Size _nativeToolbarSize() {
-    // Keep this calculation in sync with MainFlutterWindow.toolbarPanelSize().
-    const buttonWidth = 22.0;
-    const separatorWidth = 1.0;
-    const spacing = 4.0;
-    const horizontalPadding = 16.0; // root 8 + 8
-
-    var viewCount = 9; // tools
-    var widthSum = 9 * buttonWidth;
-
     final showHistoryControls =
         widget.annotationState?.showHistoryControls ?? false;
-    if (showHistoryControls) {
-      viewCount += 3; // separator + undo + redo
-      widthSum += separatorWidth + (2 * buttonWidth);
-    }
-
-    // separator before action buttons
-    viewCount += 1;
-    widthSum += separatorWidth;
-
-    // copy + save + (optional pin) + close
-    final actionCount = widget.onPin != null ? 4 : 3;
-    viewCount += actionCount;
-    widthSum += actionCount * buttonWidth;
-
-    final gaps = (viewCount - 1).clamp(0, viewCount);
-    final width = horizontalPadding + widthSum + (gaps * spacing);
-    return Size(width.ceilToDouble(), kToolbarSize.height);
+    return computeNativeToolbarSize(
+      showPin: widget.onPin != null,
+      showHistoryControls: showHistoryControls,
+    );
   }
 
   ShapeType? _shapeTypeForAction(String action) {

@@ -4,6 +4,43 @@ import 'package:a_snap/utils/toolbar_layout.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  group('computeNativeToolbarSize', () {
+    test('matches the compact scroll-result toolbar width', () {
+      final size = computeNativeToolbarSize(
+        showPin: false,
+        showHistoryControls: false,
+      );
+
+      expect(size, const Size(329, 44));
+    });
+
+    test('expands when optional controls are visible', () {
+      final base = computeNativeToolbarSize(
+        showPin: false,
+        showHistoryControls: false,
+      );
+      final withPin = computeNativeToolbarSize(
+        showPin: true,
+        showHistoryControls: false,
+      );
+      final withHistory = computeNativeToolbarSize(
+        showPin: false,
+        showHistoryControls: true,
+      );
+      final full = computeNativeToolbarSize(
+        showPin: true,
+        showHistoryControls: true,
+      );
+
+      expect(withPin, const Size(355, 44));
+      expect(withHistory, const Size(386, 44));
+      expect(full, const Size(412, 44));
+      expect(withPin.width, greaterThan(base.width));
+      expect(withHistory.width, greaterThan(base.width));
+      expect(full.width, greaterThan(withHistory.width));
+    });
+  });
+
   group('computeToolbarRect', () {
     test('places toolbar below anchor when there is room', () {
       final rect = computeToolbarRect(

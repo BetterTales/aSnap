@@ -129,7 +129,7 @@ Future<void> _initAfterRunApp() async {
     // is already being processed to avoid tearing down the next preview state.
     if (_escActionInProgress) return;
 
-    if (_appState.status == CaptureStatus.scrollCapturing) {
+    if (_appState.workflow is ScrollCapturingWorkflow) {
       _escActionInProgress = true;
       unawaited(
         _handleScrollCancel().whenComplete(() {
@@ -139,8 +139,7 @@ Future<void> _initAfterRunApp() async {
       return;
     }
 
-    if (_appState.status == CaptureStatus.selecting ||
-        _appState.status == CaptureStatus.scrollSelecting) {
+    if (_appState.workflow is RegionSelectionWorkflow) {
       unawaited(_handleRegionCancel());
     }
   };
@@ -174,13 +173,12 @@ Future<void> _initAfterRunApp() async {
 }
 
 void _handleEscPressed() {
-  switch (_appState.status) {
-    case CaptureStatus.capturing:
+  switch (_appState.workflow) {
+    case PreparingCaptureWorkflow():
       // During capture setup, Esc should abort the flow immediately.
       _regionCaptureCancelled = true;
       return;
-    case CaptureStatus.selecting:
-    case CaptureStatus.scrollSelecting:
+    case RegionSelectionWorkflow():
       // Fallback: region overlay normally handles Esc in Flutter.
       if (_escActionInProgress) return;
       _escActionInProgress = true;
@@ -190,8 +188,8 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.captured:
-    case CaptureStatus.scrollResult:
+    case PreviewWorkflow():
+    case ScrollResultWorkflow():
       if (_escActionInProgress) return;
       _escActionInProgress = true;
       unawaited(
@@ -200,7 +198,7 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.scrollCapturing:
+    case ScrollCapturingWorkflow():
       // Esc during scroll capture = cancel (discard frames)
       if (_escActionInProgress) return;
       _escActionInProgress = true;
@@ -210,7 +208,7 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.idle:
+    case IdleWorkflow():
       return;
   }
 }
@@ -254,8 +252,9 @@ Future<void> _showPreviewWithImage(
 /// coordinates, query the deepest accessible element, and return the result
 /// back in local coordinates.
 Future<Rect?> _handleHitTest(Offset localPoint) async {
-  final screenOrigin = _appState.screenOrigin;
-  if (screenOrigin == null) return null;
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) return null;
+  final screenOrigin = selection.screenOrigin;
 
   final cgPoint = Offset(
     localPoint.dx + screenOrigin.dx,
@@ -269,14 +268,14 @@ Future<Rect?> _handleHitTest(Offset localPoint) async {
 }
 
 Future<void> _handleFullScreenCapture() async {
-  if (_appState.status == CaptureStatus.capturing) return;
+  if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
   _lastCopiedImage?.dispose();
   _lastCopiedImage = null;
   _lastCopiedCgFrame = null;
   await _windowService.stopEscMonitor();
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.fullScreen);
   await _windowService.hidePreview();
 
   // Native capture targets the display under the cursor
@@ -294,7 +293,7 @@ Future<void> _handleFullScreenCapture() async {
 }
 
 Future<void> _handleRegionCapture() async {
-  if (_appState.status == CaptureStatus.capturing) return;
+  if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
   _lastCopiedImage?.dispose();
   _lastCopiedImage = null;
@@ -302,7 +301,7 @@ Future<void> _handleRegionCapture() async {
   await _windowService.stopEscMonitor();
   // Allow re-entry from selecting state (display-change re-trigger).
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.region);
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
   _clearDisplayCaches();
@@ -414,10 +413,8 @@ Future<void> _handleRegionCapture() async {
 /// Uses fast suspend/resume path (no window property restore/reconfigure)
 /// and pre-cached global rects for instant display switching.
 Future<void> _handleDisplayChanged() async {
-  if (_appState.status != CaptureStatus.selecting &&
-      _appState.status != CaptureStatus.scrollSelecting) {
-    return;
-  }
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) return;
 
   if (_windowService.overlaySelectionActive) {
     await _handleRegionCancel();
@@ -466,7 +463,7 @@ Future<void> _handleDisplayChanged() async {
 
     // 6. Update Flutter state with the pre-decoded image.
     // Preserve the current status (selecting or scrollSelecting).
-    if (_appState.status == CaptureStatus.scrollSelecting) {
+    if (selection.isScrollSelection) {
       _appState.setScrollSelecting(
         decodedImage: decodedImage,
         windowRects: localRects,
@@ -513,14 +510,15 @@ Future<void> _handleDisplayChanged() async {
 
 Future<void> _handleRegionSelected(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   // The decoded image is in physical pixels; the selection rect is in logical pixels.
   final scaleX = decodedFullScreen.width / screenSize.width;
@@ -578,14 +576,15 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
 /// styleMask restoration while dismissing the overlay.
 Future<void> _handleRegionCopy(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -654,13 +653,14 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   if (savePath == null) return; // User cancelled — stay in selection mode.
 
   // User picked a path — proceed with hide + crop + save.
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  if (decodedFullScreen == null || screenSize == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -721,7 +721,7 @@ Future<void> _handleRegionCancel() async {
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
   final annotations = _annotationState.annotations;
@@ -772,7 +772,7 @@ Future<void> _handleCopy() async {
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Composite annotations if any, then encode.
   final image = _appState.capturedImage;
   final annotations = _annotationState.annotations;
@@ -803,7 +803,7 @@ Future<void> _handleSave() async {
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
   _appState.clear();
@@ -824,14 +824,15 @@ Future<void> _handleDiscard() async {
 /// a native floating sticker panel.
 Future<void> _handleRegionPin(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -1080,11 +1081,14 @@ void _handlePinnedImageClosed() {
 // ---------------------------------------------------------------------------
 
 Future<void> _handleScrollCapture() async {
-  if (_appState.status == CaptureStatus.capturing ||
-      _appState.status == CaptureStatus.scrollSelecting) {
+  if (_appState.workflow is PreparingCaptureWorkflow ||
+      switch (_appState.workflow) {
+        RegionSelectionWorkflow(isScrollSelection: true) => true,
+        _ => false,
+      }) {
     return;
   }
-  if (_appState.status == CaptureStatus.scrollCapturing) {
+  if (_appState.workflow is ScrollCapturingWorkflow) {
     // Re-pressing hotkey finishes scroll capture
     if (!_escActionInProgress) {
       _escActionInProgress = true;
@@ -1102,7 +1106,7 @@ Future<void> _handleScrollCapture() async {
   _lastCopiedCgFrame = null;
   await _windowService.stopEscMonitor();
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.scroll);
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
   _clearDisplayCaches();
@@ -1193,13 +1197,13 @@ Future<void> _handleScrollCapture() async {
 }
 
 Future<void> _handleScrollRegionSelected(Rect logicalRect) async {
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final screenOrigin = selection.screenOrigin;
 
   // Convert logical selection rect to CG coordinates (absolute screen position).
   // NOTE: Do NOT call exitOverlay() here. The overlay and scroll capture mode
@@ -1274,7 +1278,7 @@ Future<void> _handleScrollFinish() async {
 
 /// Called by the "Done" button in the live preview panel (via native NSPanel).
 void _handleScrollCaptureDone() {
-  if (_appState.status != CaptureStatus.scrollCapturing) return;
+  if (_appState.workflow is! ScrollCapturingWorkflow) return;
   if (_escActionInProgress) return;
   _escActionInProgress = true;
   unawaited(

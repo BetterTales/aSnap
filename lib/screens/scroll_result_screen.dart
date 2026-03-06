@@ -23,6 +23,7 @@ class ScrollResultScreen extends StatefulWidget {
   final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
+  final VoidCallback? onPin;
   final VoidCallback onDiscard;
 
   const ScrollResultScreen({
@@ -32,6 +33,7 @@ class ScrollResultScreen extends StatefulWidget {
     required this.windowService,
     required this.onCopy,
     required this.onSave,
+    this.onPin,
     required this.onDiscard,
   });
 
@@ -47,6 +49,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   final _popoverAnchorLink = LayerLink();
   Rect? _lastToolbarRect;
+  bool _lastShowPin = false;
   bool _lastShowHistoryControls = false;
   bool _lastCanUndo = false;
   bool _lastCanRedo = false;
@@ -54,6 +57,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   void _resetToolbarSyncCache() {
     _lastToolbarRect = null;
+    _lastShowPin = false;
     _lastShowHistoryControls = false;
     _lastCanUndo = false;
     _lastCanRedo = false;
@@ -123,6 +127,10 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       widget.annotationState.undo();
       return true;
     }
+    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+      widget.onPin?.call();
+      return true;
+    }
 
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
@@ -176,6 +184,9 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       case 'save':
         widget.onSave();
         return;
+      case 'pin':
+        widget.onPin?.call();
+        return;
       case 'close':
         widget.onDiscard();
         return;
@@ -196,12 +207,14 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   }
 
   void _syncNativeToolbar(Rect toolbarRect) {
+    final showPin = widget.onPin != null;
     final showHistoryControls = widget.annotationState.showHistoryControls;
     final canUndo = widget.annotationState.canUndo;
     final canRedo = widget.annotationState.canRedo;
     final activeTool = activeShapeType?.name;
 
     if (_lastToolbarRect == toolbarRect &&
+        _lastShowPin == showPin &&
         _lastShowHistoryControls == showHistoryControls &&
         _lastCanUndo == canUndo &&
         _lastCanRedo == canRedo &&
@@ -210,6 +223,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     }
 
     _lastToolbarRect = toolbarRect;
+    _lastShowPin = showPin;
     _lastShowHistoryControls = showHistoryControls;
     _lastCanUndo = canUndo;
     _lastCanRedo = canRedo;
@@ -218,7 +232,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     unawaited(
       widget.windowService.showToolbarPanel(
         rect: toolbarRect,
-        showPin: false,
+        showPin: showPin,
         showHistoryControls: showHistoryControls,
         canUndo: canUndo,
         canRedo: canRedo,
@@ -281,33 +295,34 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery.sizeOf(context);
-    final toolbarSize = kToolbarSize;
-    final containerRect = _imageContainerRect(
-      screenSize,
-      toolbarSize: toolbarSize,
-    );
-    final toolbarRect = _toolbarRect(
-      containerRect,
-      screenSize,
-      toolbarSize: toolbarSize,
-    );
-
-    final image = widget.stitchedImage;
-    final imagePixelSize = Size(
-      image.width.toDouble(),
-      image.height.toDouble(),
-    );
-    // The full image height when scaled to the container width.
-    final scaledImageHeight =
-        containerRect.width * (image.height / image.width);
-
     return Focus(
       focusNode: _focusNode,
       autofocus: true,
       child: ListenableBuilder(
         listenable: widget.annotationState,
         builder: (context, _) {
+          final screenSize = MediaQuery.sizeOf(context);
+          final toolbarSize = computeNativeToolbarSize(
+            showPin: widget.onPin != null,
+            showHistoryControls: widget.annotationState.showHistoryControls,
+          );
+          final containerRect = _imageContainerRect(
+            screenSize,
+            toolbarSize: toolbarSize,
+          );
+          final toolbarRect = _toolbarRect(
+            containerRect,
+            screenSize,
+            toolbarSize: toolbarSize,
+          );
+          final image = widget.stitchedImage;
+          final imagePixelSize = Size(
+            image.width.toDouble(),
+            image.height.toDouble(),
+          );
+          final scaledImageHeight =
+              containerRect.width * (image.height / image.width);
+
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
             _syncNativeToolbar(toolbarRect);

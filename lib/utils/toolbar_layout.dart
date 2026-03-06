@@ -7,6 +7,38 @@ import 'package:flutter/painting.dart';
 const Size kToolbarSize = Size(536, 44);
 const double kToolbarGap = 8.0;
 
+/// Compute the native floating toolbar footprint used by the macOS panel.
+///
+/// Keep this in sync with `MainFlutterWindow.toolbarPanelSize()`.
+Size computeNativeToolbarSize({
+  required bool showPin,
+  required bool showHistoryControls,
+}) {
+  const buttonWidth = 22.0;
+  const separatorWidth = 1.0;
+  const spacing = 4.0;
+  const horizontalPadding = 16.0; // root leading/trailing = 8 + 8
+
+  var viewCount = 9; // drawing tools
+  var widthSum = 9 * buttonWidth;
+
+  if (showHistoryControls) {
+    viewCount += 3; // separator + undo + redo
+    widthSum += separatorWidth + (2 * buttonWidth);
+  }
+
+  viewCount += 1; // separator before action buttons
+  widthSum += separatorWidth;
+
+  final actionCount = showPin ? 4 : 3; // copy + save + (optional pin) + close
+  viewCount += actionCount;
+  widthSum += actionCount * buttonWidth;
+
+  final gaps = (viewCount - 1).clamp(0, viewCount);
+  final width = horizontalPadding + widthSum + (gaps * spacing);
+  return Size(width.ceilToDouble(), kToolbarSize.height);
+}
+
 /// Compute a toolbar rect relative to [anchorRect].
 ///
 /// Priority: below anchor → above anchor → inside (bottom edge), with
