@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -563,26 +564,38 @@ class WindowService {
     String? activeTool,
     bool anchorToWindow = false,
   }) async {
+    if (!Platform.isMacOS) return;
     final requestId = ++_toolbarRequestId;
-    await _channel.invokeMethod('showToolbarPanel', {
-      'x': rect.left,
-      'y': rect.top,
-      'width': rect.width,
-      'height': rect.height,
-      'showPin': showPin,
-      'hasAnnotations': hasAnnotations,
-      'canUndo': canUndo,
-      'canRedo': canRedo,
-      'activeTool': activeTool,
-      'anchorToWindow': anchorToWindow,
-      'requestId': requestId,
-    });
+    try {
+      await _channel.invokeMethod('showToolbarPanel', {
+        'x': rect.left,
+        'y': rect.top,
+        'width': rect.width,
+        'height': rect.height,
+        'showPin': showPin,
+        'hasAnnotations': hasAnnotations,
+        'canUndo': canUndo,
+        'canRedo': canRedo,
+        'activeTool': activeTool,
+        'anchorToWindow': anchorToWindow,
+        'requestId': requestId,
+      });
+    } on MissingPluginException {
+      // Non-macOS runners may not provide this channel implementation.
+      return;
+    }
   }
 
   /// Hide the native floating toolbar panel.
   Future<void> hideToolbarPanel() async {
+    if (!Platform.isMacOS) return;
     final requestId = ++_toolbarRequestId;
-    await _channel.invokeMethod('hideToolbarPanel', {'requestId': requestId});
+    try {
+      await _channel.invokeMethod('hideToolbarPanel', {'requestId': requestId});
+    } on MissingPluginException {
+      // Non-macOS runners may not provide this channel implementation.
+      return;
+    }
   }
 
   // ---------------------------------------------------------------------------

@@ -44,8 +44,12 @@ Rect computeToolbarRect({
 
 /// Compute a floating toolbar rect outside [anchorRect].
 ///
-/// Placement priority: below anchor, then above anchor. If neither fits fully,
-/// it pins to the nearest screen edge while staying outside the anchor area.
+/// Keeps the toolbar below [anchorRect] and clamps it into the visible
+/// viewport bounds.
+///
+/// Unlike [computeToolbarRect], this helper intentionally does not flip above
+/// the anchor when vertical space is tight, which avoids jumpy movement during
+/// interactive scrolling.
 Rect computeFloatingToolbarRect({
   required Rect anchorRect,
   required Size screenSize,
