@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:tray_manager/tray_manager.dart';
 
+import '../models/shortcut_bindings.dart';
 import '../utils/constants.dart';
 
 class TrayService with TrayListener {
@@ -12,16 +13,11 @@ class TrayService with TrayListener {
   VoidCallback? onCaptureRegion;
   VoidCallback? onCaptureScroll;
   VoidCallback? onPin;
+  VoidCallback? onOpenSettings;
   VoidCallback? onQuit;
 
-  Future<void> init() async {
-    await trayManager.setIcon(kTrayIconPath, isTemplate: true, iconSize: 18);
-    await trayManager.setToolTip(kTrayTooltip);
-
-    // Use tray_manager for menu creation and display (proper NSStatusItem
-    // integration). On macOS, register shortcuts separately so the native
-    // side can patch keyEquivalent on the menu items before they render.
-    final menu = Menu(
+  Menu _buildMenu() {
+    return Menu(
       items: [
         MenuItem(key: 'capture_region', label: 'Region'),
         MenuItem(key: 'capture_scroll', label: 'Scroll'),
@@ -29,37 +25,38 @@ class TrayService with TrayListener {
         MenuItem.separator(),
         MenuItem(key: 'pin', label: 'Pin'),
         MenuItem.separator(),
+        MenuItem(key: 'settings', label: 'Settings'),
+        MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit $kAppName'),
       ],
     );
-    await trayManager.setContextMenu(menu);
+  }
+
+  Future<void> init({required ShortcutBindings shortcuts}) async {
+    await trayManager.setIcon(kTrayIconPath, isTemplate: true, iconSize: 18);
+    await trayManager.setToolTip(kTrayTooltip);
+
+    // Use tray_manager for menu creation and display (proper NSStatusItem
+    // integration). On macOS, register shortcuts separately so the native
+    // side can patch keyEquivalent on the menu items before they render.
+    await trayManager.setContextMenu(_buildMenu());
 
     if (Platform.isMacOS) {
-      await _channel.invokeMethod('registerTrayShortcuts', [
-        {
-          'label': 'Region',
-          'keyEquivalent': '1',
-          'modifiers': ['command', 'shift'],
-        },
-        {
-          'label': 'Scroll',
-          'keyEquivalent': '2',
-          'modifiers': ['command', 'shift'],
-        },
-        {
-          'label': 'Full Screen',
-          'keyEquivalent': '3',
-          'modifiers': ['command', 'shift'],
-        },
-        {
-          'label': 'Pin',
-          'keyEquivalent': 'p',
-          'modifiers': ['command', 'shift'],
-        },
-      ]);
+      await updateShortcuts(shortcuts);
     }
 
     trayManager.addListener(this);
+  }
+
+  Future<void> updateShortcuts(ShortcutBindings shortcuts) async {
+    if (!Platform.isMacOS) return;
+    // Rebuild the menu so the next popup uses fresh NSMenuItems before native
+    // keyEquivalent patching runs.
+    await trayManager.setContextMenu(_buildMenu());
+    await _channel.invokeMethod(
+      'registerTrayShortcuts',
+      trayShortcutDescriptors(shortcuts),
+    );
   }
 
   @override
@@ -67,14 +64,22 @@ class TrayService with TrayListener {
     switch (menuItem.key) {
       case 'capture_full_screen':
         onCaptureFullScreen?.call();
+        return;
       case 'capture_region':
         onCaptureRegion?.call();
+        return;
       case 'capture_scroll':
         onCaptureScroll?.call();
+        return;
       case 'pin':
         onPin?.call();
+        return;
+      case 'settings':
+        onOpenSettings?.call();
+        return;
       case 'quit':
         onQuit?.call();
+        return;
     }
   }
 

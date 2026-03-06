@@ -2,15 +2,18 @@ import 'package:flutter/material.dart';
 
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
+import 'screens/settings_screen.dart';
 import 'screens/scroll_result_screen.dart';
 import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
+import 'state/settings_state.dart';
 import 'widgets/scroll_progress_badge.dart';
 
 class ASnapApp extends StatelessWidget {
   final AppState appState;
   final AnnotationState annotationState;
+  final SettingsState settingsState;
   final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
@@ -28,10 +31,14 @@ class ASnapApp extends StatelessWidget {
   final Future<Rect?> Function(Offset localPoint)? onHitTest;
   final VoidCallback? onScrollCaptureDone;
   final void Function(Rect cgRect)? onScrollStopButtonRect;
+  final Future<void> Function() onCloseSettings;
+  final Future<void> Function() onSuspendHotkeys;
+  final Future<void> Function() onResumeHotkeys;
   const ASnapApp({
     super.key,
     required this.appState,
     required this.annotationState,
+    required this.settingsState,
     required this.windowService,
     required this.onCopy,
     required this.onSave,
@@ -46,6 +53,9 @@ class ASnapApp extends StatelessWidget {
     this.onHitTest,
     this.onScrollCaptureDone,
     this.onScrollStopButtonRect,
+    required this.onCloseSettings,
+    required this.onSuspendHotkeys,
+    required this.onResumeHotkeys,
   });
 
   @override
@@ -118,6 +128,13 @@ class ASnapApp extends StatelessWidget {
                 onCopy: onCopy,
                 onSave: onSave,
                 onDiscard: onDiscard,
+              );
+            case SettingsWorkflow():
+              return SettingsScreen(
+                settingsState: settingsState,
+                onClose: onCloseSettings,
+                onSuspendHotkeys: onSuspendHotkeys,
+                onResumeHotkeys: onResumeHotkeys,
               );
             default:
               break;

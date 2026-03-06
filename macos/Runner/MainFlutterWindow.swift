@@ -1,11 +1,23 @@
 import ApplicationServices
+import Carbon
 import Cocoa
 import CoreGraphics
 import FlutterMacOS
+import ServiceManagement
 
 class MainFlutterWindow: NSWindow {
+  private struct HotKeyChannelError: Error {
+    let code: String
+    let message: String
+    let details: Any?
+  }
+
+  private static let hotKeySignature: OSType = 0x41534E50
+
   private var savedStyleMask: NSWindow.StyleMask?
   private var flutterChannel: FlutterMethodChannel?
+  private var hotkeyChannel: FlutterMethodChannel?
+  private var shortcutRecorderChannel: FlutterMethodChannel?
   private var spaceChangeObserver: NSObjectProtocol?
   private var displayChangeMonitor: Any?
   /// The screen the overlay is currently displayed on (NS coordinates).
@@ -43,6 +55,11 @@ class MainFlutterWindow: NSWindow {
   // Pinned image panels — floating stickers that persist across captures.
   private var pinnedPanels: [Int64: PinnedImagePanel] = [:]
   private var nextPinnedPanelId: Int64 = 0
+  private var hotKeyEventHandler: EventHandlerRef?
+  private var registeredHotKeys: [String: EventHotKeyRef] = [:]
+  private var hotKeyActionsById: [UInt32: String] = [:]
+  private var nextHotKeyRegistrationId: UInt32 = 1
+  private var shortcutRecorderMonitor: Any?
 
   private func screenAndBounds(forCGPoint point: CGPoint) -> (NSScreen, CGRect)? {
     for screen in NSScreen.screens {
@@ -123,6 +140,269 @@ class MainFlutterWindow: NSWindow {
     #endif
   }
 
+  private func launchAtLoginStatePayload() -> [String: Any] {
+    guard #available(macOS 13.0, *) else {
+      return [
+        "supported": false,
+        "enabled": false,
+        "requiresApproval": false,
+      ]
+    }
+
+    let status = SMAppService.mainApp.status
+    return [
+      "supported": true,
+      "enabled": status == .enabled || status == .requiresApproval,
+      "requiresApproval": status == .requiresApproval,
+    ]
+  }
+
+  private func installHotKeyEventHandlerIfNeeded() throws {
+    if hotKeyEventHandler != nil {
+      return
+    }
+
+    var eventType = EventTypeSpec(
+      eventClass: OSType(kEventClassKeyboard),
+      eventKind: UInt32(kEventHotKeyPressed)
+    )
+    var eventHandler: EventHandlerRef?
+
+    let status = InstallEventHandler(
+      GetEventDispatcherTarget(),
+      { _, eventRef, userData in
+        guard let userData else {
+          return noErr
+        }
+        let window = Unmanaged<MainFlutterWindow>.fromOpaque(userData).takeUnretainedValue()
+        return window.handleRegisteredHotKey(eventRef)
+      },
+      1,
+      &eventType,
+      UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
+      &eventHandler
+    )
+
+    guard status == noErr, let eventHandler else {
+      throw HotKeyChannelError(
+        code: "HOTKEY_HANDLER_INSTALL_FAILED",
+        message: "Failed to install native hotkey handler.",
+        details: Int(status)
+      )
+    }
+
+    hotKeyEventHandler = eventHandler
+  }
+
+  private func handleRegisteredHotKey(_ eventRef: EventRef?) -> OSStatus {
+    guard let eventRef else {
+      return noErr
+    }
+
+    var hotKeyID = EventHotKeyID()
+    let status = withUnsafeMutablePointer(to: &hotKeyID) { hotKeyIDPointer in
+      GetEventParameter(
+        eventRef,
+        EventParamName(kEventParamDirectObject),
+        EventParamType(typeEventHotKeyID),
+        nil,
+        MemoryLayout<EventHotKeyID>.size,
+        nil,
+        hotKeyIDPointer
+      )
+    }
+
+    guard status == noErr else {
+      return status
+    }
+    guard hotKeyID.signature == Self.hotKeySignature,
+      let action = hotKeyActionsById[hotKeyID.id]
+    else {
+      return noErr
+    }
+
+    DispatchQueue.main.async { [weak self] in
+      self?.hotkeyChannel?.invokeMethod(
+        "onShortcutTriggered",
+        arguments: ["action": action]
+      )
+    }
+    return noErr
+  }
+
+  private func setRegisteredHotKeys(_ items: [[String: Any]]) throws {
+    try installHotKeyEventHandlerIfNeeded()
+    unregisterAllRegisteredHotKeys()
+
+    do {
+      for item in items {
+        try registerHotKey(item)
+      }
+    } catch {
+      unregisterAllRegisteredHotKeys()
+      throw error
+    }
+  }
+
+  private func registerHotKey(_ item: [String: Any]) throws {
+    guard let action = item["action"] as? String, !action.isEmpty else {
+      throw HotKeyChannelError(
+        code: "INVALID_ARGS",
+        message: "Hotkey registration requires an action.",
+        details: nil
+      )
+    }
+    guard let keyCodeNumber = item["keyCode"] as? NSNumber else {
+      throw HotKeyChannelError(
+        code: "INVALID_ARGS",
+        message: "Hotkey registration requires a keyCode.",
+        details: item
+      )
+    }
+
+    let modifiers = item["modifiers"] as? [String] ?? []
+    var hotKeyID = EventHotKeyID()
+    hotKeyID.signature = Self.hotKeySignature
+    hotKeyID.id = nextHotKeyRegistrationId
+
+    var hotKeyRef: EventHotKeyRef?
+    let status = RegisterEventHotKey(
+      keyCodeNumber.uint32Value,
+      carbonHotKeyModifiers(from: modifiers),
+      hotKeyID,
+      GetEventDispatcherTarget(),
+      OptionBits(kEventHotKeyNoOptions),
+      &hotKeyRef
+    )
+
+    guard status == noErr, let hotKeyRef else {
+      throw HotKeyChannelError(
+        code: "HOTKEY_REGISTER_FAILED",
+        message: "Failed to register \(action) shortcut.",
+        details: Int(status)
+      )
+    }
+
+    registeredHotKeys[action] = hotKeyRef
+    hotKeyActionsById[hotKeyID.id] = action
+    nextHotKeyRegistrationId += 1
+  }
+
+  private func unregisterAllRegisteredHotKeys() {
+    for hotKeyRef in registeredHotKeys.values {
+      UnregisterEventHotKey(hotKeyRef)
+    }
+    registeredHotKeys.removeAll()
+    hotKeyActionsById.removeAll()
+    nextHotKeyRegistrationId = 1
+  }
+
+  private func carbonHotKeyModifiers(from modifiers: [String]) -> UInt32 {
+    var flags: UInt32 = 0
+
+    for modifier in modifiers {
+      switch modifier {
+      case "meta":
+        flags |= UInt32(cmdKey)
+      case "shift":
+        flags |= UInt32(shiftKey)
+      case "alt":
+        flags |= UInt32(optionKey)
+      case "control":
+        flags |= UInt32(controlKey)
+      case "fn":
+        flags |= UInt32(kEventKeyModifierFnMask)
+      case "capsLock":
+        flags |= UInt32(alphaLock)
+      default:
+        break
+      }
+    }
+
+    return flags
+  }
+
+  private func startShortcutRecorder() {
+    stopShortcutRecorder()
+
+    let mask: NSEvent.EventTypeMask = [.keyDown, .flagsChanged]
+    shortcutRecorderMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) {
+      [weak self] event in
+      guard let self = self else {
+        return event
+      }
+      return self.handleShortcutRecorderEvent(event)
+    }
+
+    shortcutRecorderChannel?.invokeMethod(
+      "onShortcutRecorderChanged",
+      arguments: ["modifiers": [String]()]
+    )
+  }
+
+  private func stopShortcutRecorder() {
+    if let shortcutRecorderMonitor {
+      NSEvent.removeMonitor(shortcutRecorderMonitor)
+      self.shortcutRecorderMonitor = nil
+    }
+  }
+
+  private func handleShortcutRecorderEvent(_ event: NSEvent) -> NSEvent? {
+    switch event.type {
+    case .flagsChanged:
+      shortcutRecorderChannel?.invokeMethod(
+        "onShortcutRecorderChanged",
+        arguments: ["modifiers": shortcutRecorderModifierNames(from: event.modifierFlags)]
+      )
+      return nil
+    case .keyDown:
+      if event.keyCode == 53 {
+        shortcutRecorderChannel?.invokeMethod("onShortcutRecorderCancelled", arguments: nil)
+        return nil
+      }
+      if event.isARepeat {
+        return nil
+      }
+
+      shortcutRecorderChannel?.invokeMethod(
+        "onShortcutRecorderCaptured",
+        arguments: [
+          "keyCode": Int(event.keyCode),
+          "modifiers": shortcutRecorderModifierNames(from: event.modifierFlags),
+        ]
+      )
+      return nil
+    default:
+      return event
+    }
+  }
+
+  private func shortcutRecorderModifierNames(from flags: NSEvent.ModifierFlags) -> [String] {
+    let deviceIndependentFlags = flags.intersection(.deviceIndependentFlagsMask)
+    var modifiers: [String] = []
+
+    if deviceIndependentFlags.contains(.control) {
+      modifiers.append("control")
+    }
+    if deviceIndependentFlags.contains(.command) {
+      modifiers.append("meta")
+    }
+    if deviceIndependentFlags.contains(.option) {
+      modifiers.append("alt")
+    }
+    if deviceIndependentFlags.contains(.shift) {
+      modifiers.append("shift")
+    }
+    if deviceIndependentFlags.contains(.function) {
+      modifiers.append("fn")
+    }
+    if deviceIndependentFlags.contains(.capsLock) {
+      modifiers.append("capsLock")
+    }
+
+    return modifiers
+  }
+
   override func awakeFromNib() {
     MainFlutterWindow.log("=== awakeFromNib: new code loaded ===")
 
@@ -151,6 +431,73 @@ class MainFlutterWindow: NSWindow {
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
     self.flutterChannel = channel
+    let hotkeyChannel = FlutterMethodChannel(
+      name: "com.asnap/hotkeys",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    self.hotkeyChannel = hotkeyChannel
+    let shortcutRecorderChannel = FlutterMethodChannel(
+      name: "com.asnap/shortcutRecorder",
+      binaryMessenger: flutterViewController.engine.binaryMessenger
+    )
+    self.shortcutRecorderChannel = shortcutRecorderChannel
+    hotkeyChannel.setMethodCallHandler { [weak self] (call, result) in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+
+      switch call.method {
+      case "setHotkeys":
+        guard let items = call.arguments as? [[String: Any]] else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setHotkeys requires a list of shortcut dictionaries",
+              details: nil))
+          return
+        }
+
+        do {
+          try self.setRegisteredHotKeys(items)
+          result(nil)
+        } catch let error as HotKeyChannelError {
+          result(
+            FlutterError(
+              code: error.code,
+              message: error.message,
+              details: error.details))
+        } catch {
+          result(
+            FlutterError(
+              code: "HOTKEY_ERROR",
+              message: error.localizedDescription,
+              details: nil))
+        }
+      case "unregisterAll":
+        self.unregisterAllRegisteredHotKeys()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+    shortcutRecorderChannel.setMethodCallHandler { [weak self] (call, result) in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+
+      switch call.method {
+      case "start":
+        self.startShortcutRecorder()
+        result(nil)
+      case "stop":
+        self.stopShortcutRecorder()
+        result(nil)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
     channel.setMethodCallHandler { [weak self] (call, result) in
       MainFlutterWindow.log("channel call: \(call.method)")
       guard let self = self else {
@@ -517,6 +864,57 @@ class MainFlutterWindow: NSWindow {
           self.patchTrayMenuShortcuts(menu)
         }
         result(nil)
+      case "getLaunchAtLoginState":
+        result(self.launchAtLoginStatePayload())
+      case "setLaunchAtLoginEnabled":
+        guard let args = call.arguments as? [String: Any],
+          let enabled = args["enabled"] as? Bool
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setLaunchAtLoginEnabled requires an enabled flag",
+              details: nil))
+          return
+        }
+
+        guard #available(macOS 13.0, *) else {
+          result(self.launchAtLoginStatePayload())
+          return
+        }
+
+        let service = SMAppService.mainApp
+        let currentStatus = service.status
+        if enabled,
+          currentStatus == .enabled || currentStatus == .requiresApproval
+        {
+          result(self.launchAtLoginStatePayload())
+          return
+        }
+        if !enabled, currentStatus == .notRegistered {
+          result(self.launchAtLoginStatePayload())
+          return
+        }
+
+        do {
+          if enabled {
+            try service.register()
+          } else {
+            try service.unregister()
+          }
+        } catch {
+          let nsError = error as NSError
+          result(
+            FlutterError(
+              code: "LAUNCH_AT_LOGIN_ERROR",
+              message: nsError.localizedDescription,
+              details: [
+                "domain": nsError.domain,
+                "code": nsError.code,
+              ]))
+          return
+        }
+        result(self.launchAtLoginStatePayload())
       case "hitTestElement":
         // Real-time AX hit-test: find the deepest accessible element at
         // the given CG-coordinate position.
@@ -1005,6 +1403,12 @@ class MainFlutterWindow: NSWindow {
   }
 
   deinit {
+    stopShortcutRecorder()
+    unregisterAllRegisteredHotKeys()
+    if let eventHandler = hotKeyEventHandler {
+      RemoveEventHandler(eventHandler)
+      hotKeyEventHandler = nil
+    }
     if let observer = trayMenuObserver {
       NotificationCenter.default.removeObserver(observer)
       trayMenuObserver = nil
@@ -1024,16 +1428,41 @@ class MainFlutterWindow: NSWindow {
   override var canBecomeMain: Bool { true }
 
   private func patchTrayMenuShortcuts(_ menu: NSMenu) {
-    guard !trayShortcuts.isEmpty else { return }
     for item in menu.items {
       if let shortcut = trayShortcuts[item.title] {
         item.keyEquivalent = shortcut.equiv
         item.keyEquivalentModifierMask = shortcut.mask
+      } else {
+        item.keyEquivalent = ""
+        item.keyEquivalentModifierMask = []
       }
       if let submenu = item.submenu {
         patchTrayMenuShortcuts(submenu)
       }
     }
+  }
+
+  private func shortcutModifierMask(from modifiers: [String]) -> NSEvent.ModifierFlags {
+    var mask: NSEvent.ModifierFlags = []
+    for modifier in modifiers {
+      switch modifier {
+      case "command":
+        mask.insert(.command)
+      case "shift":
+        mask.insert(.shift)
+      case "option":
+        mask.insert(.option)
+      case "control":
+        mask.insert(.control)
+      case "function":
+        mask.insert(.function)
+      case "capsLock":
+        mask.insert(.capsLock)
+      default:
+        break
+      }
+    }
+    return mask
   }
 
   // Allow window to span multiple displays during overlay mode.

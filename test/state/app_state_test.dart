@@ -60,6 +60,16 @@ void main() {
     });
   });
 
+  group('settings workflow', () {
+    test('transitions to settings and reports idle status', () {
+      state.setSettings();
+
+      expect(state.workflow, isA<SettingsWorkflow>());
+      expect(state.status, CaptureStatus.idle);
+      expect(state.capturedImage, isNull);
+    });
+  });
+
   group('setCapturedImage', () {
     testWidgets('stores image and transitions to captured', (tester) async {
       final image = await _createTestImage();

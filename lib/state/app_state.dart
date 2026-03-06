@@ -114,6 +114,10 @@ final class ScrollResultWorkflow extends WorkflowState {
   });
 }
 
+final class SettingsWorkflow extends WorkflowState {
+  const SettingsWorkflow();
+}
+
 class AppState extends ChangeNotifier {
   WorkflowState _workflow = const IdleWorkflow();
   WorkflowState get workflow => _workflow;
@@ -179,6 +183,7 @@ class AppState extends ChangeNotifier {
 
   CaptureStatus get status => switch (_workflow) {
     IdleWorkflow() => CaptureStatus.idle,
+    SettingsWorkflow() => CaptureStatus.idle,
     PreparingCaptureWorkflow() => CaptureStatus.capturing,
     RegionSelectionWorkflow(isScrollSelection: true) =>
       CaptureStatus.scrollSelecting,
@@ -270,6 +275,10 @@ class AppState extends ChangeNotifier {
 
   void setCapturedScrollImage(Image image) {
     _transitionTo(PreviewWorkflow(image: image, isScrollCapture: true));
+  }
+
+  void setSettings() {
+    _transitionTo(const SettingsWorkflow());
   }
 
   /// Transition to scroll result displayed in the fullscreen overlay.
