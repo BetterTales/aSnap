@@ -63,10 +63,10 @@ class WindowService {
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
 
   /// Called when the user presses Space on a pinned image panel (edit request).
-  VoidCallback? onEditPinnedImage;
+  void Function(int panelId)? onEditPinnedImage;
 
   /// Called when the user presses Escape on a pinned image panel (close/destroy).
-  VoidCallback? onPinnedImageClosed;
+  void Function(int panelId)? onPinnedImageClosed;
 
   /// Called when a native floating toolbar button is pressed.
   void Function(String action)? onToolbarAction;
@@ -89,9 +89,13 @@ class WindowService {
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
       } else if (call.method == 'onEditPinnedImage') {
-        onEditPinnedImage?.call();
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final panelId = (args?['panelId'] as num?)?.toInt();
+        if (panelId != null) onEditPinnedImage?.call(panelId);
       } else if (call.method == 'onPinnedImageClosed') {
-        onPinnedImageClosed?.call();
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final panelId = (args?['panelId'] as num?)?.toInt();
+        if (panelId != null) onPinnedImageClosed?.call(panelId);
       } else if (call.method == 'onToolbarAction') {
         final args = call.arguments as Map<dynamic, dynamic>?;
         final action = args?['action'] as String?;
@@ -620,8 +624,8 @@ class WindowService {
   /// [bytes] must be raw RGBA pixel data. [cgFrame] is an optional
   /// CG-coordinate rect (top-left origin) specifying the panel's screen
   /// position and size. If omitted, the panel appears at the current main
-  /// Flutter window frame.
-  Future<void> pinImage({
+  /// Flutter window frame. Returns the native pinned panel ID on success.
+  Future<int?> pinImage({
     required Uint8List bytes,
     required int width,
     required int height,
@@ -638,18 +642,24 @@ class WindowService {
       args['frameWidth'] = cgFrame.width;
       args['frameHeight'] = cgFrame.height;
     }
-    await _channel.invokeMethod('pinImage', args);
+    return (await _channel.invokeMethod<num>('pinImage', args))?.toInt();
   }
 
-  /// Close and destroy the native pinned image panel.
-  Future<void> closePinnedImage() async {
-    await _channel.invokeMethod('closePinnedImage');
+  /// Close and destroy a native pinned image panel.
+  /// When [panelId] is omitted, closes all pinned panels.
+  Future<void> closePinnedImage({int? panelId}) async {
+    final args = panelId == null ? null : {'panelId': panelId};
+    await _channel.invokeMethod('closePinnedImage', args);
   }
 
-  /// Get the current CG-coordinate frame of the pinned image panel.
-  /// Returns null if no panel exists.
-  Future<Rect?> getPinnedPanelFrame() async {
-    final result = await _channel.invokeMethod<Map>('getPinnedPanelFrame');
+  /// Get the current CG-coordinate frame of a pinned image panel.
+  /// Returns null if the requested panel does not exist.
+  Future<Rect?> getPinnedPanelFrame({int? panelId}) async {
+    final args = panelId == null ? null : {'panelId': panelId};
+    final result = await _channel.invokeMethod<Map>(
+      'getPinnedPanelFrame',
+      args,
+    );
     if (result == null) return null;
     return Rect.fromLTWH(
       (result['x'] as num).toDouble(),

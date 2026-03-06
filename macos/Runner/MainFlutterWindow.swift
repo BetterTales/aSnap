@@ -40,8 +40,9 @@ class MainFlutterWindow: NSWindow {
   private var windowDidMoveObserver: NSObjectProtocol?
   private var windowDidResizeObserver: NSObjectProtocol?
 
-  // Pinned image panel — floating sticker that persists across captures.
-  private var pinnedPanel: PinnedImagePanel?
+  // Pinned image panels — floating stickers that persist across captures.
+  private var pinnedPanels: [Int64: PinnedImagePanel] = [:]
+  private var nextPinnedPanelId: Int64 = 0
 
   private func screenAndBounds(forCGPoint point: CGPoint) -> (NSScreen, CGRect)? {
     for screen in NSScreen.screens {
@@ -863,10 +864,6 @@ class MainFlutterWindow: NSWindow {
           return
         }
 
-        // Close any existing pin panel first.
-        self.pinnedPanel?.close()
-        self.pinnedPanel = nil
-
         // Create NSImage from raw RGBA bytes.
         guard
           let bitmapRep = NSBitmapImageRep(
@@ -907,6 +904,8 @@ class MainFlutterWindow: NSWindow {
         } else {
           panelFrame = self.frame
         }
+        self.nextPinnedPanelId += 1
+        let panelId = self.nextPinnedPanelId
         let panel = PinnedImagePanel(
           contentRect: panelFrame,
           styleMask: [.borderless, .nonactivatingPanel],
@@ -928,28 +927,57 @@ class MainFlutterWindow: NSWindow {
         // Wire keyboard callbacks.
         panel.onEdit = { [weak self] in
           DispatchQueue.main.async {
-            self?.flutterChannel?.invokeMethod("onEditPinnedImage", arguments: nil)
+            self?.flutterChannel?.invokeMethod(
+              "onEditPinnedImage",
+              arguments: ["panelId": panelId]
+            )
           }
         }
         panel.onClose = { [weak self] in
           DispatchQueue.main.async {
-            self?.pinnedPanel = nil
-            self?.flutterChannel?.invokeMethod("onPinnedImageClosed", arguments: nil)
+            self?.pinnedPanels.removeValue(forKey: panelId)
+            self?.flutterChannel?.invokeMethod(
+              "onPinnedImageClosed",
+              arguments: ["panelId": panelId]
+            )
           }
         }
 
-        self.pinnedPanel = panel
+        self.pinnedPanels[panelId] = panel
         panel.makeKeyAndOrderFront(nil)
-        MainFlutterWindow.log("pinImage: panel created at \(NSStringFromRect(panelFrame))")
-        result(nil)
+        MainFlutterWindow.log(
+          "pinImage: panelId=\(panelId) created at \(NSStringFromRect(panelFrame))")
+        result(panelId)
 
       case "closePinnedImage":
-        self.pinnedPanel?.close()
-        self.pinnedPanel = nil
+        let args = call.arguments as? [String: Any]
+        if let panelIdNumber = args?["panelId"] as? NSNumber {
+          let panelId = panelIdNumber.int64Value
+          self.pinnedPanels[panelId]?.close()
+        } else {
+          let panels = Array(self.pinnedPanels.values)
+          for panel in panels {
+            panel.close()
+          }
+        }
         result(nil)
 
       case "getPinnedPanelFrame":
-        guard let panel = self.pinnedPanel else {
+        let args = call.arguments as? [String: Any]
+        let panelId =
+          (args?["panelId"] as? NSNumber)?.int64Value
+          ?? (args?["panelId"] as? Int64)
+          ?? ((args?["panelId"] as? Int).map { Int64($0) })
+
+        let panel: PinnedImagePanel?
+        if let panelId {
+          panel = self.pinnedPanels[panelId]
+        } else {
+          panel =
+            self.pinnedPanels.values.first(where: { $0.isKeyWindow })
+            ?? Array(self.pinnedPanels.values).last
+        }
+        guard let panel else {
           result(nil)
           return
         }
@@ -2183,6 +2211,7 @@ private class ToolbarTooltipPanel: NSPanel {
 private class PinnedImagePanel: NSPanel {
   var onEdit: (() -> Void)?
   var onClose: (() -> Void)?
+  private var didNotifyClose = false
 
   override var canBecomeKey: Bool { true }
 
@@ -2191,11 +2220,18 @@ private class PinnedImagePanel: NSPanel {
     case 49:  // Space → edit
       onEdit?()
     case 53:  // Escape → close
-      let closeCallback = onClose
       self.close()
-      closeCallback?()
     default:
       break  // Suppress system beep for all keys.
+    }
+  }
+
+  override func close() {
+    let shouldNotify = !didNotifyClose
+    didNotifyClose = true
+    super.close()
+    if shouldNotify {
+      onClose?()
     }
   }
 }

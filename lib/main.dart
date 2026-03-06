@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -23,9 +24,9 @@ bool _displayChangePending = false;
 bool _regionCaptureCancelled = false;
 bool _escActionInProgress = false;
 
-/// Keeps the pinned `ui.Image` alive in Dart memory for fast re-edit via
+/// Keeps one cloned `ui.Image` per pinned native panel for fast re-edit via
 /// Space (avoids round-tripping image bytes through the platform channel).
-ui.Image? _pinnedFlutterImage;
+final Map<int, ui.Image> _pinnedFlutterImages = {};
 
 /// Last captured/copied image kept alive for deferred pinning.
 /// Allows "capture → copy → pin" workflow: copy clears the preview but this
@@ -34,6 +35,9 @@ ui.Image? _lastCopiedImage;
 
 /// CG-coordinate frame of the last copied image (for pin placement).
 Rect? _lastCopiedCgFrame;
+
+/// Exact PNG bytes written to the clipboard for deferred idle pin validation.
+Uint8List? _lastCopiedClipboardPngBytes;
 
 /// Pre-cached window/element rects from background polling.
 /// Updated every ~2 seconds by the native background thread.
@@ -53,6 +57,24 @@ String _displayKey(Offset origin) => '${origin.dx},${origin.dy}';
 
 void _clearDisplayCaches() {
   _displayCaches.clear();
+}
+
+void _disposePinnedPanelImage(int panelId) {
+  _pinnedFlutterImages.remove(panelId)?.dispose();
+}
+
+void _disposeAllPinnedPanelImages() {
+  for (final image in _pinnedFlutterImages.values) {
+    image.dispose();
+  }
+  _pinnedFlutterImages.clear();
+}
+
+void _clearLastCopiedPinCache() {
+  _lastCopiedImage?.dispose();
+  _lastCopiedImage = null;
+  _lastCopiedCgFrame = null;
+  _lastCopiedClipboardPngBytes = null;
 }
 
 /// Convert globally-cached window rects to local coordinates for a display.
@@ -228,6 +250,23 @@ Future<ui.Image> _decodeRawPixels(ScreenCapture capture) {
   return completer.future;
 }
 
+Future<ui.Image> _decodeStraightRgbaImage(
+  Uint8List rgbaBytes,
+  int width,
+  int height,
+) {
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    rgbaBytes,
+    width,
+    height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+    rowBytes: width * 4,
+  );
+  return completer.future;
+}
+
 Future<void> _showPreviewWithImage(
   ui.Image image, {
   required Size targetScreenSize,
@@ -246,6 +285,48 @@ Future<void> _showPreviewWithImage(
   // No native Esc monitor for captured state — PreviewScreen uses
   // HardwareKeyboard for focus-independent Escape handling (supports
   // unwinding shapes mode before dismiss).
+}
+
+Future<bool> _lastCopiedImageStillMatchesClipboard() async {
+  final expectedPngBytes = _lastCopiedClipboardPngBytes;
+  if (_lastCopiedImage == null || expectedPngBytes == null) {
+    return false;
+  }
+
+  final matches = await _clipboardService.containsMatchingImage(
+    expectedPngBytes,
+  );
+  if (!matches) {
+    _clearLastCopiedPinCache();
+  }
+  return matches;
+}
+
+Future<int?> _pinNativeImageFromRgbaBytes({
+  required Uint8List rgbaBytes,
+  required int width,
+  required int height,
+  required Rect cgFrame,
+}) async {
+  final pinnedImage = await _decodeStraightRgbaImage(rgbaBytes, width, height);
+  try {
+    final panelId = await _windowService.pinImage(
+      bytes: rgbaBytes,
+      width: width,
+      height: height,
+      cgFrame: cgFrame,
+    );
+    if (panelId == null) {
+      pinnedImage.dispose();
+      return null;
+    }
+    _disposePinnedPanelImage(panelId);
+    _pinnedFlutterImages[panelId] = pinnedImage;
+    return panelId;
+  } catch (_) {
+    pinnedImage.dispose();
+    rethrow;
+  }
 }
 
 /// Real-time AX hit-test: convert local overlay coordinates to global CG
@@ -270,9 +351,7 @@ Future<Rect?> _handleHitTest(Offset localPoint) async {
 Future<void> _handleFullScreenCapture() async {
   if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   _annotationState.clear();
   _appState.setPreparingCapture(kind: CaptureKind.fullScreen);
@@ -295,9 +374,7 @@ Future<void> _handleFullScreenCapture() async {
 Future<void> _handleRegionCapture() async {
   if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   // Allow re-entry from selecting state (display-change re-trigger).
   _annotationState.clear();
@@ -630,13 +707,17 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
       cropped = composited;
     }
     final byteData = await cropped.toByteData(format: ui.ImageByteFormat.png);
-    if (byteData != null) {
-      await _clipboardService.copyImage(byteData.buffer.asUint8List());
+    final pngBytes = byteData?.buffer.asUint8List();
+    final copied =
+        pngBytes != null && await _clipboardService.copyImage(pngBytes);
+    _clearLastCopiedPinCache();
+    if (copied) {
+      _lastCopiedImage = cropped;
+      _lastCopiedCgFrame = cgPinFrame;
+      _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+    } else {
+      cropped.dispose();
     }
-    // Keep the final image alive for deferred pinning ("capture → copy → pin").
-    _lastCopiedImage?.dispose();
-    _lastCopiedImage = cropped;
-    _lastCopiedCgFrame = cgPinFrame;
   }
   decodedFullScreen.dispose();
 }
@@ -748,21 +829,28 @@ Future<void> _handleCopy() async {
     final byteData = await finalImage.toByteData(
       format: ui.ImageByteFormat.png,
     );
-    if (byteData != null) {
-      await _clipboardService.copyImage(byteData.buffer.asUint8List());
-    }
-    // Keep the final image alive for deferred pinning ("capture → copy → pin").
-    // Dispose the previous one if any, and the original if we composited.
-    _lastCopiedImage?.dispose();
-    if (!identical(finalImage, image)) {
+    final pngBytes = byteData?.buffer.asUint8List();
+    final copied =
+        pngBytes != null && await _clipboardService.copyImage(pngBytes);
+
+    _clearLastCopiedPinCache();
+    if (copied) {
+      if (!identical(finalImage, image)) {
+        image.dispose();
+        _lastCopiedImage = finalImage;
+      } else {
+        _lastCopiedImage = image;
+      }
+      _lastCopiedCgFrame = copyCgFrame;
+      _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+    } else if (!identical(finalImage, image)) {
+      finalImage.dispose();
       image.dispose();
-      _lastCopiedImage = finalImage;
     } else {
-      _lastCopiedImage = image;
+      image.dispose();
     }
-    _lastCopiedCgFrame = copyCgFrame;
   } else {
-    _lastCopiedCgFrame = null;
+    _clearLastCopiedPinCache();
   }
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
@@ -885,17 +973,15 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
       format: ui.ImageByteFormat.rawStraightRgba,
     );
     if (byteData != null) {
-      _pinnedFlutterImage?.dispose();
-      _pinnedFlutterImage = cropped;
-      await _windowService.pinImage(
-        bytes: byteData.buffer.asUint8List(),
+      final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
+      await _pinNativeImageFromRgbaBytes(
+        rgbaBytes: rgbaBytes,
         width: cropped.width,
         height: cropped.height,
         cgFrame: cgPinFrame,
       );
-    } else {
-      cropped.dispose();
     }
+    cropped.dispose();
   }
   decodedFullScreen.dispose();
 }
@@ -915,7 +1001,7 @@ Future<void> _handlePin() async {
     // while we're compositing / encoding below.
     _appState.detachCapturedImage();
     sourceImage = image;
-  } else if (_lastCopiedImage != null) {
+  } else if (await _lastCopiedImageStillMatchesClipboard()) {
     sourceImage = _lastCopiedImage!;
   } else {
     return;
@@ -959,14 +1045,17 @@ Future<void> _handlePin() async {
     format: ui.ImageByteFormat.rawStraightRgba,
   );
   if (byteData == null) {
-    if (!identical(finalImage, sourceImage)) finalImage.dispose();
-    sourceImage.dispose();
-    if (!fromPreview) {
-      _lastCopiedImage = null;
-      _lastCopiedCgFrame = null;
+    if (fromPreview) {
+      finalImage.dispose();
+      if (!identical(finalImage, sourceImage)) {
+        sourceImage.dispose();
+      }
+    } else {
+      _clearLastCopiedPinCache();
     }
     return;
   }
+  final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
 
   // Determine where to place the pin.
   final Rect cgFrame;
@@ -991,38 +1080,37 @@ Future<void> _handlePin() async {
     }
   }
 
-  // Keep a Dart-side reference for fast re-edit via Space.
-  _pinnedFlutterImage?.dispose();
-  if (fromPreview) {
-    if (!identical(finalImage, sourceImage)) sourceImage.dispose();
-    _pinnedFlutterImage = finalImage;
-  } else {
-    // Pinning from idle (after copy) — transfer _lastCopiedImage ownership.
-    _pinnedFlutterImage = _lastCopiedImage;
-    _lastCopiedImage = null;
-    _lastCopiedCgFrame = null;
+  try {
+    await _pinNativeImageFromRgbaBytes(
+      rgbaBytes: rgbaBytes,
+      width: finalImage.width,
+      height: finalImage.height,
+      cgFrame: cgFrame,
+    );
+  } finally {
+    if (fromPreview) {
+      finalImage.dispose();
+      if (!identical(finalImage, sourceImage)) {
+        sourceImage.dispose();
+      }
+    }
   }
-
-  await _windowService.pinImage(
-    bytes: byteData.buffer.asUint8List(),
-    width: finalImage.width,
-    height: finalImage.height,
-    cgFrame: cgFrame,
-  );
 }
 
-void _handleEditPinnedImage() {
-  final pinnedImage = _pinnedFlutterImage;
+void _handleEditPinnedImage(int panelId) {
+  final pinnedImage = _pinnedFlutterImages.remove(panelId);
   if (pinnedImage == null) return;
-  _pinnedFlutterImage = null;
 
-  unawaited(_handleEditPinnedImageAsync(pinnedImage));
+  unawaited(_handleEditPinnedImageAsync(panelId, pinnedImage));
 }
 
-Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
+Future<void> _handleEditPinnedImageAsync(
+  int panelId,
+  ui.Image pinnedImage,
+) async {
   // Get the pinned panel's CG frame BEFORE closing it so we can show the
   // Flutter preview at exactly the same position and size.
-  final panelFrame = await _windowService.getPinnedPanelFrame();
+  final panelFrame = await _windowService.getPinnedPanelFrame(panelId: panelId);
 
   _annotationState.clear();
 
@@ -1067,13 +1155,12 @@ Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
   // Reveal the preview first, then close the pinned panel so there's no
   // visible gap between the two windows.
   await _windowService.revealPreviewWindow();
-  await _windowService.closePinnedImage();
+  await _windowService.closePinnedImage(panelId: panelId);
   _appState.nudge();
 }
 
-void _handlePinnedImageClosed() {
-  _pinnedFlutterImage?.dispose();
-  _pinnedFlutterImage = null;
+void _handlePinnedImageClosed(int panelId) {
+  _disposePinnedPanelImage(panelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,9 +1188,7 @@ Future<void> _handleScrollCapture() async {
     return;
   }
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   _annotationState.clear();
   _appState.setPreparingCapture(kind: CaptureKind.scroll);
@@ -1306,11 +1391,8 @@ Future<void> _handleScrollCancel() async {
 
 Future<void> _handleQuit() async {
   // Clean up pinned/cached images.
-  _pinnedFlutterImage?.dispose();
-  _pinnedFlutterImage = null;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _disposeAllPinnedPanelImages();
+  _clearLastCopiedPinCache();
   unawaited(_windowService.closePinnedImage());
 
   await _windowService.stopEscMonitor();
