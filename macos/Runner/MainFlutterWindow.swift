@@ -3,7 +3,7 @@ import Cocoa
 import CoreGraphics
 import FlutterMacOS
 
-class MainFlutterWindow: NSWindow {
+class MainFlutterWindow: NSWindow, NSWindowDelegate {
   private var savedStyleMask: NSWindow.StyleMask?
   private var flutterChannel: FlutterMethodChannel?
   private var spaceChangeObserver: NSObjectProtocol?
@@ -24,12 +24,24 @@ class MainFlutterWindow: NSWindow {
   // mouse clicks even though the main overlay has ignoresMouseEvents = true.
   private var scrollStopPanel: NSPanel?
 
+  // Floating toolbar panel displayed outside the main Flutter window bounds.
+  private var toolbarPanel: NSPanel?
+  private var toolbarButtons: [String: NSButton] = [:]
+  private var pendingToolbarArgs: [String: Any]?
+  private var lastToolbarArgs: [String: Any]?
+  private var toolbarRetryScheduled = false
+  private var latestToolbarRequestId = 0
+  private var toolbarMoveRefreshWorkItem: DispatchWorkItem?
+  private var windowDidMoveObserver: NSObjectProtocol?
+  private var windowDidResizeObserver: NSObjectProtocol?
+
   // Pinned image panel — floating sticker that persists across captures.
   private var pinnedPanel: PinnedImagePanel?
 
   private func screenAndBounds(forCGPoint point: CGPoint) -> (NSScreen, CGRect)? {
     for screen in NSScreen.screens {
-      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+      else {
         continue
       }
       let bounds = CGDisplayBounds(id.uint32Value)
@@ -38,7 +50,8 @@ class MainFlutterWindow: NSWindow {
       }
     }
     if let main = NSScreen.main,
-       let id = main.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+      let id = main.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+    {
       return (main, CGDisplayBounds(id.uint32Value))
     }
     return nil
@@ -62,7 +75,11 @@ class MainFlutterWindow: NSWindow {
   /// with a top-left origin in global display coordinates.
   private func cgTopLeftRect(forNSRect rect: NSRect, on screen: NSScreen?) -> CGRect? {
     guard let screen = screen ?? NSScreen.main else { return nil }
-    guard let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else {
+    guard
+      let displayID =
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+        .uint32Value
+    else {
       let screenHeight = screen.frame.height
       return CGRect(
         x: rect.origin.x,
@@ -78,19 +95,25 @@ class MainFlutterWindow: NSWindow {
     return CGRect(x: cgX, y: cgY, width: rect.size.width, height: rect.size.height)
   }
 
+  /// Find the most likely screen for a global NS rect (bottom-left origin).
+  private func screenForRect(_ rect: NSRect) -> NSScreen? {
+    let mid = NSPoint(x: rect.midX, y: rect.midY)
+    return NSScreen.screens.first(where: { $0.frame.contains(mid) }) ?? NSScreen.main
+  }
+
   /// Append a debug line to ~/asnap_overlay.log (debug builds only).
   private static func log(_ msg: String) {
     #if DEBUG
-    let line = "\(Date()) \(msg)\n"
-    guard let data = line.data(using: .utf8) else { return }
-    let path = NSHomeDirectory() + "/asnap_overlay.log"
-    if let fh = FileHandle(forWritingAtPath: path) {
-      fh.seekToEndOfFile()
-      fh.write(data)
-      fh.closeFile()
-    } else {
-      FileManager.default.createFile(atPath: path, contents: data)
-    }
+      let line = "\(Date()) \(msg)\n"
+      guard let data = line.data(using: .utf8) else { return }
+      let path = NSHomeDirectory() + "/asnap_overlay.log"
+      if let fh = FileHandle(forWritingAtPath: path) {
+        fh.seekToEndOfFile()
+        fh.write(data)
+        fh.closeFile()
+      } else {
+        FileManager.default.createFile(atPath: path, contents: data)
+      }
     #endif
   }
 
@@ -135,7 +158,10 @@ class MainFlutterWindow: NSWindow {
         // used by region selection; omit for single-display fullscreen capture.
         let allDisplays = (call.arguments as? [String: Any])?["allDisplays"] as? Bool ?? false
         let allScreens = NSScreen.screens
-        guard !allScreens.isEmpty else { result(nil); return }
+        guard !allScreens.isEmpty else {
+          result(nil)
+          return
+        }
 
         let cgImage: CGImage?
         let logicalWidth: Double
@@ -147,11 +173,13 @@ class MainFlutterWindow: NSWindow {
           // Union of all display bounds in CG coordinates (top-left origin)
           var dCount: UInt32 = 0
           guard CGGetActiveDisplayList(0, nil, &dCount) == .success, dCount > 0 else {
-            result(nil); return
+            result(nil)
+            return
           }
           var dIDs = [CGDirectDisplayID](repeating: 0, count: Int(dCount))
           guard CGGetActiveDisplayList(dCount, &dIDs, &dCount) == .success, dCount > 0 else {
-            result(nil); return
+            result(nil)
+            return
           }
           var unionCG = CGDisplayBounds(dIDs[0])
           for i in 1..<Int(dCount) { unionCG = unionCG.union(CGDisplayBounds(dIDs[i])) }
@@ -160,29 +188,42 @@ class MainFlutterWindow: NSWindow {
             unionCG, .optionOnScreenOnly, kCGNullWindowID, .bestResolution
           )
           let nsUnion = allScreens.reduce(allScreens[0].frame) { $0.union($1.frame) }
-          logicalWidth  = Double(nsUnion.size.width)
+          logicalWidth = Double(nsUnion.size.width)
           logicalHeight = Double(nsUnion.size.height)
           cgOriginX = Double(unionCG.origin.x)
           cgOriginY = Double(unionCG.origin.y)
         } else {
           // Single display under the cursor
           let mouseLocation = NSEvent.mouseLocation
-          let target = allScreens.first(where: { $0.frame.contains(mouseLocation) })
+          let target =
+            allScreens.first(where: { $0.frame.contains(mouseLocation) })
             ?? NSScreen.main ?? allScreens[0]
-          guard let displayID = (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value else {
-            result(nil); return
+          guard
+            let displayID =
+              (target.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?
+              .uint32Value
+          else {
+            result(nil)
+            return
           }
-          MainFlutterWindow.log("captureScreen: mouse=\(mouseLocation) targetFrame=\(NSStringFromRect(target.frame)) displayID=\(displayID)")
+          MainFlutterWindow.log(
+            "captureScreen: mouse=\(mouseLocation) targetFrame=\(NSStringFromRect(target.frame)) displayID=\(displayID)"
+          )
           cgImage = CGDisplayCreateImage(displayID)
-          logicalWidth  = Double(target.frame.size.width)
+          logicalWidth = Double(target.frame.size.width)
           logicalHeight = Double(target.frame.size.height)
           let cgBounds = CGDisplayBounds(displayID)
           cgOriginX = Double(cgBounds.origin.x)
           cgOriginY = Double(cgBounds.origin.y)
-          MainFlutterWindow.log("  capture size=\(cgImage?.width ?? 0)x\(cgImage?.height ?? 0) logical=\(logicalWidth)x\(logicalHeight) cgOrigin=(\(cgOriginX),\(cgOriginY))")
+          MainFlutterWindow.log(
+            "  capture size=\(cgImage?.width ?? 0)x\(cgImage?.height ?? 0) logical=\(logicalWidth)x\(logicalHeight) cgOrigin=(\(cgOriginX),\(cgOriginY))"
+          )
         }
 
-        guard let img = cgImage else { result(nil); return }
+        guard let img = cgImage else {
+          result(nil)
+          return
+        }
 
         // Force-convert to BGRA8888 via CGContext — CGWindowListCreateImage
         // doesn't guarantee a specific pixel format.  Dart side decodes with
@@ -190,17 +231,25 @@ class MainFlutterWindow: NSWindow {
         let w = img.width
         let h = img.height
         let bpr = w * 4
-        guard let ctx = CGContext(
+        guard
+          let ctx = CGContext(
             data: nil,
             width: w, height: h,
             bitsPerComponent: 8,
             bytesPerRow: bpr,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                      | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else { result(nil); return }
+              | CGBitmapInfo.byteOrder32Little.rawValue
+          )
+        else {
+          result(nil)
+          return
+        }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let baseAddr = ctx.data else { result(nil); return }
+        guard let baseAddr = ctx.data else {
+          result(nil)
+          return
+        }
         let pixelData = Data(bytes: baseAddr, count: h * bpr)
 
         result([
@@ -252,24 +301,33 @@ class MainFlutterWindow: NSWindow {
         // Window stays alpha=0 so Flutter can render the new content at the
         // correct size before revealOverlay makes it visible.
         guard let args = call.arguments as? [String: Double] else {
-          result(FlutterError(code: "INVALID_ARGS",
-                              message: "repositionOverlay requires screenOriginX/Y",
-                              details: nil))
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "repositionOverlay requires screenOriginX/Y",
+              details: nil))
           return
         }
         let allScreens = NSScreen.screens
-        guard !allScreens.isEmpty else { result(nil); return }
+        guard !allScreens.isEmpty else {
+          result(nil)
+          return
+        }
 
         let targetCGX = args["screenOriginX"] ?? 0
         let targetCGY = args["screenOriginY"] ?? 0
-        let targetScreen = allScreens.first(where: { screen in
-          guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
-            return false
-          }
-          let bounds = CGDisplayBounds(id.uint32Value)
-          return abs(Double(bounds.origin.x) - targetCGX) < 2 &&
-            abs(Double(bounds.origin.y) - targetCGY) < 2
-        }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+        let targetScreen =
+          allScreens.first(where: { screen in
+            guard
+              let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
+                as? NSNumber
+            else {
+              return false
+            }
+            let bounds = CGDisplayBounds(id.uint32Value)
+            return abs(Double(bounds.origin.x) - targetCGX) < 2
+              && abs(Double(bounds.origin.y) - targetCGY) < 2
+          }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
           ?? NSScreen.main ?? allScreens[0]
 
         let screenFrame = targetScreen.frame
@@ -293,13 +351,16 @@ class MainFlutterWindow: NSWindow {
         // Shrink the borderless overlay window to the selection rect for in-place preview.
         // Stays borderless (no corner radius) and floating above other windows.
         guard let args = call.arguments as? [String: Double],
-              let x = args["x"],
-              let y = args["y"],
-              let w = args["width"],
-              let h = args["height"] else {
-          result(FlutterError(code: "INVALID_ARGS",
-                              message: "resizeToRect requires x, y, width, height",
-                              details: nil))
+          let x = args["x"],
+          let y = args["y"],
+          let w = args["width"],
+          let h = args["height"]
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "resizeToRect requires x, y, width, height",
+              details: nil))
           return
         }
         // Convert from Flutter top-left origin (relative to overlay) to macOS
@@ -321,12 +382,18 @@ class MainFlutterWindow: NSWindow {
         }
         self.overlayScreenFrame = nil
         self.level = .floating
-        self.hasShadow = true
+        self.hasShadow = false
         self.collectionBehavior = [.moveToActiveSpace]
         self.acceptsMouseMovedEvents = false
+        // Keep non-image margins transparent so toolbar can float outside
+        // the selected region without showing a dark framed window.
+        self.backgroundColor = .clear
+        self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        self.setFlutterSurfaceOpaque(false)
         // Clear constraints so the window can resize freely
         self.minSize = NSSize(width: 1, height: 1)
-        self.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        self.maxSize = NSSize(
+          width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         self.setFrame(NSRect(x: macX, y: macY, width: w, height: h), display: true)
         // Re-activate so the window receives keyboard events (Esc to dismiss)
         self.makeKeyAndOrderFront(nil)
@@ -354,20 +421,22 @@ class MainFlutterWindow: NSWindow {
       case "startEscMonitor":
         self.stopEscMonitorImpl()
         // Global monitor: catches Esc when our window is NOT key (capture setup phase)
-        self.globalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-          if event.keyCode == 53 { // Escape
+        self.globalEscMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
+          [weak self] event in
+          if event.keyCode == 53 {  // Escape
             DispatchQueue.main.async {
               self?.flutterChannel?.invokeMethod("onEscPressed", arguments: nil)
             }
           }
         }
         // Local monitor: catches Esc when our window IS key but at alpha=0
-        self.localEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-          if event.keyCode == 53 { // Escape
+        self.localEscMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+          [weak self] event in
+          if event.keyCode == 53 {  // Escape
             DispatchQueue.main.async {
               self?.flutterChannel?.invokeMethod("onEscPressed", arguments: nil)
             }
-            return nil // consume the event
+            return nil  // consume the event
           }
           return event
         }
@@ -393,40 +462,57 @@ class MainFlutterWindow: NSWindow {
         // sub-element containing the point, and walk up the parent chain if the
         // initial element is too small.
         guard let args = call.arguments as? [String: Double],
-              let cgX = args["x"], let cgY = args["y"] else {
-          result(nil); return
+          let cgX = args["x"], let cgY = args["y"]
+        else {
+          result(nil)
+          return
         }
         let point = CGPoint(x: cgX, y: cgY)
         let ownPID = ProcessInfo.processInfo.processIdentifier
 
         // Find which app window sits at this position (skip our own).
-        guard let infoList = CGWindowListCopyWindowInfo(
-          [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
-        ) as? [[String: Any]] else { result(nil); return }
+        guard
+          let infoList = CGWindowListCopyWindowInfo(
+            [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID
+          ) as? [[String: Any]]
+        else {
+          result(nil)
+          return
+        }
 
         var targetPID: Int32?
         for info in infoList {
           guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0 else { continue }
-          guard let pid = info[kCGWindowOwnerPID as String] as? Int32, pid != ownPID else { continue }
+          guard let pid = info[kCGWindowOwnerPID as String] as? Int32, pid != ownPID else {
+            continue
+          }
           guard let bd = info[kCGWindowBounds as String] as? NSDictionary,
-                let bounds = CGRect(dictionaryRepresentation: bd) else { continue }
+            let bounds = CGRect(dictionaryRepresentation: bd)
+          else { continue }
           if bounds.contains(point) {
             targetPID = pid
             break  // front-to-back order → first hit is the topmost
           }
         }
-        guard let pid = targetPID, AXIsProcessTrusted() else { result(nil); return }
+        guard let pid = targetPID, AXIsProcessTrusted() else {
+          result(nil)
+          return
+        }
 
         let appElement = AXUIElementCreateApplication(pid)
         var axElement: AXUIElement?
         let err = AXUIElementCopyElementAtPosition(appElement, Float(cgX), Float(cgY), &axElement)
-        guard err == .success, let element = axElement else { result(nil); return }
+        guard err == .success, let element = axElement else {
+          result(nil)
+          return
+        }
 
         // Start with the returned element's frame.
         var bestFrame: CGRect? = nil
         var bestArea = Double.infinity
         if let frame = MainFlutterWindow.frameOfElement(element),
-           frame.width >= 10, frame.height >= 10 {
+          frame.width >= 10, frame.height >= 10
+        {
           bestFrame = frame
           bestArea = Double(frame.width * frame.height)
         }
@@ -450,12 +536,15 @@ class MainFlutterWindow: NSWindow {
           var current: AXUIElement? = element
           while let el = current {
             var parentValue: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(
-              el, kAXParentAttribute as CFString, &parentValue
-            ) == .success, CFGetTypeID(parentValue!) == AXUIElementGetTypeID() else { break }
+            guard
+              AXUIElementCopyAttributeValue(
+                el, kAXParentAttribute as CFString, &parentValue
+              ) == .success, CFGetTypeID(parentValue!) == AXUIElementGetTypeID()
+            else { break }
             let parent = parentValue as! AXUIElement
             if let frame = MainFlutterWindow.frameOfElement(parent),
-               frame.width >= 10, frame.height >= 10 {
+              frame.width >= 10, frame.height >= 10
+            {
               bestFrame = frame
               break
             }
@@ -475,19 +564,24 @@ class MainFlutterWindow: NSWindow {
         }
       case "captureRegion":
         guard let args = call.arguments as? [String: Double],
-              let x = args["x"],
-              let y = args["y"],
-              let w = args["width"],
-              let h = args["height"] else {
-          result(FlutterError(code: "INVALID_ARGS",
-                              message: "captureRegion requires x, y, width, height",
-                              details: nil))
+          let x = args["x"],
+          let y = args["y"],
+          let w = args["width"],
+          let h = args["height"]
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "captureRegion requires x, y, width, height",
+              details: nil))
           return
         }
         guard w > 0, h > 0 else {
-          result(FlutterError(code: "INVALID_ARGS",
-                              message: "captureRegion requires positive width and height",
-                              details: nil))
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "captureRegion requires positive width and height",
+              details: nil))
           return
         }
         let cgRect = CGRect(x: x, y: y, width: w, height: h)
@@ -501,20 +595,31 @@ class MainFlutterWindow: NSWindow {
           ownWID,
           .bestResolution
         )
-        guard let img else { result(nil); return }
+        guard let img else {
+          result(nil)
+          return
+        }
 
         let imgW = img.width
         let imgH = img.height
         let bpr = imgW * 4
-        guard let ctx = CGContext(
-          data: nil, width: imgW, height: imgH,
-          bitsPerComponent: 8, bytesPerRow: bpr,
-          space: CGColorSpaceCreateDeviceRGB(),
-          bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
-                    | CGBitmapInfo.byteOrder32Little.rawValue
-        ) else { result(nil); return }
+        guard
+          let ctx = CGContext(
+            data: nil, width: imgW, height: imgH,
+            bitsPerComponent: 8, bytesPerRow: bpr,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+              | CGBitmapInfo.byteOrder32Little.rawValue
+          )
+        else {
+          result(nil)
+          return
+        }
         ctx.draw(img, in: CGRect(x: 0, y: 0, width: imgW, height: imgH))
-        guard let baseAddr = ctx.data else { result(nil); return }
+        guard let baseAddr = ctx.data else {
+          result(nil)
+          return
+        }
         let pixelData = Data(bytes: baseAddr, count: imgH * bpr)
 
         result([
@@ -590,14 +695,17 @@ class MainFlutterWindow: NSWindow {
         result(nil)
       case "showScrollStopButton":
         guard let args = call.arguments as? [String: Double],
-              let cgX = args["x"],
-              let cgY = args["y"],
-              let w = args["width"],
-              let h = args["height"] else {
-          result(nil); return
+          let cgX = args["x"],
+          let cgY = args["y"],
+          let w = args["width"],
+          let h = args["height"]
+        else {
+          result(nil)
+          return
         }
         guard w > 0, h > 0 else {
-          result(nil); return
+          result(nil)
+          return
         }
 
         // Convert CG coordinates (top-left origin) to NS coordinates (bottom-left).
@@ -638,21 +746,51 @@ class MainFlutterWindow: NSWindow {
         self.scrollStopPanel?.close()
         self.scrollStopPanel = nil
         result(nil)
+      case "showToolbarPanel":
+        guard let args = call.arguments as? [String: Any] else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "showToolbarPanel requires arguments",
+              details: nil))
+          return
+        }
+        self.showOrUpdateToolbarPanel(args)
+        result(nil)
+      case "hideToolbarPanel":
+        let args = call.arguments as? [String: Any]
+        let requestId =
+          (args?["requestId"] as? NSNumber)?.intValue ?? (args?["requestId"] as? Int)
+          ?? self.latestToolbarRequestId
+        self.hideToolbarPanel(minRequestId: requestId)
+        result(nil)
+      case "revealPreviewWindow":
+        self.alphaValue = 1.0
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        // Trigger any pending toolbar update now that the window is visible.
+        if let args = self.pendingToolbarArgs {
+          self.showOrUpdateToolbarPanel(args)
+        }
+        result(nil)
 
       // MARK: Pinned image panel
       case "pinImage":
         guard let args = call.arguments as? [String: Any],
-              let typedData = args["bytes"] as? FlutterStandardTypedData,
-              let width = args["width"] as? Int,
-              let height = args["height"] as? Int else {
+          let typedData = args["bytes"] as? FlutterStandardTypedData,
+          let width = args["width"] as? Int,
+          let height = args["height"] as? Int
+        else {
           MainFlutterWindow.log("pinImage: INVALID ARGS — missing bytes/width/height")
-          result(nil); return
+          result(nil)
+          return
         }
         let bytes = typedData.data
         MainFlutterWindow.log("pinImage: \(width)x\(height), bytes=\(bytes.count)")
         guard width > 0, height > 0, bytes.count >= width * height * 4 else {
           MainFlutterWindow.log("pinImage: INVALID size or bytes too short")
-          result(nil); return
+          result(nil)
+          return
         }
 
         // Close any existing pin panel first.
@@ -660,18 +798,23 @@ class MainFlutterWindow: NSWindow {
         self.pinnedPanel = nil
 
         // Create NSImage from raw RGBA bytes.
-        guard let bitmapRep = NSBitmapImageRep(
-          bitmapDataPlanes: nil,
-          pixelsWide: width,
-          pixelsHigh: height,
-          bitsPerSample: 8,
-          samplesPerPixel: 4,
-          hasAlpha: true,
-          isPlanar: false,
-          colorSpaceName: .deviceRGB,
-          bytesPerRow: width * 4,
-          bitsPerPixel: 32
-        ) else { result(nil); return }
+        guard
+          let bitmapRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: width,
+            pixelsHigh: height,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: width * 4,
+            bitsPerPixel: 32
+          )
+        else {
+          result(nil)
+          return
+        }
         bytes.withUnsafeBytes { rawPtr in
           guard let src = rawPtr.baseAddress else { return }
           memcpy(bitmapRep.bitmapData!, src, width * height * 4)
@@ -683,9 +826,10 @@ class MainFlutterWindow: NSWindow {
         // fall back to the current main window frame.
         let panelFrame: NSRect
         if let fx = args["frameX"] as? Double,
-           let fy = args["frameY"] as? Double,
-           let fw = args["frameWidth"] as? Double,
-           let fh = args["frameHeight"] as? Double {
+          let fy = args["frameY"] as? Double,
+          let fw = args["frameWidth"] as? Double,
+          let fh = args["frameHeight"] as? Double
+        {
           // CG coordinates (top-left origin) → NS coordinates (bottom-left origin).
           let cgRect = CGRect(x: fx, y: fy, width: fw, height: fh)
           let nsOrig = self.nsOrigin(forCGTopLeftRect: cgRect)
@@ -735,13 +879,17 @@ class MainFlutterWindow: NSWindow {
         result(nil)
 
       case "getPinnedPanelFrame":
-        guard let panel = self.pinnedPanel else { result(nil); return }
-        // Convert NS frame (bottom-left origin) to CG frame (top-left origin)
-        // in global display coordinates.
-        let nsFrame = panel.frame
-        guard let cgRect = self.cgTopLeftRect(forNSRect: nsFrame, on: panel.screen) else {
-          result(nil); return
+        guard let panel = self.pinnedPanel else {
+          result(nil)
+          return
         }
+        let nsFrame = panel.frame
+        let screen = screenForRect(nsFrame)
+        guard let cgRect = self.cgTopLeftRect(forNSRect: nsFrame, on: screen) else {
+          result(nil)
+          return
+        }
+        MainFlutterWindow.log("getPinnedPanelFrame: nsFrame=\(nsFrame), cgRect=\(cgRect)")
         result([
           "x": Double(cgRect.origin.x),
           "y": Double(cgRect.origin.y),
@@ -755,6 +903,19 @@ class MainFlutterWindow: NSWindow {
     }
 
     super.awakeFromNib()
+    self.delegate = self
+    self.installWindowFrameObservers()
+  }
+
+  deinit {
+    if let observer = windowDidMoveObserver {
+      NotificationCenter.default.removeObserver(observer)
+      windowDidMoveObserver = nil
+    }
+    if let observer = windowDidResizeObserver {
+      NotificationCenter.default.removeObserver(observer)
+      windowDidResizeObserver = nil
+    }
   }
 
   // Borderless windows return false by default — override so we receive keyboard events
@@ -770,7 +931,9 @@ class MainFlutterWindow: NSWindow {
     }
     let constrained = super.constrainFrameRect(frameRect, to: screen)
     if constrained != frameRect {
-      MainFlutterWindow.log("constrainFrameRect CONSTRAINED: \(NSStringFromRect(frameRect)) -> \(NSStringFromRect(constrained))")
+      MainFlutterWindow.log(
+        "constrainFrameRect CONSTRAINED: \(NSStringFromRect(frameRect)) -> \(NSStringFromRect(constrained))"
+      )
     }
     return constrained
   }
@@ -826,17 +989,17 @@ class MainFlutterWindow: NSWindow {
   /// Log the full layer tree for diagnostics (debug builds only).
   private static func dumpLayerTree(_ layer: CALayer, indent: String = "") {
     #if DEBUG
-    let typeName = String(describing: type(of: layer))
-    let bg: String
-    if let comps = layer.backgroundColor?.components {
-      bg = comps.map { String(format: "%.1f", $0) }.joined(separator: ",")
-    } else {
-      bg = "nil"
-    }
-    log("\(indent)\(typeName): isOpaque=\(layer.isOpaque) bg=[\(bg)] bounds=\(layer.bounds)")
-    layer.sublayers?.forEach { sublayer in
-      dumpLayerTree(sublayer, indent: indent + "  ")
-    }
+      let typeName = String(describing: type(of: layer))
+      let bg: String
+      if let comps = layer.backgroundColor?.components {
+        bg = comps.map { String(format: "%.1f", $0) }.joined(separator: ",")
+      } else {
+        bg = "nil"
+      }
+      log("\(indent)\(typeName): isOpaque=\(layer.isOpaque) bg=[\(bg)] bounds=\(layer.bounds)")
+      layer.sublayers?.forEach { sublayer in
+        dumpLayerTree(sublayer, indent: indent + "  ")
+      }
     #endif
   }
 
@@ -883,10 +1046,12 @@ class MainFlutterWindow: NSWindow {
       axTrusted = AXIsProcessTrusted()
     }
 
-    guard let infoList = CGWindowListCopyWindowInfo(
-      [.optionOnScreenOnly, .excludeDesktopElements],
-      kCGNullWindowID
-    ) as? [[String: Any]] else { return [] }
+    guard
+      let infoList = CGWindowListCopyWindowInfo(
+        [.optionOnScreenOnly, .excludeDesktopElements],
+        kCGNullWindowID
+      ) as? [[String: Any]]
+    else { return [] }
 
     var rects: [[String: Double]] = []
     var walkedPIDs = Set<Int32>()
@@ -913,8 +1078,10 @@ class MainFlutterWindow: NSWindow {
         walkedPIDs.insert(pid)
         let appElement = AXUIElementCreateApplication(pid)
         var axWindows: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &axWindows) == .success,
-           let windowArray = axWindows as? [AXUIElement] {
+        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &axWindows)
+          == .success,
+          let windowArray = axWindows as? [AXUIElement]
+        {
           for axWindow in windowArray {
             collectChildRects(
               element: axWindow,
@@ -937,14 +1104,16 @@ class MainFlutterWindow: NSWindow {
   private static func frameOfElement(_ element: AXUIElement) -> CGRect? {
     var posValue: CFTypeRef?
     var sizeValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue) == .success,
-          AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success
+    guard
+      AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &posValue)
+        == .success,
+      AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &sizeValue) == .success
     else { return nil }
 
     var point = CGPoint.zero
     var size = CGSize.zero
     guard AXValueGetValue(posValue as! AXValue, .cgPoint, &point),
-          AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
+      AXValueGetValue(sizeValue as! AXValue, .cgSize, &size)
     else { return nil }
 
     return CGRect(origin: point, size: size)
@@ -962,14 +1131,17 @@ class MainFlutterWindow: NSWindow {
     if depth >= maxDepth || rects.count >= maxTotal { return }
 
     var childrenValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue) == .success,
-          let children = childrenValue as? [AXUIElement]
+    guard
+      AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenValue)
+        == .success,
+      let children = childrenValue as? [AXUIElement]
     else { return }
 
     for child in children {
       if rects.count >= maxTotal { return }
       if let frame = frameOfElement(child),
-         frame.size.width >= 10, frame.size.height >= 10 {
+        frame.size.width >= 10, frame.size.height >= 10
+      {
         rects.append([
           "x": Double(frame.origin.x),
           "y": Double(frame.origin.y),
@@ -977,7 +1149,8 @@ class MainFlutterWindow: NSWindow {
           "height": Double(frame.size.height),
         ])
       }
-      collectChildRects(element: child, rects: &rects, depth: depth + 1, maxDepth: maxDepth, maxTotal: maxTotal)
+      collectChildRects(
+        element: child, rects: &rects, depth: depth + 1, maxDepth: maxDepth, maxTotal: maxTotal)
     }
   }
 
@@ -995,14 +1168,17 @@ class MainFlutterWindow: NSWindow {
     if depth >= maxDepth { return }
 
     var childrenValue: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(
-      element, kAXChildrenAttribute as CFString, &childrenValue
-    ) == .success, let children = childrenValue as? [AXUIElement] else { return }
+    guard
+      AXUIElementCopyAttributeValue(
+        element, kAXChildrenAttribute as CFString, &childrenValue
+      ) == .success, let children = childrenValue as? [AXUIElement]
+    else { return }
 
     for child in children {
       guard let frame = frameOfElement(child),
-            frame.width >= 10, frame.height >= 10,
-            frame.contains(point) else { continue }
+        frame.width >= 10, frame.height >= 10,
+        frame.contains(point)
+      else { continue }
 
       let area = Double(frame.width * frame.height)
       if area < bestArea {
@@ -1038,6 +1214,7 @@ class MainFlutterWindow: NSWindow {
   /// When [restoreStyleMask] is true, also restore the pre-overlay style mask.
   /// When false, keeps current style mask to avoid flash-prone style changes.
   private func cleanupOverlayState(restoreStyleMask: Bool) {
+    self.hideToolbarPanel()
     // Remove scroll stop button panel
     self.scrollStopPanel?.close()
     self.scrollStopPanel = nil
@@ -1080,6 +1257,482 @@ class MainFlutterWindow: NSWindow {
     self.acceptsMouseMovedEvents = false
   }
 
+  // MARK: - Floating toolbar panel
+
+  @objc private func toolbarButtonPressed(_ sender: NSButton) {
+    guard let action = sender.identifier?.rawValue else { return }
+    self.flutterChannel?.invokeMethod("onToolbarAction", arguments: ["action": action])
+    // Keep keyboard focus on the main window after toolbar interactions.
+    self.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+  }
+
+  private func makeToolbarButton(
+    id: String,
+    symbol: String,
+    toolTip: String,
+    destructive: Bool = false
+  ) -> NSButton {
+    let button = ToolbarButton(title: "", target: self, action: #selector(toolbarButtonPressed(_:)))
+    button.identifier = NSUserInterfaceItemIdentifier(id)
+    button.isBordered = false
+    button.bezelStyle = .regularSquare
+    button.focusRingType = .none
+    button.toolTip = toolTip
+    if #available(macOS 11.0, *) {
+      button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: toolTip)
+      button.imageScaling = .scaleProportionallyDown
+    } else {
+      button.title = String(toolTip.prefix(1))
+      button.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
+    }
+    button.contentTintColor =
+      destructive ? NSColor.systemRed.withAlphaComponent(0.9) : NSColor.white
+    button.wantsLayer = true
+    button.layer?.cornerRadius = 11
+    button.layer?.masksToBounds = true
+    button.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      button.widthAnchor.constraint(equalToConstant: 22),
+      button.heightAnchor.constraint(equalToConstant: 22),
+    ])
+    return button
+  }
+
+  private func styleToolbarButton(
+    _ button: NSButton,
+    isEnabled: Bool,
+    isActive: Bool = false,
+    destructive: Bool = false
+  ) {
+    button.isEnabled = isEnabled
+    if destructive {
+      button.contentTintColor = NSColor.systemRed.withAlphaComponent(isEnabled ? 0.85 : 0.35)
+    } else {
+      button.contentTintColor = NSColor.white.withAlphaComponent(isEnabled ? 1.0 : 0.35)
+    }
+    button.layer?.backgroundColor =
+      isActive
+      ? NSColor.white.withAlphaComponent(0.14).cgColor
+      : NSColor.clear.cgColor
+    if !isEnabled, let toolbarButton = button as? ToolbarButton {
+      toolbarButton.hideTooltipIfVisible()
+    }
+    button.window?.invalidateCursorRects(for: button)
+  }
+
+  private func makeToolbarSeparator() -> NSView {
+    let view = NSView()
+    view.wantsLayer = true
+    view.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.22).cgColor
+    view.translatesAutoresizingMaskIntoConstraints = false
+    NSLayoutConstraint.activate([
+      view.widthAnchor.constraint(equalToConstant: 1),
+      view.heightAnchor.constraint(equalToConstant: 18),
+    ])
+    return view
+  }
+
+  private func localTopLeftRectToScreenRect(x: Double, y: Double, width: Double, height: Double)
+    -> NSRect
+  {
+    let windowFrame = self.frame
+    let macX = windowFrame.minX + x
+    let macY = windowFrame.maxY - y - height
+    return NSRect(x: macX, y: macY, width: width, height: height)
+  }
+
+  private func toolbarPanelSize(showPin: Bool, hasAnnotations: Bool, fallbackHeight: CGFloat)
+    -> NSSize
+  {
+    let buttonWidth: CGFloat = 22
+    let separatorWidth: CGFloat = 1
+    let spacing: CGFloat = 4
+    let horizontalPadding: CGFloat = 16  // root leading/trailing = 8 + 8
+
+    // 9 drawing tools are always visible.
+    var viewCount = 9
+    var widthSum = CGFloat(9) * buttonWidth
+
+    if hasAnnotations {
+      // undo + redo + separator before them
+      viewCount += 3
+      widthSum += (2 * buttonWidth) + separatorWidth
+    }
+
+    // Separator before action buttons.
+    viewCount += 1
+    widthSum += separatorWidth
+
+    // Copy + Save + (optional Pin) + Close.
+    let actionCount = showPin ? 4 : 3
+    viewCount += actionCount
+    widthSum += CGFloat(actionCount) * buttonWidth
+
+    let gaps = max(viewCount - 1, 0)
+    let width = horizontalPadding + widthSum + CGFloat(gaps) * spacing
+    return NSSize(width: ceil(width), height: fallbackHeight)
+  }
+
+  private func clampToolbarRectToVisibleScreen(_ rect: NSRect) -> NSRect {
+    let allScreens = NSScreen.screens
+    guard !allScreens.isEmpty else { return rect }
+
+    // Prefer the screen containing the parent preview window.
+    let parentMid = NSPoint(x: self.frame.midX, y: self.frame.midY)
+    let screen =
+      allScreens.first(where: { $0.frame.contains(parentMid) }) ?? self.screen ?? NSScreen.main
+    guard let visible = screen?.visibleFrame else { return rect }
+
+    let margin: CGFloat = 8
+    let minX = visible.minX + margin
+    let maxX = visible.maxX - rect.width - margin
+    let minY = visible.minY + margin
+    let maxY = visible.maxY - rect.height - margin
+
+    let x: CGFloat
+    if maxX >= minX {
+      x = min(max(rect.minX, minX), maxX)
+    } else {
+      x = visible.midX - rect.width / 2
+    }
+
+    let y: CGFloat
+    if maxY >= minY {
+      y = min(max(rect.minY, minY), maxY)
+    } else {
+      y = visible.minY + margin
+    }
+
+    return NSRect(x: x, y: y, width: rect.width, height: rect.height)
+  }
+
+  private func clampToolbarRectYToVisibleScreen(_ rect: NSRect) -> NSRect {
+    let allScreens = NSScreen.screens
+    guard !allScreens.isEmpty else { return rect }
+
+    let parentMid = NSPoint(x: self.frame.midX, y: self.frame.midY)
+    let screen =
+      allScreens.first(where: { $0.frame.contains(parentMid) }) ?? self.screen ?? NSScreen.main
+    guard let visible = screen?.visibleFrame else { return rect }
+
+    let margin: CGFloat = 8
+    let minY = visible.minY + margin
+    let maxY = visible.maxY - rect.height - margin
+
+    let y: CGFloat
+    if maxY >= minY {
+      y = min(max(rect.minY, minY), maxY)
+    } else {
+      y = visible.minY + margin
+    }
+
+    return NSRect(x: rect.minX, y: y, width: rect.width, height: rect.height)
+  }
+
+  private func schedulePendingToolbarRetryIfNeeded() {
+    // Disable automatic retry - it can fire during window transitions when
+    // the frame is not yet at its final position. Instead, rely on explicit
+    // processing in revealPreviewWindow and revealOverlay.
+  }
+
+  private func showOrUpdateToolbarPanel(_ args: [String: Any]) {
+    let requestId =
+      (args["requestId"] as? NSNumber)?.intValue ?? (args["requestId"] as? Int) ?? 0
+    if requestId < self.latestToolbarRequestId {
+      return
+    }
+    self.latestToolbarRequestId = requestId
+
+    // During transitions (for example pin -> edit), the Flutter window can
+    // emit toolbar updates while hidden or fully transparent. Rendering the
+    // toolbar in those intermediate states causes visible jumps/flashes.
+    guard self.isVisible, self.alphaValue > 0.99 else {
+      self.pendingToolbarArgs = args
+      self.hideToolbarPanel(clearPending: false)
+      self.schedulePendingToolbarRetryIfNeeded()
+      return
+    }
+    self.pendingToolbarArgs = nil
+
+    guard let x = args["x"] as? Double,
+      let y = args["y"] as? Double,
+      let width = args["width"] as? Double,
+      let height = args["height"] as? Double,
+      let showPin = args["showPin"] as? Bool,
+      let hasAnnotations = args["hasAnnotations"] as? Bool,
+      let canUndo = args["canUndo"] as? Bool,
+      let canRedo = args["canRedo"] as? Bool
+    else {
+      return
+    }
+    guard width > 0, height > 0 else { return }
+    let activeTool = args["activeTool"] as? String
+    let anchorToWindow = args["anchorToWindow"] as? Bool ?? false
+
+    let previousAnchorToWindow = self.lastToolbarArgs?["anchorToWindow"] as? Bool ?? false
+
+    // In preview mode we always use anchorToWindow=true.
+    // Ignore stale non-anchored updates that may arrive after transitions or
+    // drag-end notifications from prior overlay states.
+    if !anchorToWindow,
+      self.overlayScreenFrame == nil,
+      previousAnchorToWindow
+    {
+      MainFlutterWindow.log("ignore stale NON-anchorToWindow update in preview")
+      return
+    }
+
+    self.lastToolbarArgs = args
+
+    let targetSize = toolbarPanelSize(
+      showPin: showPin,
+      hasAnnotations: hasAnnotations,
+      fallbackHeight: CGFloat(height)
+    )
+
+    var screenRect: NSRect
+    if anchorToWindow {
+      // Preview mode: position toolbar directly below the preview window,
+      // ignoring the y value from Flutter (which may be stale after resize).
+      // Use a fixed gap of 8pt below the window.
+      let toolbarGap: CGFloat = 8.0
+      MainFlutterWindow.log(
+        "anchorToWindow: self.frame=\(self.frame), isVisible=\(self.isVisible), alpha=\(self.alphaValue)"
+      )
+      screenRect = NSRect(
+        x: self.frame.midX - targetSize.width / 2,
+        y: self.frame.minY - toolbarGap - targetSize.height,
+        width: targetSize.width,
+        height: targetSize.height
+      )
+      MainFlutterWindow.log("anchorToWindow: computed screenRect=\(screenRect)")
+      // Only clamp vertically to keep the toolbar visible.
+      screenRect = clampToolbarRectYToVisibleScreen(screenRect)
+      MainFlutterWindow.log("anchorToWindow: after clamp screenRect=\(screenRect)")
+    } else {
+      screenRect = localTopLeftRectToScreenRect(x: x, y: y, width: width, height: height)
+      // Keep panel centered around the requested X center while shrinking width
+      // to actual content, and preserve top edge.
+      screenRect.origin.x += (screenRect.width - targetSize.width) / 2
+      screenRect.origin.y += (screenRect.height - targetSize.height)
+      screenRect.size = targetSize
+      // Preserve horizontal alignment with selection center.
+      // Only clamp vertically to keep the toolbar visible.
+      screenRect = clampToolbarRectYToVisibleScreen(screenRect)
+      MainFlutterWindow.log("NON-anchorToWindow: x=\(x), y=\(y), screenRect=\(screenRect)")
+    }
+
+    let panel: NSPanel
+    if let existing = self.toolbarPanel {
+      panel = existing
+    } else {
+      panel = ToolbarPanel(
+        contentRect: screenRect,
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+      )
+      panel.isFloatingPanel = true
+      panel.becomesKeyOnlyIfNeeded = true
+      panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 3)
+      panel.isOpaque = false
+      panel.backgroundColor = .clear
+      panel.hasShadow = true
+      panel.hidesOnDeactivate = false
+      panel.ignoresMouseEvents = false
+      panel.acceptsMouseMovedEvents = true
+      panel.allowsToolTipsWhenApplicationIsInactive = true
+      // NSWindow asserts on invalid combinations: canJoinAllSpaces +
+      // moveToActiveSpace cannot be set together.
+      panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+      self.toolbarPanel = panel
+    }
+
+    MainFlutterWindow.log(
+      "setFrame toolbar panel to: \(screenRect), panel.frame before: \(panel.frame)")
+    panel.setFrame(screenRect, display: true)
+    // Keep toolbar above the active main window level.
+    panel.level = NSWindow.Level(rawValue: self.level.rawValue + 1)
+    MainFlutterWindow.log("setFrame toolbar panel done, panel.frame after: \(panel.frame)")
+    self.rebuildToolbarPanelContent(
+      width: Double(targetSize.width),
+      height: Double(targetSize.height),
+      showPin: showPin,
+      hasAnnotations: hasAnnotations,
+      canUndo: canUndo,
+      canRedo: canRedo,
+      activeTool: activeTool
+    )
+
+    // Keep the toolbar as an independent floating panel.
+    // Child-window attachment can apply AppKit-relative positioning rules
+    // that fight our explicit setFrame() updates at drag-end.
+    if panel.parent != nil {
+      panel.parent?.removeChildWindow(panel)
+    }
+    MainFlutterWindow.log("orderFront: panel.frame=\(panel.frame)")
+    panel.orderFront(nil)
+  }
+
+  private func refreshToolbarPanelIfNeeded() {
+    guard self.isVisible, self.alphaValue > 0.99 else { return }
+    guard self.pendingToolbarArgs == nil else { return }
+    guard var args = self.lastToolbarArgs else { return }
+    let nextRequestId = self.latestToolbarRequestId + 1
+    self.latestToolbarRequestId = nextRequestId
+    args["requestId"] = nextRequestId
+    self.showOrUpdateToolbarPanel(args)
+  }
+
+  private func scheduleToolbarFollowRefresh() {
+    refreshToolbarPanelIfNeeded()
+    toolbarMoveRefreshWorkItem?.cancel()
+    let workItem = DispatchWorkItem { [weak self] in
+      self?.refreshToolbarPanelIfNeeded()
+    }
+    toolbarMoveRefreshWorkItem = workItem
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.02, execute: workItem)
+  }
+
+  private func installWindowFrameObservers() {
+    if let observer = windowDidMoveObserver {
+      NotificationCenter.default.removeObserver(observer)
+      windowDidMoveObserver = nil
+    }
+    if let observer = windowDidResizeObserver {
+      NotificationCenter.default.removeObserver(observer)
+      windowDidResizeObserver = nil
+    }
+
+    windowDidMoveObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didMoveNotification,
+      object: self,
+      queue: .main
+    ) { [weak self] _ in
+      self?.scheduleToolbarFollowRefresh()
+    }
+
+    windowDidResizeObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didResizeNotification,
+      object: self,
+      queue: .main
+    ) { [weak self] _ in
+      self?.refreshToolbarPanelIfNeeded()
+    }
+  }
+
+  func windowDidMove(_ notification: Notification) {
+    scheduleToolbarFollowRefresh()
+  }
+
+  func windowDidResize(_ notification: Notification) {
+    refreshToolbarPanelIfNeeded()
+  }
+
+  private func rebuildToolbarPanelContent(
+    width: Double,
+    height: Double,
+    showPin: Bool,
+    hasAnnotations: Bool,
+    canUndo: Bool,
+    canRedo: Bool,
+    activeTool: String?
+  ) {
+    guard let panel = self.toolbarPanel else { return }
+    self.toolbarButtons.removeAll()
+
+    let root = ToolbarRootView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+    root.wantsLayer = true
+    root.layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 0.88).cgColor
+    root.layer?.cornerRadius = height / 2
+    root.layer?.masksToBounds = true
+
+    let stack = NSStackView()
+    stack.orientation = .horizontal
+    stack.alignment = .centerY
+    stack.spacing = 4
+    stack.translatesAutoresizingMaskIntoConstraints = false
+    root.addSubview(stack)
+    NSLayoutConstraint.activate([
+      stack.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+      stack.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+      stack.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+      stack.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -4),
+    ])
+
+    func addButton(
+      id: String,
+      symbol: String,
+      tip: String,
+      enabled: Bool = true,
+      active: Bool = false,
+      destructive: Bool = false
+    ) {
+      let button = makeToolbarButton(id: id, symbol: symbol, toolTip: tip, destructive: destructive)
+      styleToolbarButton(button, isEnabled: enabled, isActive: active, destructive: destructive)
+      self.toolbarButtons[id] = button
+      stack.addArrangedSubview(button)
+    }
+
+    let tools: [(String, String, String)] = [
+      ("rectangle", "rectangle", "Rectangle"),
+      ("ellipse", "circle", "Ellipse"),
+      ("arrow", "arrow.right", "Arrow"),
+      ("line", "minus", "Line"),
+      ("pencil", "pencil", "Pencil"),
+      ("marker", "paintbrush", "Marker"),
+      ("mosaic", "square.grid.3x3", "Mosaic"),
+      ("number", "1.circle", "Number"),
+      ("text", "textformat.size", "Text"),
+    ]
+    for (id, symbol, tip) in tools {
+      addButton(
+        id: id,
+        symbol: symbol,
+        tip: tip,
+        enabled: true,
+        active: activeTool == id
+      )
+    }
+
+    if hasAnnotations {
+      stack.addArrangedSubview(makeToolbarSeparator())
+      addButton(id: "undo", symbol: "arrow.uturn.backward", tip: "Undo", enabled: canUndo)
+      addButton(id: "redo", symbol: "arrow.uturn.forward", tip: "Redo", enabled: canRedo)
+    }
+
+    stack.addArrangedSubview(makeToolbarSeparator())
+    addButton(id: "copy", symbol: "doc.on.doc", tip: "Copy")
+    addButton(id: "save", symbol: "square.and.arrow.down", tip: "Save")
+    if showPin {
+      addButton(id: "pin", symbol: "pin", tip: "Pin")
+    }
+    addButton(id: "close", symbol: "xmark", tip: "Close", destructive: true)
+
+    panel.contentView = root
+  }
+
+  private func hideToolbarPanel(clearPending: Bool = true, minRequestId: Int? = nil) {
+    if let minRequestId = minRequestId, minRequestId > self.latestToolbarRequestId {
+      self.latestToolbarRequestId = minRequestId
+    }
+    if clearPending {
+      pendingToolbarArgs = nil
+      toolbarRetryScheduled = false
+    }
+    for button in self.toolbarButtons.values {
+      if let toolbarButton = button as? ToolbarButton {
+        toolbarButton.hideTooltipIfVisible()
+      }
+    }
+    guard let panel = self.toolbarPanel else { return }
+    if let parent = panel.parent {
+      parent.removeChildWindow(panel)
+    }
+    panel.orderOut(nil)
+  }
+
   // MARK: - Overlay helpers
 
   /// Find the target screen from arguments (CG origin) or mouse location,
@@ -1090,7 +1743,8 @@ class MainFlutterWindow: NSWindow {
     guard !allScreens.isEmpty else { return }
 
     func cgOrigin(for screen: NSScreen) -> (x: Double, y: Double)? {
-      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+      else {
         return nil
       }
       let bounds = CGDisplayBounds(id.uint32Value)
@@ -1099,17 +1753,20 @@ class MainFlutterWindow: NSWindow {
 
     let targetScreen: NSScreen
     if let args = args,
-       let targetCGX = args["screenOriginX"],
-       let targetCGY = args["screenOriginY"] {
-      targetScreen = allScreens.first(where: { screen in
-        guard let origin = cgOrigin(for: screen) else { return false }
-        return abs(origin.x - targetCGX) < 2 && abs(origin.y - targetCGY) < 2
-      }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+      let targetCGX = args["screenOriginX"],
+      let targetCGY = args["screenOriginY"]
+    {
+      targetScreen =
+        allScreens.first(where: { screen in
+          guard let origin = cgOrigin(for: screen) else { return false }
+          return abs(origin.x - targetCGX) < 2 && abs(origin.y - targetCGY) < 2
+        }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
         ?? NSScreen.main ?? allScreens[0]
       MainFlutterWindow.log("configureOverlay: matched by CG origin (\(targetCGX),\(targetCGY))")
     } else {
       let mouseLocation = NSEvent.mouseLocation
-      targetScreen = allScreens.first(where: { $0.frame.contains(mouseLocation) })
+      targetScreen =
+        allScreens.first(where: { $0.frame.contains(mouseLocation) })
         ?? NSScreen.main ?? allScreens[0]
       MainFlutterWindow.log("configureOverlay: matched by mouse \(mouseLocation)")
     }
@@ -1137,7 +1794,8 @@ class MainFlutterWindow: NSWindow {
     self.hasShadow = false
     self.isMovableByWindowBackground = false
     self.minSize = NSSize(width: 1, height: 1)
-    self.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    self.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
     self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) - 1)
     self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     self.ignoresMouseEvents = false
@@ -1181,18 +1839,19 @@ class MainFlutterWindow: NSWindow {
       // "outside" even though it's still on the same display.  This caused
       // spurious display-change cycles that baked ghost images into re-captures.
       let mouseIsOnDifferentScreen = NSScreen.screens.contains { screen in
-        screen.frame.contains(mouse) &&
-          (abs(screen.frame.origin.x - overlayFrame.origin.x) > 2 ||
-           abs(screen.frame.origin.y - overlayFrame.origin.y) > 2 ||
-           abs(screen.frame.width  - overlayFrame.width)  > 2 ||
-           abs(screen.frame.height - overlayFrame.height) > 2)
+        screen.frame.contains(mouse)
+          && (abs(screen.frame.origin.x - overlayFrame.origin.x) > 2
+            || abs(screen.frame.origin.y - overlayFrame.origin.y) > 2
+            || abs(screen.frame.width - overlayFrame.width) > 2
+            || abs(screen.frame.height - overlayFrame.height) > 2)
       }
       if mouseIsOnDifferentScreen {
         if let monitor = self.displayChangeMonitor {
           NSEvent.removeMonitor(monitor)
           self.displayChangeMonitor = nil
         }
-        MainFlutterWindow.log("displayChange: mouse=\(mouse) left overlay=\(NSStringFromRect(overlayFrame))")
+        MainFlutterWindow.log(
+          "displayChange: mouse=\(mouse) left overlay=\(NSStringFromRect(overlayFrame))")
         self.flutterChannel?.invokeMethod("onOverlayDisplayChanged", arguments: nil)
       }
       return event
@@ -1217,6 +1876,236 @@ private class ScrollStopClickView: NSView {
   }
 }
 
+// MARK: - Toolbar panel views
+
+/// Root view for the floating toolbar panel.
+/// Forces arrow cursor over non-button areas so the overlay crosshair doesn't bleed through.
+private class ToolbarRootView: NSView {
+  private var hoverTrackingArea: NSTrackingArea?
+
+  override func updateTrackingAreas() {
+    if let area = hoverTrackingArea {
+      removeTrackingArea(area)
+    }
+    hoverTrackingArea = NSTrackingArea(
+      rect: bounds,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
+      owner: self,
+      userInfo: nil
+    )
+    if let area = hoverTrackingArea {
+      addTrackingArea(area)
+    }
+    super.updateTrackingAreas()
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    NSCursor.arrow.set()
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    NSCursor.arrow.set()
+  }
+
+  override func cursorUpdate(with event: NSEvent) {
+    NSCursor.arrow.set()
+  }
+
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: .arrow)
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+}
+
+/// Toolbar button with explicit pointing-hand cursor.
+private class ToolbarButton: NSButton {
+  private static weak var visibleTooltipOwner: ToolbarButton?
+
+  private var hoverTrackingArea: NSTrackingArea?
+  private var tooltipTimer: Timer?
+  private var tooltipPanel: ToolbarTooltipPanel?
+
+  func hideTooltipIfVisible() {
+    tooltipTimer?.invalidate()
+    tooltipTimer = nil
+    if let panel = tooltipPanel {
+      if let parent = panel.parent {
+        parent.removeChildWindow(panel)
+      }
+      panel.orderOut(nil)
+    }
+    if ToolbarButton.visibleTooltipOwner === self {
+      ToolbarButton.visibleTooltipOwner = nil
+    }
+  }
+
+  private func scheduleTooltip() {
+    tooltipTimer?.invalidate()
+    tooltipTimer = nil
+
+    guard isEnabled, let tip = toolTip, !tip.isEmpty else { return }
+    tooltipTimer = Timer.scheduledTimer(withTimeInterval: 0.45, repeats: false) { [weak self] _ in
+      self?.showTooltipNow()
+    }
+  }
+
+  private func showTooltipNow() {
+    guard isEnabled,
+      let tip = toolTip,
+      !tip.isEmpty,
+      let window = self.window
+    else {
+      return
+    }
+
+    if let other = ToolbarButton.visibleTooltipOwner, other !== self {
+      other.hideTooltipIfVisible()
+    }
+    ToolbarButton.visibleTooltipOwner = self
+
+    let label = NSTextField(labelWithString: tip)
+    label.font = NSFont.systemFont(ofSize: 11, weight: .medium)
+    label.textColor = .white
+    label.backgroundColor = .clear
+    label.alignment = .center
+    label.translatesAutoresizingMaskIntoConstraints = false
+
+    let root = NSView()
+    root.wantsLayer = true
+    root.layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 0.95).cgColor
+    root.layer?.cornerRadius = 7
+    root.layer?.masksToBounds = true
+    root.addSubview(label)
+
+    NSLayoutConstraint.activate([
+      label.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
+      label.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
+      label.topAnchor.constraint(equalTo: root.topAnchor, constant: 4),
+      label.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -4),
+    ])
+
+    let fitting = root.fittingSize
+    let size = NSSize(
+      width: max(36, ceil(fitting.width)),
+      height: max(20, ceil(fitting.height))
+    )
+
+    let panel: ToolbarTooltipPanel
+    if let existing = tooltipPanel {
+      panel = existing
+    } else {
+      panel = ToolbarTooltipPanel(
+        contentRect: NSRect(origin: .zero, size: size),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+      )
+      panel.isFloatingPanel = true
+      panel.level = NSWindow.Level(rawValue: NSWindow.Level.statusBar.rawValue + 3)
+      panel.isOpaque = false
+      panel.backgroundColor = .clear
+      panel.hasShadow = true
+      panel.hidesOnDeactivate = false
+      panel.ignoresMouseEvents = true
+      panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary, .transient]
+      tooltipPanel = panel
+    }
+    panel.contentView = root
+
+    let buttonRectInWindow = convert(bounds, to: nil)
+    let buttonRectOnScreen = window.convertToScreen(buttonRectInWindow)
+    var x = buttonRectOnScreen.midX - size.width / 2
+    var y = buttonRectOnScreen.maxY + 8
+
+    if let visible = window.screen?.visibleFrame {
+      let inset = visible.insetBy(dx: 8, dy: 8)
+      if y + size.height > inset.maxY {
+        y = buttonRectOnScreen.minY - size.height - 8
+      }
+      x = min(max(x, inset.minX), inset.maxX - size.width)
+      y = min(max(y, inset.minY), inset.maxY - size.height)
+    }
+
+    panel.setFrame(NSRect(x: x, y: y, width: size.width, height: size.height), display: true)
+    if panel.parent !== window {
+      if let oldParent = panel.parent {
+        oldParent.removeChildWindow(panel)
+      }
+      window.addChildWindow(panel, ordered: .above)
+    }
+    panel.orderFront(nil)
+  }
+
+  override func updateTrackingAreas() {
+    if let area = hoverTrackingArea {
+      removeTrackingArea(area)
+    }
+    hoverTrackingArea = NSTrackingArea(
+      rect: bounds,
+      options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited, .mouseMoved, .cursorUpdate],
+      owner: self,
+      userInfo: nil
+    )
+    if let area = hoverTrackingArea {
+      addTrackingArea(area)
+    }
+    super.updateTrackingAreas()
+  }
+
+  override func mouseEntered(with event: NSEvent) {
+    NSCursor.pointingHand.set()
+    scheduleTooltip()
+  }
+
+  override func mouseMoved(with event: NSEvent) {
+    NSCursor.pointingHand.set()
+  }
+
+  override func mouseExited(with event: NSEvent) {
+    NSCursor.arrow.set()
+    hideTooltipIfVisible()
+  }
+
+  override func cursorUpdate(with event: NSEvent) {
+    if isEnabled {
+      NSCursor.pointingHand.set()
+      scheduleTooltip()
+    } else {
+      NSCursor.arrow.set()
+      hideTooltipIfVisible()
+    }
+  }
+
+  override func resetCursorRects() {
+    addCursorRect(bounds, cursor: isEnabled ? .pointingHand : .arrow)
+  }
+
+  override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+    true
+  }
+
+  override func mouseDown(with event: NSEvent) {
+    hideTooltipIfVisible()
+    super.mouseDown(with: event)
+  }
+}
+
+/// Borderless floating panel for toolbar controls.
+/// Uses a normal (activatable) panel so AppKit hover/cursor/tooltip behavior works.
+private class ToolbarPanel: NSPanel {
+  override var canBecomeKey: Bool { true }
+  override var canBecomeMain: Bool { false }
+}
+
+/// Borderless tooltip panel for toolbar button hover labels.
+private class ToolbarTooltipPanel: NSPanel {
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
+}
+
 // MARK: - PinnedImagePanel
 
 /// Floating panel that displays a pinned screenshot as a sticker.
@@ -1229,21 +2118,21 @@ private class PinnedImagePanel: NSPanel {
 
   override func keyDown(with event: NSEvent) {
     switch event.keyCode {
-    case 49: // Space → edit
+    case 49:  // Space → edit
       onEdit?()
-    case 53: // Escape → close
+    case 53:  // Escape → close
       let closeCallback = onClose
       self.close()
       closeCallback?()
     default:
-      break // Suppress system beep for all keys.
+      break  // Suppress system beep for all keys.
     }
   }
 }
 
 // MARK: - PinnedImageView
 
-/// NSView that draws a pinned image scaled to fill its bounds.
+/// NSView that draws a pinned image scaled to fit its bounds while preserving aspect ratio.
 private class PinnedImageView: NSView {
   var displayImage: NSImage?
 
@@ -1265,6 +2154,38 @@ private class PinnedImageView: NSView {
       dirtyRect.fill()
       return
     }
-    image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1.0)
+
+    // Calculate destination rect that preserves aspect ratio (BoxFit.contain behavior).
+    let imageSize = image.size
+    let boundsSize = bounds.size
+
+    guard imageSize.width > 0, imageSize.height > 0, boundsSize.width > 0, boundsSize.height > 0
+    else {
+      image.draw(in: bounds, from: .zero, operation: .copy, fraction: 1.0)
+      return
+    }
+
+    let imageAspect = imageSize.width / imageSize.height
+    let boundsAspect = boundsSize.width / boundsSize.height
+
+    let destRect: NSRect
+    if imageAspect > boundsAspect {
+      // Image is wider relative to its height - fit to width
+      let width = boundsSize.width
+      let height = width / imageAspect
+      let x: CGFloat = 0
+      let y = (boundsSize.height - height) / 2
+      destRect = NSRect(x: x, y: y, width: width, height: height)
+    } else {
+      // Image is taller relative to its width - fit to height
+      let height = boundsSize.height
+      let width = height * imageAspect
+      let x = (boundsSize.width - width) / 2
+      let y: CGFloat = 0
+      destRect = NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    image.draw(
+      in: destRect, from: NSRect(origin: .zero, size: imageSize), operation: .copy, fraction: 1.0)
   }
 }

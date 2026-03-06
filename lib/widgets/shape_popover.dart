@@ -6,7 +6,7 @@ import '../state/annotation_state.dart';
 
 /// Floating popover for editing annotation settings (color, stroke, corner radius).
 ///
-/// Shape selection is handled by [SelectionToolbar]; this popover only exposes
+/// Shape selection is handled by the floating toolbar panel; this popover only exposes
 /// style settings for the currently active tool.
 /// Positioned by the caller (typically bottom-center of the preview window).
 class ShapePopover extends StatelessWidget {

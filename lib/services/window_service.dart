@@ -40,8 +40,9 @@ class ScreenCapture {
 class WindowService {
   /// Minimum preview window size for normal (non-scroll) captures.
   /// Scroll captures use a fullscreen overlay instead of this window.
-  static const _minPreviewSize = Size(400, 300);
+  static const _minPreviewSize = Size(80, 60);
   static const _channel = MethodChannel('com.asnap/window');
+  int _toolbarRequestId = 0;
 
   /// Called when the native side detects a Space switch during overlay mode.
   VoidCallback? onOverlayCancelled;
@@ -65,6 +66,9 @@ class WindowService {
   /// Called when the user presses Escape on a pinned image panel (close/destroy).
   VoidCallback? onPinnedImageClosed;
 
+  /// Called when a native floating toolbar button is pressed.
+  void Function(String action)? onToolbarAction;
+
   /// True when a region selection is active (post-selection) in the overlay.
   /// Used to decide how to handle multi-display cursor moves.
   bool overlaySelectionActive = false;
@@ -86,6 +90,10 @@ class WindowService {
         onEditPinnedImage?.call();
       } else if (call.method == 'onPinnedImageClosed') {
         onPinnedImageClosed?.call();
+      } else if (call.method == 'onToolbarAction') {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final action = args?['action'] as String?;
+        if (action != null) onToolbarAction?.call(action);
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -287,34 +295,21 @@ class WindowService {
   }
 
   Future<void> revealPreviewWindow() async {
-    await windowManager.setOpacity(1.0);
-    await _focusAndActivateWindow();
+    // Use native method to reveal and trigger pending toolbar update.
+    await _channel.invokeMethod('revealPreviewWindow');
     await Future<void>.delayed(const Duration(milliseconds: 40));
     await _focusAndActivateWindow();
   }
 
   /// Shrink the overlay window in-place to the selection rect for preview.
   /// Stays borderless (no corner radius) and floating above other windows.
-  /// Enforces a minimum size so the toolbar always fits, expanding outward
-  /// from the selection center if needed.
+  /// Keeps the selected region size (toolbar is shown in a separate panel).
   Future<void> showPreviewInPlace({required Rect selectionRect}) async {
-    // Enforce minimum so the toolbar never overflows
-    final w = selectionRect.width.clamp(_minPreviewSize.width, double.infinity);
-    final h = selectionRect.height.clamp(
-      _minPreviewSize.height,
-      double.infinity,
-    );
-    final rect = Rect.fromCenter(
-      center: selectionRect.center,
-      width: w,
-      height: h,
-    );
-
     await _channel.invokeMethod('resizeToRect', {
-      'x': rect.left,
-      'y': rect.top,
-      'width': rect.width,
-      'height': rect.height,
+      'x': selectionRect.left,
+      'y': selectionRect.top,
+      'width': selectionRect.width,
+      'height': selectionRect.height,
     });
   }
 
@@ -551,8 +546,43 @@ class WindowService {
     // Restoring styleMask on a "hidden" window can still flash because macOS
     // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
+    unawaited(hideToolbarPanel());
     // Window is already invisible — no need to block on this.
     unawaited(windowManager.setAlwaysOnTop(false));
+  }
+
+  /// Show/update the native floating toolbar panel.
+  ///
+  /// [rect] is in the current Flutter window's local coordinates.
+  Future<void> showToolbarPanel({
+    required Rect rect,
+    required bool showPin,
+    required bool hasAnnotations,
+    required bool canUndo,
+    required bool canRedo,
+    String? activeTool,
+    bool anchorToWindow = false,
+  }) async {
+    final requestId = ++_toolbarRequestId;
+    await _channel.invokeMethod('showToolbarPanel', {
+      'x': rect.left,
+      'y': rect.top,
+      'width': rect.width,
+      'height': rect.height,
+      'showPin': showPin,
+      'hasAnnotations': hasAnnotations,
+      'canUndo': canUndo,
+      'canRedo': canRedo,
+      'activeTool': activeTool,
+      'anchorToWindow': anchorToWindow,
+      'requestId': requestId,
+    });
+  }
+
+  /// Hide the native floating toolbar panel.
+  Future<void> hideToolbarPanel() async {
+    final requestId = ++_toolbarRequestId;
+    await _channel.invokeMethod('hideToolbarPanel', {'requestId': requestId});
   }
 
   // ---------------------------------------------------------------------------

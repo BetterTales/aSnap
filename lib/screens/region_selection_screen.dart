@@ -13,7 +13,6 @@ import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
-import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Internal phase of the selection interaction.
@@ -92,6 +91,7 @@ class RegionSelectionScreen extends StatefulWidget {
 class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     with ToolPopoverMixin {
   final _focusNode = FocusNode();
+  late final void Function(String) _toolbarActionHandler;
 
   // -- Interaction state --
   _SelectionPhase _phase = _SelectionPhase.hovering;
@@ -124,11 +124,15 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   DateTime? _lastAnnotationPointerDown;
   Offset? _lastAnnotationPointerDownPos;
 
-  /// True while the pointer hovers over the selection toolbar.
-  bool _isHoveringToolbar = false;
-
   /// True while a platform-channel AX hit-test is in flight.
   bool _axQueryInFlight = false;
+
+  Rect? _lastToolbarRect;
+  bool _lastShowPin = false;
+  bool _lastHasAnnotations = false;
+  bool _lastCanUndo = false;
+  bool _lastCanRedo = false;
+  String? _lastActiveTool;
 
   @override
   AnnotationState? get popoverAnnotationState => widget.annotationState;
@@ -141,10 +145,19 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
     widget.annotationState?.addListener(_handleAnnotationStateChange);
+    _toolbarActionHandler = _handleNativeToolbarAction;
+    widget.windowService.onToolbarAction = _toolbarActionHandler;
   }
 
   @override
   void dispose() {
+    if (identical(
+      widget.windowService.onToolbarAction,
+      _toolbarActionHandler,
+    )) {
+      widget.windowService.onToolbarAction = null;
+    }
+    unawaited(widget.windowService.hideToolbarPanel());
     widget.windowService.overlaySelectionActive = false;
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     widget.annotationState?.removeListener(_handleAnnotationStateChange);
@@ -749,7 +762,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   // -----------------------------------------------------------------------
 
   MouseCursor get _currentCursor {
-    if (_isHoveringToolbar) return SystemMouseCursors.basic;
     switch (_phase) {
       case _SelectionPhase.hovering:
       case _SelectionPhase.drawing:
@@ -817,10 +829,143 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         _phase == _SelectionPhase.moving;
   }
 
-  Rect? _toolbarRect(Size screenSize) {
+  Rect? _toolbarRect() {
     final sel = _selectionRect;
     if (sel == null) return null;
-    return computeToolbarRect(anchorRect: sel, screenSize: screenSize);
+    final size = _nativeToolbarSize();
+    return Rect.fromLTWH(
+      sel.center.dx - size.width / 2,
+      sel.bottom + kToolbarGap,
+      size.width,
+      size.height,
+    );
+  }
+
+  Size _nativeToolbarSize() {
+    // Keep this calculation in sync with MainFlutterWindow.toolbarPanelSize().
+    const buttonWidth = 22.0;
+    const separatorWidth = 1.0;
+    const spacing = 4.0;
+    const horizontalPadding = 16.0; // root 8 + 8
+
+    var viewCount = 9; // tools
+    var widthSum = 9 * buttonWidth;
+
+    final hasAnnotations = widget.annotationState?.hasAnnotations ?? false;
+    if (hasAnnotations) {
+      viewCount += 3; // separator + undo + redo
+      widthSum += separatorWidth + (2 * buttonWidth);
+    }
+
+    // separator before action buttons
+    viewCount += 1;
+    widthSum += separatorWidth;
+
+    // copy + save + (optional pin) + close
+    final actionCount = widget.onPin != null ? 4 : 3;
+    viewCount += actionCount;
+    widthSum += actionCount * buttonWidth;
+
+    final gaps = (viewCount - 1).clamp(0, viewCount);
+    final width = horizontalPadding + widthSum + (gaps * spacing);
+    return Size(width.ceilToDouble(), kToolbarSize.height);
+  }
+
+  ShapeType? _shapeTypeForAction(String action) {
+    return switch (action) {
+      'rectangle' => ShapeType.rectangle,
+      'ellipse' => ShapeType.ellipse,
+      'arrow' => ShapeType.arrow,
+      'line' => ShapeType.line,
+      'pencil' => ShapeType.pencil,
+      'marker' => ShapeType.marker,
+      'mosaic' => ShapeType.mosaic,
+      'number' => ShapeType.number,
+      'text' => ShapeType.text,
+      _ => null,
+    };
+  }
+
+  void _handleNativeToolbarAction(String action) {
+    switch (action) {
+      case 'copy':
+        _handleToolbarCopy();
+        return;
+      case 'save':
+        _handleToolbarSave();
+        return;
+      case 'pin':
+        _handleToolbarPin();
+        return;
+      case 'close':
+        _handleToolbarClose();
+        return;
+      case 'undo':
+        widget.annotationState?.undo();
+        return;
+      case 'redo':
+        widget.annotationState?.redo();
+        return;
+      default:
+        final shape = _shapeTypeForAction(action);
+        if (shape != null && widget.annotationState != null) {
+          handleToolTap(shape);
+        }
+        return;
+    }
+  }
+
+  void _hideNativeToolbar() {
+    if (_lastToolbarRect == null &&
+        !_lastShowPin &&
+        !_lastHasAnnotations &&
+        !_lastCanUndo &&
+        !_lastCanRedo &&
+        _lastActiveTool == null) {
+      return;
+    }
+    _lastToolbarRect = null;
+    _lastShowPin = false;
+    _lastHasAnnotations = false;
+    _lastCanUndo = false;
+    _lastCanRedo = false;
+    _lastActiveTool = null;
+    unawaited(widget.windowService.hideToolbarPanel());
+  }
+
+  void _syncNativeToolbar(Rect toolbarRect) {
+    final showPin = widget.onPin != null;
+    final hasAnnotations = widget.annotationState?.hasAnnotations ?? false;
+    final canUndo = widget.annotationState?.canUndo ?? false;
+    final canRedo = widget.annotationState?.canRedo ?? false;
+    final activeTool = activeShapeType?.name;
+
+    if (_lastToolbarRect == toolbarRect &&
+        _lastShowPin == showPin &&
+        _lastHasAnnotations == hasAnnotations &&
+        _lastCanUndo == canUndo &&
+        _lastCanRedo == canRedo &&
+        _lastActiveTool == activeTool) {
+      return;
+    }
+
+    _lastToolbarRect = toolbarRect;
+    _lastShowPin = showPin;
+    _lastHasAnnotations = hasAnnotations;
+    _lastCanUndo = canUndo;
+    _lastCanRedo = canRedo;
+    _lastActiveTool = activeTool;
+
+    unawaited(
+      widget.windowService.showToolbarPanel(
+        rect: toolbarRect,
+        showPin: showPin,
+        hasAnnotations: hasAnnotations,
+        canUndo: canUndo,
+        canRedo: canRedo,
+        activeTool: activeTool,
+      ),
+    );
   }
 
   void _handleAnnotationStateChange() {
@@ -865,6 +1010,17 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     }
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    final toolbarRect = _toolbarRect();
+    final showToolbar = _shouldShowToolbar && toolbarRect != null;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (showToolbar) {
+        _syncNativeToolbar(toolbarRect);
+      } else {
+        _hideNativeToolbar();
+      }
+    });
 
     return Focus(
       focusNode: _focusNode,
@@ -954,40 +1110,14 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               ),
             ),
 
-            // Toolbar sits above the Listener so it receives hover and tap
-            // events directly (enables tooltips, ink effects, click cursor).
-            if (_shouldShowToolbar)
-              Builder(
-                builder: (context) {
-                  final rect = _toolbarRect(screenSize);
-                  if (rect == null) return const SizedBox.shrink();
-                  return Positioned(
-                    left: rect.left,
-                    top: rect.top,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.basic,
-                      onEnter: (_) => setState(() => _isHoveringToolbar = true),
-                      onExit: (_) => setState(() => _isHoveringToolbar = false),
-                      child: SelectionToolbar(
-                        onCopy: _handleToolbarCopy,
-                        onSave: _handleToolbarSave,
-                        onPin: widget.onPin != null ? _handleToolbarPin : null,
-                        onClose: _handleToolbarClose,
-                        onToolTap: widget.annotationState == null
-                            ? null
-                            : (type) => handleToolTap(type),
-                        onUndo: widget.annotationState?.undo,
-                        onRedo: widget.annotationState?.redo,
-                        activeShapeType: activeShapeType,
-                        hasAnnotations:
-                            widget.annotationState?.hasAnnotations ?? false,
-                        canUndo: widget.annotationState?.canUndo ?? false,
-                        canRedo: widget.annotationState?.canRedo ?? false,
-                        settingsLayerLink: _popoverAnchorLink,
-                      ),
-                    ),
-                  );
-                },
+            if (showToolbar)
+              Positioned(
+                left: toolbarRect.center.dx,
+                top: toolbarRect.top.clamp(0.0, screenSize.height).toDouble(),
+                child: CompositedTransformTarget(
+                  link: _popoverAnchorLink,
+                  child: const SizedBox(width: 1, height: 1),
+                ),
               ),
           ],
         ),

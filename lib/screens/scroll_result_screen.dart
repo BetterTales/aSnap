@@ -1,23 +1,26 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/annotation.dart';
+import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
-import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Fullscreen overlay that displays a scroll capture result.
 ///
 /// The stitched image is shown in a centered, scrollable container with a
-/// semi-transparent scrim behind it. The [SelectionToolbar] is positioned
-/// below, above, or inside the image container.
+/// semi-transparent scrim behind it. Toolbar controls are rendered in a
+/// separate native floating panel.
 class ScrollResultScreen extends StatefulWidget {
   final ui.Image stitchedImage;
   final AnnotationState annotationState;
+  final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
   final VoidCallback onDiscard;
@@ -26,6 +29,7 @@ class ScrollResultScreen extends StatefulWidget {
     super.key,
     required this.stitchedImage,
     required this.annotationState,
+    required this.windowService,
     required this.onCopy,
     required this.onSave,
     required this.onDiscard,
@@ -39,8 +43,22 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     with ToolPopoverMixin {
   final _focusNode = FocusNode();
   final _scrollController = ScrollController();
+  late final void Function(String) _toolbarActionHandler;
 
   final _popoverAnchorLink = LayerLink();
+  Rect? _lastToolbarRect;
+  bool _lastHasAnnotations = false;
+  bool _lastCanUndo = false;
+  bool _lastCanRedo = false;
+  String? _lastActiveTool;
+
+  void _resetToolbarSyncCache() {
+    _lastToolbarRect = null;
+    _lastHasAnnotations = false;
+    _lastCanUndo = false;
+    _lastCanRedo = false;
+    _lastActiveTool = null;
+  }
 
   @override
   AnnotationState get popoverAnnotationState => widget.annotationState;
@@ -52,10 +70,20 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
+    _toolbarActionHandler = _handleNativeToolbarAction;
+    widget.windowService.onToolbarAction = _toolbarActionHandler;
   }
 
   @override
   void dispose() {
+    if (identical(
+      widget.windowService.onToolbarAction,
+      _toolbarActionHandler,
+    )) {
+      widget.windowService.onToolbarAction = null;
+    }
+    _resetToolbarSyncCache();
+    unawaited(widget.windowService.hideToolbarPanel());
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     removePopover();
     _scrollController.dispose();
@@ -125,6 +153,80 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     return false;
   }
 
+  ShapeType? _shapeTypeForAction(String action) {
+    return switch (action) {
+      'rectangle' => ShapeType.rectangle,
+      'ellipse' => ShapeType.ellipse,
+      'arrow' => ShapeType.arrow,
+      'line' => ShapeType.line,
+      'pencil' => ShapeType.pencil,
+      'marker' => ShapeType.marker,
+      'mosaic' => ShapeType.mosaic,
+      'number' => ShapeType.number,
+      'text' => ShapeType.text,
+      _ => null,
+    };
+  }
+
+  void _handleNativeToolbarAction(String action) {
+    switch (action) {
+      case 'copy':
+        widget.onCopy();
+        return;
+      case 'save':
+        widget.onSave();
+        return;
+      case 'close':
+        widget.onDiscard();
+        return;
+      case 'undo':
+        widget.annotationState.undo();
+        return;
+      case 'redo':
+        widget.annotationState.redo();
+        return;
+      default:
+        final shape = _shapeTypeForAction(action);
+        if (shape != null) {
+          handleToolTap(shape);
+          return;
+        }
+        return;
+    }
+  }
+
+  void _syncNativeToolbar(Rect toolbarRect) {
+    final hasAnnotations = widget.annotationState.hasAnnotations;
+    final canUndo = widget.annotationState.canUndo;
+    final canRedo = widget.annotationState.canRedo;
+    final activeTool = activeShapeType?.name;
+
+    if (_lastToolbarRect == toolbarRect &&
+        _lastHasAnnotations == hasAnnotations &&
+        _lastCanUndo == canUndo &&
+        _lastCanRedo == canRedo &&
+        _lastActiveTool == activeTool) {
+      return;
+    }
+
+    _lastToolbarRect = toolbarRect;
+    _lastHasAnnotations = hasAnnotations;
+    _lastCanUndo = canUndo;
+    _lastCanRedo = canRedo;
+    _lastActiveTool = activeTool;
+
+    unawaited(
+      widget.windowService.showToolbarPanel(
+        rect: toolbarRect,
+        showPin: false,
+        hasAnnotations: hasAnnotations,
+        canUndo: canUndo,
+        canRedo: canRedo,
+        activeTool: activeTool,
+      ),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Image container sizing
   // ---------------------------------------------------------------------------
@@ -133,14 +235,23 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   ///
   /// Width and height are computed independently because the container scrolls
   /// vertically — capping the height must NOT shrink the width.
-  Rect _imageContainerRect(Size screenSize) {
+  Rect _imageContainerRect(Size screenSize, {required Size toolbarSize}) {
     final image = widget.stitchedImage;
 
     final maxW = screenSize.width * 0.9;
-    final maxH = screenSize.height * 0.85;
+    final availableHeight =
+        (screenSize.height - toolbarSize.height - kToolbarGap * 2).clamp(
+          1.0,
+          screenSize.height,
+        );
+    final maxH = availableHeight < screenSize.height * 0.85
+        ? availableHeight
+        : screenSize.height * 0.85;
 
     // Width: match image pixel width, capped at maxW.
-    final w = image.width.toDouble().clamp(200.0, maxW);
+    // Do not force a larger minimum width: narrow captures should not be
+    // stretched.
+    final w = image.width.toDouble().clamp(1.0, maxW);
 
     // Height: the scaled image height at this width, capped at maxH.
     // The container scrolls, so height doesn't affect width.
@@ -148,14 +259,19 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     final h = scaledH.clamp(1.0, maxH);
 
     final x = (screenSize.width - w) / 2;
-    final y = (screenSize.height - h) / 2;
+    final y = ((availableHeight - h) / 2).clamp(0.0, availableHeight - h);
     return Rect.fromLTWH(x, y, w, h);
   }
 
-  Rect _toolbarRect(Rect containerRect, Size screenSize) {
-    return computeToolbarRect(
+  Rect _toolbarRect(
+    Rect containerRect,
+    Size screenSize, {
+    required Size toolbarSize,
+  }) {
+    return computeFloatingToolbarRect(
       anchorRect: containerRect,
       screenSize: screenSize,
+      toolbarSize: toolbarSize,
     );
   }
 
@@ -166,8 +282,20 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   @override
   Widget build(BuildContext context) {
     final screenSize = MediaQuery.sizeOf(context);
-    final containerRect = _imageContainerRect(screenSize);
-    final toolbarRect = _toolbarRect(containerRect, screenSize);
+    final toolbarSize = kToolbarSize;
+    final containerRect = _imageContainerRect(
+      screenSize,
+      toolbarSize: toolbarSize,
+    );
+    final toolbarRect = _toolbarRect(
+      containerRect,
+      screenSize,
+      toolbarSize: toolbarSize,
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _syncNativeToolbar(toolbarRect);
+    });
 
     final image = widget.stitchedImage;
     final imagePixelSize = Size(
@@ -304,23 +432,11 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
               // Toolbar — positioned below/above/inside the image container.
               Positioned(
-                left: toolbarRect.left,
                 top: toolbarRect.top,
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.basic,
-                  child: SelectionToolbar(
-                    onCopy: widget.onCopy,
-                    onSave: widget.onSave,
-                    onClose: widget.onDiscard,
-                    onToolTap: handleToolTap,
-                    onUndo: widget.annotationState.undo,
-                    onRedo: widget.annotationState.redo,
-                    activeShapeType: activeShapeType,
-                    hasAnnotations: widget.annotationState.hasAnnotations,
-                    canUndo: widget.annotationState.canUndo,
-                    canRedo: widget.annotationState.canRedo,
-                    settingsLayerLink: _popoverAnchorLink,
-                  ),
+                left: toolbarRect.center.dx,
+                child: CompositedTransformTarget(
+                  link: _popoverAnchorLink,
+                  child: const SizedBox(width: 1, height: 1),
                 ),
               ),
             ],

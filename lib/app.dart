@@ -105,6 +105,7 @@ class ASnapApp extends StatelessWidget {
             return ScrollResultScreen(
               stitchedImage: appState.capturedImage!,
               annotationState: annotationState,
+              windowService: windowService,
               onCopy: onCopy,
               onSave: onSave,
               onDiscard: onDiscard,
@@ -113,6 +114,7 @@ class ASnapApp extends StatelessWidget {
           return PreviewScreen(
             appState: appState,
             annotationState: annotationState,
+            windowService: windowService,
             onCopy: onCopy,
             onSave: onSave,
             onPin: onPin,

@@ -1022,17 +1022,22 @@ Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
   // Get the pinned panel's CG frame BEFORE closing it so we can show the
   // Flutter preview at exactly the same position and size.
   final panelFrame = await _windowService.getPinnedPanelFrame();
+  debugPrint('_handleEditPinnedImageAsync: panelFrame=$panelFrame');
 
   _annotationState.clear();
+
+  // Clear any previously shown toolbar state before rebuilding the preview.
+  // This avoids a stale panel briefly appearing at an old location.
+  await _windowService.hideToolbarPanel();
 
   // Show the preview at the pin's exact position and size so the image
   // doesn't jump or resize when entering annotation mode.
   // Keep it transparent until Flutter has rendered to avoid a flash.
-  _appState.setCapturedImage(pinnedImage);
   if (panelFrame != null) {
     // panelFrame is in CG coordinates (absolute). Use showPreviewAtRect
     // which performs full window cleanup (restores opacity from any prior
     // suspendOverlay, resets styleMask, etc.).
+    debugPrint('_handleEditPinnedImageAsync: calling showPreviewAtRect');
     await _windowService.showPreviewAtRect(
       rect: panelFrame,
       opacity: 0.0,
@@ -1052,6 +1057,11 @@ Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
       focus: false,
     );
   }
+
+  // Set image/state only after the native preview window has its final frame.
+  // Otherwise PreviewScreen can compute toolbar geometry from stale window
+  // constraints during the transition.
+  _appState.setCapturedImage(pinnedImage);
 
   await WidgetsBinding.instance.endOfFrame;
 
