@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -17,16 +18,15 @@ import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
 import 'utils/annotation_compositor.dart';
-import 'utils/toolbar_layout.dart';
 
 bool _displayChangeInProgress = false;
 bool _displayChangePending = false;
 bool _regionCaptureCancelled = false;
 bool _escActionInProgress = false;
 
-/// Keeps the pinned `ui.Image` alive in Dart memory for fast re-edit via
+/// Keeps one cloned `ui.Image` per pinned native panel for fast re-edit via
 /// Space (avoids round-tripping image bytes through the platform channel).
-ui.Image? _pinnedFlutterImage;
+final Map<int, ui.Image> _pinnedFlutterImages = {};
 
 /// Last captured/copied image kept alive for deferred pinning.
 /// Allows "capture → copy → pin" workflow: copy clears the preview but this
@@ -35,7 +35,9 @@ ui.Image? _lastCopiedImage;
 
 /// CG-coordinate frame of the last copied image (for pin placement).
 Rect? _lastCopiedCgFrame;
-bool _useNativeToolbar = false;
+
+/// Exact PNG bytes written to the clipboard for deferred idle pin validation.
+Uint8List? _lastCopiedClipboardPngBytes;
 
 /// Pre-cached window/element rects from background polling.
 /// Updated every ~2 seconds by the native background thread.
@@ -55,6 +57,24 @@ String _displayKey(Offset origin) => '${origin.dx},${origin.dy}';
 
 void _clearDisplayCaches() {
   _displayCaches.clear();
+}
+
+void _disposePinnedPanelImage(int panelId) {
+  _pinnedFlutterImages.remove(panelId)?.dispose();
+}
+
+void _disposeAllPinnedPanelImages() {
+  for (final image in _pinnedFlutterImages.values) {
+    image.dispose();
+  }
+  _pinnedFlutterImages.clear();
+}
+
+void _clearLastCopiedPinCache() {
+  _lastCopiedImage?.dispose();
+  _lastCopiedImage = null;
+  _lastCopiedCgFrame = null;
+  _lastCopiedClipboardPngBytes = null;
 }
 
 /// Convert globally-cached window rects to local coordinates for a display.
@@ -90,15 +110,12 @@ void main() async {
   _windowService = WindowService();
 
   await _windowService.ensureInitialized();
-  final useNativeToolbar = await _windowService.supportsToolbarPanel();
-  _useNativeToolbar = useNativeToolbar;
 
   runApp(
     ASnapApp(
       appState: _appState,
       annotationState: _annotationState,
       windowService: _windowService,
-      useNativeToolbar: useNativeToolbar,
       onCopy: _handleCopy,
       onSave: _handleSave,
       onPin: _handlePin,
@@ -134,7 +151,7 @@ Future<void> _initAfterRunApp() async {
     // is already being processed to avoid tearing down the next preview state.
     if (_escActionInProgress) return;
 
-    if (_appState.status == CaptureStatus.scrollCapturing) {
+    if (_appState.workflow is ScrollCapturingWorkflow) {
       _escActionInProgress = true;
       unawaited(
         _handleScrollCancel().whenComplete(() {
@@ -144,8 +161,7 @@ Future<void> _initAfterRunApp() async {
       return;
     }
 
-    if (_appState.status == CaptureStatus.selecting ||
-        _appState.status == CaptureStatus.scrollSelecting) {
+    if (_appState.workflow is RegionSelectionWorkflow) {
       unawaited(_handleRegionCancel());
     }
   };
@@ -179,13 +195,12 @@ Future<void> _initAfterRunApp() async {
 }
 
 void _handleEscPressed() {
-  switch (_appState.status) {
-    case CaptureStatus.capturing:
+  switch (_appState.workflow) {
+    case PreparingCaptureWorkflow():
       // During capture setup, Esc should abort the flow immediately.
       _regionCaptureCancelled = true;
       return;
-    case CaptureStatus.selecting:
-    case CaptureStatus.scrollSelecting:
+    case RegionSelectionWorkflow():
       // Fallback: region overlay normally handles Esc in Flutter.
       if (_escActionInProgress) return;
       _escActionInProgress = true;
@@ -195,8 +210,8 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.captured:
-    case CaptureStatus.scrollResult:
+    case PreviewWorkflow():
+    case ScrollResultWorkflow():
       if (_escActionInProgress) return;
       _escActionInProgress = true;
       unawaited(
@@ -205,7 +220,7 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.scrollCapturing:
+    case ScrollCapturingWorkflow():
       // Esc during scroll capture = cancel (discard frames)
       if (_escActionInProgress) return;
       _escActionInProgress = true;
@@ -215,7 +230,7 @@ void _handleEscPressed() {
         }),
       );
       return;
-    case CaptureStatus.idle:
+    case IdleWorkflow():
       return;
   }
 }
@@ -231,6 +246,23 @@ Future<ui.Image> _decodeRawPixels(ScreenCapture capture) {
     ui.PixelFormat.bgra8888,
     completer.complete,
     rowBytes: capture.bytesPerRow,
+  );
+  return completer.future;
+}
+
+Future<ui.Image> _decodeStraightRgbaImage(
+  Uint8List rgbaBytes,
+  int width,
+  int height,
+) {
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    rgbaBytes,
+    width,
+    height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+    rowBytes: width * 4,
   );
   return completer.future;
 }
@@ -255,12 +287,55 @@ Future<void> _showPreviewWithImage(
   // unwinding shapes mode before dismiss).
 }
 
+Future<bool> _lastCopiedImageStillMatchesClipboard() async {
+  final expectedPngBytes = _lastCopiedClipboardPngBytes;
+  if (_lastCopiedImage == null || expectedPngBytes == null) {
+    return false;
+  }
+
+  final matches = await _clipboardService.containsMatchingImage(
+    expectedPngBytes,
+  );
+  if (!matches) {
+    _clearLastCopiedPinCache();
+  }
+  return matches;
+}
+
+Future<int?> _pinNativeImageFromRgbaBytes({
+  required Uint8List rgbaBytes,
+  required int width,
+  required int height,
+  required Rect cgFrame,
+}) async {
+  final pinnedImage = await _decodeStraightRgbaImage(rgbaBytes, width, height);
+  try {
+    final panelId = await _windowService.pinImage(
+      bytes: rgbaBytes,
+      width: width,
+      height: height,
+      cgFrame: cgFrame,
+    );
+    if (panelId == null) {
+      pinnedImage.dispose();
+      return null;
+    }
+    _disposePinnedPanelImage(panelId);
+    _pinnedFlutterImages[panelId] = pinnedImage;
+    return panelId;
+  } catch (_) {
+    pinnedImage.dispose();
+    rethrow;
+  }
+}
+
 /// Real-time AX hit-test: convert local overlay coordinates to global CG
 /// coordinates, query the deepest accessible element, and return the result
 /// back in local coordinates.
 Future<Rect?> _handleHitTest(Offset localPoint) async {
-  final screenOrigin = _appState.screenOrigin;
-  if (screenOrigin == null) return null;
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) return null;
+  final screenOrigin = selection.screenOrigin;
 
   final cgPoint = Offset(
     localPoint.dx + screenOrigin.dx,
@@ -274,14 +349,12 @@ Future<Rect?> _handleHitTest(Offset localPoint) async {
 }
 
 Future<void> _handleFullScreenCapture() async {
-  if (_appState.status == CaptureStatus.capturing) return;
+  if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.fullScreen);
   await _windowService.hidePreview();
 
   // Native capture targets the display under the cursor
@@ -299,15 +372,13 @@ Future<void> _handleFullScreenCapture() async {
 }
 
 Future<void> _handleRegionCapture() async {
-  if (_appState.status == CaptureStatus.capturing) return;
+  if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   // Allow re-entry from selecting state (display-change re-trigger).
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.region);
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
   _clearDisplayCaches();
@@ -419,10 +490,8 @@ Future<void> _handleRegionCapture() async {
 /// Uses fast suspend/resume path (no window property restore/reconfigure)
 /// and pre-cached global rects for instant display switching.
 Future<void> _handleDisplayChanged() async {
-  if (_appState.status != CaptureStatus.selecting &&
-      _appState.status != CaptureStatus.scrollSelecting) {
-    return;
-  }
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) return;
 
   if (_windowService.overlaySelectionActive) {
     await _handleRegionCancel();
@@ -471,7 +540,7 @@ Future<void> _handleDisplayChanged() async {
 
     // 6. Update Flutter state with the pre-decoded image.
     // Preserve the current status (selecting or scrollSelecting).
-    if (_appState.status == CaptureStatus.scrollSelecting) {
+    if (selection.isScrollSelection) {
       _appState.setScrollSelecting(
         decodedImage: decodedImage,
         windowRects: localRects,
@@ -518,14 +587,15 @@ Future<void> _handleDisplayChanged() async {
 
 Future<void> _handleRegionSelected(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   // The decoded image is in physical pixels; the selection rect is in logical pixels.
   final scaleX = decodedFullScreen.width / screenSize.width;
@@ -583,14 +653,15 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
 /// styleMask restoration while dismissing the overlay.
 Future<void> _handleRegionCopy(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -636,13 +707,17 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
       cropped = composited;
     }
     final byteData = await cropped.toByteData(format: ui.ImageByteFormat.png);
-    if (byteData != null) {
-      await _clipboardService.copyImage(byteData.buffer.asUint8List());
+    final pngBytes = byteData?.buffer.asUint8List();
+    final copied =
+        pngBytes != null && await _clipboardService.copyImage(pngBytes);
+    _clearLastCopiedPinCache();
+    if (copied) {
+      _lastCopiedImage = cropped;
+      _lastCopiedCgFrame = cgPinFrame;
+      _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+    } else {
+      cropped.dispose();
     }
-    // Keep the final image alive for deferred pinning ("capture → copy → pin").
-    _lastCopiedImage?.dispose();
-    _lastCopiedImage = cropped;
-    _lastCopiedCgFrame = cgPinFrame;
   }
   decodedFullScreen.dispose();
 }
@@ -659,13 +734,14 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   if (savePath == null) return; // User cancelled — stay in selection mode.
 
   // User picked a path — proceed with hide + crop + save.
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  if (decodedFullScreen == null || screenSize == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -726,7 +802,7 @@ Future<void> _handleRegionCancel() async {
 
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
   final annotations = _annotationState.annotations;
@@ -753,21 +829,28 @@ Future<void> _handleCopy() async {
     final byteData = await finalImage.toByteData(
       format: ui.ImageByteFormat.png,
     );
-    if (byteData != null) {
-      await _clipboardService.copyImage(byteData.buffer.asUint8List());
-    }
-    // Keep the final image alive for deferred pinning ("capture → copy → pin").
-    // Dispose the previous one if any, and the original if we composited.
-    _lastCopiedImage?.dispose();
-    if (!identical(finalImage, image)) {
+    final pngBytes = byteData?.buffer.asUint8List();
+    final copied =
+        pngBytes != null && await _clipboardService.copyImage(pngBytes);
+
+    _clearLastCopiedPinCache();
+    if (copied) {
+      if (!identical(finalImage, image)) {
+        image.dispose();
+        _lastCopiedImage = finalImage;
+      } else {
+        _lastCopiedImage = image;
+      }
+      _lastCopiedCgFrame = copyCgFrame;
+      _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+    } else if (!identical(finalImage, image)) {
+      finalImage.dispose();
       image.dispose();
-      _lastCopiedImage = finalImage;
     } else {
-      _lastCopiedImage = image;
+      image.dispose();
     }
-    _lastCopiedCgFrame = copyCgFrame;
   } else {
-    _lastCopiedCgFrame = null;
+    _clearLastCopiedPinCache();
   }
   _clearDisplayCaches();
   unawaited(_windowService.stopEscMonitor());
@@ -777,7 +860,7 @@ Future<void> _handleCopy() async {
 
 Future<void> _handleSave() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Composite annotations if any, then encode.
   final image = _appState.capturedImage;
   final annotations = _annotationState.annotations;
@@ -808,7 +891,7 @@ Future<void> _handleSave() async {
 
 Future<void> _handleDiscard() async {
   _escActionInProgress = false;
-  final wasScrollResult = _appState.status == CaptureStatus.scrollResult;
+  final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
   // Hide window BEFORE clearing state.
   await _windowService.hidePreview();
   _appState.clear();
@@ -829,14 +912,15 @@ Future<void> _handleDiscard() async {
 /// a native floating sticker panel.
 Future<void> _handleRegionPin(Rect logicalRect) async {
   _windowService.overlaySelectionActive = false;
-  final decodedFullScreen = _appState.decodedFullScreen;
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (decodedFullScreen == null || screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final decodedFullScreen = selection.decodedImage;
+  final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
@@ -889,17 +973,15 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
       format: ui.ImageByteFormat.rawStraightRgba,
     );
     if (byteData != null) {
-      _pinnedFlutterImage?.dispose();
-      _pinnedFlutterImage = cropped;
-      await _windowService.pinImage(
-        bytes: byteData.buffer.asUint8List(),
+      final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
+      await _pinNativeImageFromRgbaBytes(
+        rgbaBytes: rgbaBytes,
         width: cropped.width,
         height: cropped.height,
         cgFrame: cgPinFrame,
       );
-    } else {
-      cropped.dispose();
     }
+    cropped.dispose();
   }
   decodedFullScreen.dispose();
 }
@@ -919,7 +1001,7 @@ Future<void> _handlePin() async {
     // while we're compositing / encoding below.
     _appState.detachCapturedImage();
     sourceImage = image;
-  } else if (_lastCopiedImage != null) {
+  } else if (await _lastCopiedImageStillMatchesClipboard()) {
     sourceImage = _lastCopiedImage!;
   } else {
     return;
@@ -963,14 +1045,17 @@ Future<void> _handlePin() async {
     format: ui.ImageByteFormat.rawStraightRgba,
   );
   if (byteData == null) {
-    if (!identical(finalImage, sourceImage)) finalImage.dispose();
-    sourceImage.dispose();
-    if (!fromPreview) {
-      _lastCopiedImage = null;
-      _lastCopiedCgFrame = null;
+    if (fromPreview) {
+      finalImage.dispose();
+      if (!identical(finalImage, sourceImage)) {
+        sourceImage.dispose();
+      }
+    } else {
+      _clearLastCopiedPinCache();
     }
     return;
   }
+  final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
 
   // Determine where to place the pin.
   final Rect cgFrame;
@@ -995,50 +1080,47 @@ Future<void> _handlePin() async {
     }
   }
 
-  // Keep a Dart-side reference for fast re-edit via Space.
-  _pinnedFlutterImage?.dispose();
-  if (fromPreview) {
-    if (!identical(finalImage, sourceImage)) sourceImage.dispose();
-    _pinnedFlutterImage = finalImage;
-  } else {
-    // Pinning from idle (after copy) — transfer _lastCopiedImage ownership.
-    _pinnedFlutterImage = _lastCopiedImage;
-    _lastCopiedImage = null;
-    _lastCopiedCgFrame = null;
+  try {
+    await _pinNativeImageFromRgbaBytes(
+      rgbaBytes: rgbaBytes,
+      width: finalImage.width,
+      height: finalImage.height,
+      cgFrame: cgFrame,
+    );
+  } finally {
+    if (fromPreview) {
+      finalImage.dispose();
+      if (!identical(finalImage, sourceImage)) {
+        sourceImage.dispose();
+      }
+    }
   }
-
-  await _windowService.pinImage(
-    bytes: byteData.buffer.asUint8List(),
-    width: finalImage.width,
-    height: finalImage.height,
-    cgFrame: cgFrame,
-  );
 }
 
-void _handleEditPinnedImage() {
-  final pinnedImage = _pinnedFlutterImage;
+void _handleEditPinnedImage(int panelId) {
+  final pinnedImage = _pinnedFlutterImages.remove(panelId);
   if (pinnedImage == null) return;
-  _pinnedFlutterImage = null;
 
-  unawaited(_handleEditPinnedImageAsync(pinnedImage));
+  unawaited(_handleEditPinnedImageAsync(panelId, pinnedImage));
 }
 
-Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
+Future<void> _handleEditPinnedImageAsync(
+  int panelId,
+  ui.Image pinnedImage,
+) async {
   // Get the pinned panel's CG frame BEFORE closing it so we can show the
   // Flutter preview at exactly the same position and size.
-  final panelFrame = await _windowService.getPinnedPanelFrame();
+  final panelFrame = await _windowService.getPinnedPanelFrame(panelId: panelId);
 
   _annotationState.clear();
-  if (_useNativeToolbar) {
-    _windowService.toolbarUpdatesEnabled = false;
-    unawaited(_windowService.hideToolbarPanel());
-  }
+
+  // Clear any previously shown toolbar state before rebuilding the preview.
+  // This avoids a stale panel briefly appearing at an old location.
+  await _windowService.hideToolbarPanel();
 
   // Show the preview at the pin's exact position and size so the image
   // doesn't jump or resize when entering annotation mode.
   // Keep it transparent until Flutter has rendered to avoid a flash.
-  _appState.setCapturedImage(pinnedImage);
-  final Rect? previewRect = panelFrame;
   if (panelFrame != null) {
     // panelFrame is in CG coordinates (absolute). Use showPreviewAtRect
     // which performs full window cleanup (restores opacity from any prior
@@ -1063,64 +1145,22 @@ Future<void> _handleEditPinnedImageAsync(ui.Image pinnedImage) async {
     );
   }
 
-  if (_useNativeToolbar) {
-    final Rect windowRect;
-    if (previewRect != null) {
-      windowRect = previewRect;
-    } else {
-      final windowPos = await windowManager.getPosition();
-      final windowSize = await windowManager.getSize();
-      windowRect = Rect.fromLTWH(
-        windowPos.dx,
-        windowPos.dy,
-        windowSize.width,
-        windowSize.height,
-      );
-    }
-    final screenInfo =
-        await _windowService.getScreenInfoForRect(windowRect) ??
-        await _windowService.getScreenInfo();
-    final screenSize = screenInfo?.screenSize ?? const Size(1920, 1080);
-    final screenOrigin = screenInfo?.screenOrigin ?? Offset.zero;
-    final screenRect = Rect.fromLTWH(
-      screenOrigin.dx,
-      screenOrigin.dy,
-      screenSize.width,
-      screenSize.height,
-    );
-    final cgToolbarRect = computeToolbarRectBelowWindow(
-      windowRect: windowRect,
-      screenRect: screenRect,
-    );
-    await _windowService.showToolbarPanel(
-      centerX: cgToolbarRect.center.dx,
-      belowY: cgToolbarRect.top,
-    );
-    await _windowService.updateToolbarState(
-      activeTool: null,
-      canUndo: false,
-      canRedo: false,
-      hasAnnotations: false,
-      showsPin: true,
-    );
-  }
+  // Set image/state only after the native preview window has its final frame.
+  // Otherwise PreviewScreen can compute toolbar geometry from stale window
+  // constraints during the transition.
+  _appState.setCapturedImage(pinnedImage);
 
   await WidgetsBinding.instance.endOfFrame;
 
   // Reveal the preview first, then close the pinned panel so there's no
   // visible gap between the two windows.
   await _windowService.revealPreviewWindow();
-  await _windowService.closePinnedImage();
-  if (_useNativeToolbar) {
-    _windowService.toolbarUpdatesEnabled = true;
-    _windowService.onToolbarNeedsUpdate?.call();
-  }
+  await _windowService.closePinnedImage(panelId: panelId);
   _appState.nudge();
 }
 
-void _handlePinnedImageClosed() {
-  _pinnedFlutterImage?.dispose();
-  _pinnedFlutterImage = null;
+void _handlePinnedImageClosed(int panelId) {
+  _disposePinnedPanelImage(panelId);
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,11 +1168,14 @@ void _handlePinnedImageClosed() {
 // ---------------------------------------------------------------------------
 
 Future<void> _handleScrollCapture() async {
-  if (_appState.status == CaptureStatus.capturing ||
-      _appState.status == CaptureStatus.scrollSelecting) {
+  if (_appState.workflow is PreparingCaptureWorkflow ||
+      switch (_appState.workflow) {
+        RegionSelectionWorkflow(isScrollSelection: true) => true,
+        _ => false,
+      }) {
     return;
   }
-  if (_appState.status == CaptureStatus.scrollCapturing) {
+  if (_appState.workflow is ScrollCapturingWorkflow) {
     // Re-pressing hotkey finishes scroll capture
     if (!_escActionInProgress) {
       _escActionInProgress = true;
@@ -1145,12 +1188,10 @@ Future<void> _handleScrollCapture() async {
     return;
   }
   _escActionInProgress = false;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _clearLastCopiedPinCache();
   await _windowService.stopEscMonitor();
   _annotationState.clear();
-  _appState.setCapturing();
+  _appState.setPreparingCapture(kind: CaptureKind.scroll);
   _regionCaptureCancelled = false;
   await _windowService.hidePreview();
   _clearDisplayCaches();
@@ -1241,13 +1282,13 @@ Future<void> _handleScrollCapture() async {
 }
 
 Future<void> _handleScrollRegionSelected(Rect logicalRect) async {
-  final screenSize = _appState.screenSize;
-  final screenOrigin = _appState.screenOrigin;
-  if (screenSize == null || screenOrigin == null) {
+  final selection = _appState.regionSelectionWorkflow;
+  if (selection == null) {
     _appState.clear();
     await _windowService.hidePreview();
     return;
   }
+  final screenOrigin = selection.screenOrigin;
 
   // Convert logical selection rect to CG coordinates (absolute screen position).
   // NOTE: Do NOT call exitOverlay() here. The overlay and scroll capture mode
@@ -1322,7 +1363,7 @@ Future<void> _handleScrollFinish() async {
 
 /// Called by the "Done" button in the live preview panel (via native NSPanel).
 void _handleScrollCaptureDone() {
-  if (_appState.status != CaptureStatus.scrollCapturing) return;
+  if (_appState.workflow is! ScrollCapturingWorkflow) return;
   if (_escActionInProgress) return;
   _escActionInProgress = true;
   unawaited(
@@ -1350,11 +1391,8 @@ Future<void> _handleScrollCancel() async {
 
 Future<void> _handleQuit() async {
   // Clean up pinned/cached images.
-  _pinnedFlutterImage?.dispose();
-  _pinnedFlutterImage = null;
-  _lastCopiedImage?.dispose();
-  _lastCopiedImage = null;
-  _lastCopiedCgFrame = null;
+  _disposeAllPinnedPanelImages();
+  _clearLastCopiedPinCache();
   unawaited(_windowService.closePinnedImage());
 
   await _windowService.stopEscMonitor();

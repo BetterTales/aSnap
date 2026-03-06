@@ -4,42 +4,34 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../state/annotation_state.dart';
 import '../services/window_service.dart';
+import '../state/annotation_state.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
 import '../widgets/native_toolbar_mixin.dart';
-import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Fullscreen overlay that displays a scroll capture result.
 ///
 /// The stitched image is shown in a centered, scrollable container with a
-/// semi-transparent scrim behind it. The [SelectionToolbar] is positioned
-/// below, above, or inside the image container — the same approach used by
-/// [RegionSelectionScreen] for its toolbar.
+/// semi-transparent scrim behind it. Toolbar controls are rendered in a
+/// separate native floating panel.
 class ScrollResultScreen extends StatefulWidget {
   final ui.Image stitchedImage;
-  final Size screenSize;
-  final Offset screenOrigin;
   final AnnotationState annotationState;
+  final WindowService windowService;
   final VoidCallback onCopy;
   final VoidCallback onSave;
   final VoidCallback onDiscard;
-  final WindowService windowService;
-  final bool useNativeToolbar;
 
   const ScrollResultScreen({
     super.key,
     required this.stitchedImage,
-    required this.screenSize,
-    required this.screenOrigin,
     required this.annotationState,
+    required this.windowService,
     required this.onCopy,
     required this.onSave,
     required this.onDiscard,
-    required this.windowService,
-    required this.useNativeToolbar,
   });
 
   @override
@@ -60,37 +52,13 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   LayerLink get popoverAnchor => _popoverAnchorLink;
 
   @override
-  bool get useNativeToolbar => widget.useNativeToolbar;
-
-  @override
   WindowService get nativeToolbarWindowService => widget.windowService;
 
   @override
   AnnotationState get nativeToolbarAnnotationState => widget.annotationState;
 
   @override
-  bool get nativeToolbarShowsPin => false;
-
-  @override
-  void handleNativeAction(String action) {
-    switch (action) {
-      case 'undo':
-        widget.annotationState.undo();
-        break;
-      case 'redo':
-        widget.annotationState.redo();
-        break;
-      case 'copy':
-        widget.onCopy();
-        break;
-      case 'save':
-        widget.onSave();
-        break;
-      case 'discard':
-        widget.onDiscard();
-        break;
-    }
-  }
+  bool get nativeToolbarShowPin => false;
 
   @override
   void initState() {
@@ -101,8 +69,8 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   @override
   void dispose() {
-    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     disposeNativeToolbar();
+    HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     removePopover();
     _scrollController.dispose();
     _focusNode.dispose();
@@ -141,7 +109,6 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       widget.annotationState.undo();
       return true;
     }
-
     // Delete/Backspace → delete selected annotation.
     if (event.logicalKey == LogicalKeyboardKey.delete ||
         event.logicalKey == LogicalKeyboardKey.backspace) {
@@ -171,6 +138,23 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     return false;
   }
 
+  @override
+  void handleNativeToolbarAction(String action) {
+    switch (action) {
+      case 'copy':
+        widget.onCopy();
+        return;
+      case 'save':
+        widget.onSave();
+        return;
+      case 'close':
+        widget.onDiscard();
+        return;
+      default:
+        return;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Image container sizing
   // ---------------------------------------------------------------------------
@@ -179,14 +163,23 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   ///
   /// Width and height are computed independently because the container scrolls
   /// vertically — capping the height must NOT shrink the width.
-  Rect _imageContainerRect(Size screenSize) {
+  Rect _imageContainerRect(Size screenSize, {required Size toolbarSize}) {
     final image = widget.stitchedImage;
 
     final maxW = screenSize.width * 0.9;
-    final maxH = screenSize.height * 0.85;
+    final availableHeight =
+        (screenSize.height - toolbarSize.height - kToolbarGap * 2).clamp(
+          1.0,
+          screenSize.height,
+        );
+    final maxH = availableHeight < screenSize.height * 0.85
+        ? availableHeight
+        : screenSize.height * 0.85;
 
     // Width: match image pixel width, capped at maxW.
-    final w = image.width.toDouble().clamp(200.0, maxW);
+    // Do not force a larger minimum width: narrow captures should not be
+    // stretched.
+    final w = image.width.toDouble().clamp(1.0, maxW);
 
     // Height: the scaled image height at this width, capped at maxH.
     // The container scrolls, so height doesn't affect width.
@@ -194,18 +187,19 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     final h = scaledH.clamp(1.0, maxH);
 
     final x = (screenSize.width - w) / 2;
-    final y = (screenSize.height - h) / 2;
+    final y = ((availableHeight - h) / 2).clamp(0.0, availableHeight - h);
     return Rect.fromLTWH(x, y, w, h);
   }
 
-  // ---------------------------------------------------------------------------
-  // Toolbar positioning (same logic as RegionSelectionScreen._toolbarRect)
-  // ---------------------------------------------------------------------------
-
-  Rect _toolbarRect(Rect containerRect, Size screenSize) {
-    return computeToolbarRect(
+  Rect _toolbarRect(
+    Rect containerRect,
+    Size screenSize, {
+    required Size toolbarSize,
+  }) {
+    return computeFloatingToolbarRect(
       anchorRect: containerRect,
       screenSize: screenSize,
+      toolbarSize: toolbarSize,
     );
   }
 
@@ -215,33 +209,39 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   @override
   Widget build(BuildContext context) {
-    final screenSize = MediaQuery.sizeOf(context);
-    final containerRect = _imageContainerRect(screenSize);
-    final toolbarRect = _toolbarRect(containerRect, screenSize);
-    if (widget.useNativeToolbar) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          showNativeToolbarBelow(toolbarRect, widget.screenOrigin);
-        }
-      });
-      syncNativeToolbarState();
-    }
-
-    final image = widget.stitchedImage;
-    final imagePixelSize = Size(
-      image.width.toDouble(),
-      image.height.toDouble(),
-    );
-    // The full image height when scaled to the container width.
-    final scaledImageHeight =
-        containerRect.width * (image.height / image.width);
-
     return Focus(
       focusNode: _focusNode,
       autofocus: true,
       child: ListenableBuilder(
         listenable: widget.annotationState,
         builder: (context, _) {
+          final screenSize = MediaQuery.sizeOf(context);
+          final toolbarSize = computeNativeToolbarSize(
+            showPin: false,
+            showHistoryControls: true,
+          );
+          final containerRect = _imageContainerRect(
+            screenSize,
+            toolbarSize: toolbarSize,
+          );
+          final toolbarRect = _toolbarRect(
+            containerRect,
+            screenSize,
+            toolbarSize: toolbarSize,
+          );
+          final image = widget.stitchedImage;
+          final imagePixelSize = Size(
+            image.width.toDouble(),
+            image.height.toDouble(),
+          );
+          final scaledImageHeight =
+              containerRect.width * (image.height / image.width);
+
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            syncNativeToolbar(toolbarRect);
+          });
+
           return Stack(
             children: [
               // Scrim background (full screen).
@@ -361,41 +361,14 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
               ),
 
               // Toolbar — positioned below/above/inside the image container.
-              if (widget.useNativeToolbar)
-                Positioned(
-                  left: toolbarRect.left,
-                  top: toolbarRect.top,
-                  width: toolbarRect.width,
-                  height: toolbarRect.height,
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: CompositedTransformTarget(
-                      link: _popoverAnchorLink,
-                      child: const SizedBox(width: 1, height: 1),
-                    ),
-                  ),
-                )
-              else
-                Positioned(
-                  left: toolbarRect.left,
-                  top: toolbarRect.top,
-                  child: MouseRegion(
-                    cursor: SystemMouseCursors.basic,
-                    child: SelectionToolbar(
-                      onCopy: widget.onCopy,
-                      onSave: widget.onSave,
-                      onClose: widget.onDiscard,
-                      onToolTap: handleToolTap,
-                      onUndo: widget.annotationState.undo,
-                      onRedo: widget.annotationState.redo,
-                      activeShapeType: activeShapeType,
-                      hasAnnotations: widget.annotationState.hasAnnotations,
-                      canUndo: widget.annotationState.canUndo,
-                      canRedo: widget.annotationState.canRedo,
-                      settingsLayerLink: _popoverAnchorLink,
-                    ),
-                  ),
+              Positioned(
+                top: toolbarRect.top,
+                left: toolbarRect.center.dx,
+                child: CompositedTransformTarget(
+                  link: _popoverAnchorLink,
+                  child: const SizedBox(width: 1, height: 1),
                 ),
+              ),
             ],
           );
         },

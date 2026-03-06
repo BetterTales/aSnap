@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:window_manager/window_manager.dart';
 
 import '../models/annotation.dart';
 import '../models/annotation_handle.dart';
@@ -14,7 +15,6 @@ import '../state/annotation_state.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
 import '../widgets/native_toolbar_mixin.dart';
-import '../widgets/selection_toolbar.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Internal phase of the selection interaction.
@@ -70,8 +70,6 @@ class RegionSelectionScreen extends StatefulWidget {
   /// Annotation state for drawing shapes on the selected region.
   final AnnotationState? annotationState;
   final WindowService windowService;
-  final Offset screenOrigin;
-  final bool useNativeToolbar;
 
   const RegionSelectionScreen({
     super.key,
@@ -79,8 +77,6 @@ class RegionSelectionScreen extends StatefulWidget {
     required this.windowRects,
     required this.onCancel,
     required this.windowService,
-    required this.screenOrigin,
-    required this.useNativeToolbar,
     this.onCopy,
     this.onSave,
     this.onPin,
@@ -96,8 +92,8 @@ class RegionSelectionScreen extends StatefulWidget {
 
 class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     with ToolPopoverMixin, NativeToolbarMixin {
-  static const _channel = MethodChannel('com.asnap/window');
   final _focusNode = FocusNode();
+  bool _focusRetryRunning = false;
 
   // -- Interaction state --
   _SelectionPhase _phase = _SelectionPhase.hovering;
@@ -130,10 +126,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   DateTime? _lastAnnotationPointerDown;
   Offset? _lastAnnotationPointerDownPos;
 
-  /// True while a native diagonal resize cursor is active (set via platform
-  /// channel). Used to reset the cursor when leaving corner handles.
-  bool _nativeCursorActive = false;
-
   /// True while a platform-channel AX hit-test is in flight.
   bool _axQueryInFlight = false;
 
@@ -144,40 +136,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   LayerLink get popoverAnchor => _popoverAnchorLink;
 
   @override
-  bool get useNativeToolbar => widget.useNativeToolbar;
-
-  @override
   WindowService get nativeToolbarWindowService => widget.windowService;
 
   @override
   AnnotationState? get nativeToolbarAnnotationState => widget.annotationState;
 
   @override
-  bool get nativeToolbarShowsPin => widget.onPin != null;
-
-  @override
-  void handleNativeAction(String action) {
-    switch (action) {
-      case 'undo':
-        widget.annotationState?.undo();
-        break;
-      case 'redo':
-        widget.annotationState?.redo();
-        break;
-      case 'copy':
-        _handleToolbarCopy();
-        break;
-      case 'save':
-        _handleToolbarSave();
-        break;
-      case 'pin':
-        _handleToolbarPin();
-        break;
-      case 'discard':
-        _handleToolbarClose();
-        break;
-    }
-  }
+  bool get nativeToolbarShowPin => widget.onPin != null;
 
   @override
   void initState() {
@@ -189,13 +154,37 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
   @override
   void dispose() {
+    disposeNativeToolbar();
     widget.windowService.overlaySelectionActive = false;
     HardwareKeyboard.instance.removeHandler(_handleKeyEvent);
     widget.annotationState?.removeListener(_handleAnnotationStateChange);
-    disposeNativeToolbar();
     removePopover();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  // -----------------------------------------------------------------------
+  // Focus management
+  // -----------------------------------------------------------------------
+
+  void _scheduleFocusSync() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _focusNode.hasFocus || _focusRetryRunning) return;
+      _focusRetryRunning = true;
+      _requestFocusWithRetry().whenComplete(() {
+        _focusRetryRunning = false;
+      });
+    });
+  }
+
+  Future<void> _requestFocusWithRetry() async {
+    for (var attempt = 0; attempt < 20; attempt++) {
+      if (!mounted || _focusNode.hasFocus) return;
+      await windowManager.focus();
+      _focusNode.requestFocus();
+      if (_focusNode.hasFocus) return;
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
   }
 
   /// Computed selection rect during drawing phase (from two points).
@@ -300,17 +289,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             if (hit != null) {
               _draggingAnnotationHandle = true;
               _activeAnnotationHandle = hit;
-              if (isCornerAnnotationHandle(hit.type)) {
-                final cursorType = nativeDiagonalCursorType(hit.type);
-                if (cursorType != null) {
-                  _nativeCursorActive = true;
-                  unawaited(
-                    _channel.invokeMethod('setResizeCursor', {
-                      'type': cursorType,
-                    }),
-                  );
-                }
-              }
               state.beginEdit();
               return;
             }
@@ -327,9 +305,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            if (isCornerHandle(selHandle)) {
-              _setNativeDiagonalCursor(selHandle);
-            }
             return;
           }
 
@@ -398,9 +373,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               _dragStartOffset = pos;
               _dragStartRect = _selectionRect;
             });
-            if (isCornerHandle(handle)) {
-              _setNativeDiagonalCursor(handle);
-            }
             return;
           }
         }
@@ -817,9 +789,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         return SystemMouseCursors.precise;
 
       case _SelectionPhase.resizing:
-        // Corner handles use native diagonal cursors (Flutter's macOS
-        // implementation silently falls back to the arrow cursor).
-        if (isCornerHandle(_activeHandle!)) return MouseCursor.uncontrolled;
         return cursorForHandle(_activeHandle!);
 
       case _SelectionPhase.moving:
@@ -838,9 +807,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             );
             final hit = hitTestAnnotationHandle(imagePoint, handles);
             if (hit != null) {
-              if (isCornerAnnotationHandle(hit.type)) {
-                return MouseCursor.uncontrolled;
-              }
               return cursorForAnnotationHandle(hit.type);
             }
             // Move cursor for text/stamp body hover.
@@ -855,7 +821,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           // Fall back to selection rect handles.
           final selHandle = hitTestHandle(_current, _selectionRect!);
           if (selHandle != null) {
-            if (isCornerHandle(selHandle)) return MouseCursor.uncontrolled;
             return cursorForHandle(selHandle);
           }
           if (_selectionRect!.contains(_current)) {
@@ -866,27 +831,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         // Not in annotation mode.
         final handle = hitTestHandle(_current, _selectionRect!);
         if (handle != null) {
-          if (isCornerHandle(handle)) return MouseCursor.uncontrolled;
           return cursorForHandle(handle);
         }
         if (_selectionRect!.contains(_current)) return SystemMouseCursors.move;
         return SystemMouseCursors.precise;
-    }
-  }
-
-  /// Set a diagonal resize cursor via native macOS API.
-  ///
-  /// Flutter's `SystemMouseCursors.resizeUpLeft` etc. don't work on macOS,
-  /// so we call the private NSCursor API directly through the platform channel.
-  void _setNativeDiagonalCursor(SelectionHandle handle) {
-    final type = switch (handle) {
-      SelectionHandle.topLeft || SelectionHandle.bottomRight => 'nwse',
-      SelectionHandle.topRight || SelectionHandle.bottomLeft => 'nesw',
-      _ => null,
-    };
-    if (type != null) {
-      _nativeCursorActive = true;
-      unawaited(_channel.invokeMethod('setResizeCursor', {'type': type}));
     }
   }
 
@@ -902,17 +850,47 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         _phase == _SelectionPhase.moving;
   }
 
-  Rect? _toolbarRect(Size screenSize) {
+  Rect? _toolbarRect() {
     final sel = _selectionRect;
     if (sel == null) return null;
-    return computeToolbarRect(anchorRect: sel, screenSize: screenSize);
+    final size = _nativeToolbarSize();
+    return Rect.fromLTWH(
+      sel.center.dx - size.width / 2,
+      sel.bottom + kToolbarGap,
+      size.width,
+      size.height,
+    );
+  }
+
+  Size _nativeToolbarSize() {
+    return computeNativeToolbarSize(
+      showPin: widget.onPin != null,
+      showHistoryControls: true,
+    );
+  }
+
+  @override
+  void handleNativeToolbarAction(String action) {
+    switch (action) {
+      case 'copy':
+        _handleToolbarCopy();
+        return;
+      case 'save':
+        _handleToolbarSave();
+        return;
+      case 'pin':
+        _handleToolbarPin();
+        return;
+      case 'close':
+        _handleToolbarClose();
+        return;
+      default:
+        return;
+    }
   }
 
   void _handleAnnotationStateChange() {
     if (!mounted) return;
-    if (widget.useNativeToolbar) {
-      syncNativeToolbarState();
-    }
     setState(() {});
   }
 
@@ -945,6 +923,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
   @override
   Widget build(BuildContext context) {
+    _scheduleFocusSync();
+
     final selectionActive = !widget.isScrollSelection && _selectionRect != null;
     if (widget.windowService.overlaySelectionActive != selectionActive) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -953,6 +933,17 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     }
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
+    final toolbarRect = _toolbarRect();
+    final showToolbar = _shouldShowToolbar && toolbarRect != null;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (showToolbar) {
+        syncNativeToolbar(toolbarRect);
+      } else {
+        hideNativeToolbar();
+      }
+    });
 
     return Focus(
       focusNode: _focusNode,
@@ -965,46 +956,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           setState(() {
             _current = pos;
           });
-
-          // Set native diagonal cursor for corner handles (Flutter's macOS
-          // implementation doesn't support diagonal resize cursors).
-          // Track whether we hit a corner this cycle so we can reset the
-          // native cursor when leaving.
-          var hitCorner = false;
-          if (_phase == _SelectionPhase.selected && _selectionRect != null) {
-            // Annotation handles take priority in annotation mode.
-            if (activeShapeType != null &&
-                widget.annotationState?.selectedAnnotation != null) {
-              final imagePoint = _widgetToImage(pos);
-              final handles = annotationHandles(
-                widget.annotationState!.selectedAnnotation!,
-              );
-              final hit = hitTestAnnotationHandle(imagePoint, handles);
-              if (hit != null && isCornerAnnotationHandle(hit.type)) {
-                final cursorType = nativeDiagonalCursorType(hit.type);
-                if (cursorType != null) {
-                  _nativeCursorActive = true;
-                  hitCorner = true;
-                  unawaited(
-                    _channel.invokeMethod('setResizeCursor', {
-                      'type': cursorType,
-                    }),
-                  );
-                }
-                return;
-              }
-            }
-            final handle = hitTestHandle(pos, _selectionRect!);
-            if (handle != null && isCornerHandle(handle)) {
-              _setNativeDiagonalCursor(handle);
-              hitCorner = true;
-            }
-          }
-          // Reset the native cursor when leaving a corner handle.
-          if (!hitCorner && _nativeCursorActive) {
-            _nativeCursorActive = false;
-            unawaited(_channel.invokeMethod('resetResizeCursor'));
-          }
 
           // Only fire AX/geometric hit tests during hovering phase.
           if (_phase == _SelectionPhase.hovering) {
@@ -1070,10 +1021,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               ),
 
             // Transparent Listener — routes ALL pointer events (handles,
-            // annotation drawing, selection). Sits above the overlay so
-            // it always receives events, but returns false from hitTest
-            // (translucent + childless) so the Stack continues testing
-            // children for hover/cursor.
+            // annotation drawing, selection). Uses translucent behaviour so
+            // widgets above (toolbar) still receive hover/tap.
             Positioned.fill(
               child: Listener(
                 onPointerDown: _onPointerDown,
@@ -1084,65 +1033,14 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               ),
             ),
 
-            if (_shouldShowToolbar)
-              Builder(
-                builder: (context) {
-                  final rect = _toolbarRect(screenSize);
-                  if (rect == null) return const SizedBox.shrink();
-                  if (widget.useNativeToolbar) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted) {
-                        showNativeToolbarBelow(rect, widget.screenOrigin);
-                      }
-                    });
-                    return Positioned(
-                      left: rect.left,
-                      top: rect.top,
-                      width: rect.width,
-                      height: rect.height,
-                      child: Align(
-                        alignment: Alignment.topCenter,
-                        child: CompositedTransformTarget(
-                          link: _popoverAnchorLink,
-                          child: const SizedBox(width: 1, height: 1),
-                        ),
-                      ),
-                    );
-                  }
-                  return Positioned(
-                    left: rect.left,
-                    top: rect.top,
-                    child: MouseRegion(
-                      cursor: SystemMouseCursors.basic,
-                      child: SelectionToolbar(
-                        onCopy: _handleToolbarCopy,
-                        onSave: _handleToolbarSave,
-                        onPin: widget.onPin != null ? _handleToolbarPin : null,
-                        onClose: _handleToolbarClose,
-                        onToolTap: widget.annotationState == null
-                            ? null
-                            : (type) => handleToolTap(type),
-                        onUndo: widget.annotationState?.undo,
-                        onRedo: widget.annotationState?.redo,
-                        activeShapeType: activeShapeType,
-                        hasAnnotations:
-                            widget.annotationState?.hasAnnotations ?? false,
-                        canUndo: widget.annotationState?.canUndo ?? false,
-                        canRedo: widget.annotationState?.canRedo ?? false,
-                        settingsLayerLink: _popoverAnchorLink,
-                      ),
-                    ),
-                  );
-                },
-              )
-            else if (widget.useNativeToolbar)
-              Builder(
-                builder: (context) {
-                  WidgetsBinding.instance.addPostFrameCallback((_) {
-                    if (mounted) hideNativeToolbar();
-                  });
-                  return const SizedBox.shrink();
-                },
+            if (showToolbar)
+              Positioned(
+                left: toolbarRect.center.dx,
+                top: toolbarRect.top.clamp(0.0, screenSize.height).toDouble(),
+                child: CompositedTransformTarget(
+                  link: _popoverAnchorLink,
+                  child: const SizedBox(width: 1, height: 1),
+                ),
               ),
           ],
         ),

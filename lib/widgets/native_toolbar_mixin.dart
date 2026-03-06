@@ -7,146 +7,125 @@ import '../state/annotation_state.dart';
 import '../utils/toolbar_actions.dart';
 import 'tool_popover_mixin.dart';
 
-/// Shared native toolbar lifecycle and action dispatch used by screens that
-/// display the macOS native toolbar panel.
+/// Shared macOS native toolbar wiring for screens that expose annotation tools.
 ///
-/// Mix this into a [State] that already uses [ToolPopoverMixin]. Implementors
-/// must provide [nativeToolbarWindowService], [nativeToolbarAnnotationState],
-/// and [nativeToolbarShowsPin]. Override [handleNativeAction] to dispatch
-/// non-tool actions (copy, save, pin, discard) to screen-specific callbacks.
+/// Dart owns the toolbar state and business logic, while AppKit renders the
+/// actual floating panel. This mixin keeps action routing and sync behavior
+/// identical across preview, region-selection, and scroll-result flows.
 mixin NativeToolbarMixin<T extends StatefulWidget>
     on State<T>, ToolPopoverMixin<T> {
-  // ---------------------------------------------------------------------------
-  // State managed by the mixin
-  // ---------------------------------------------------------------------------
+  Rect? _lastToolbarRect;
+  bool _lastShowPin = false;
+  bool _lastShowHistoryControls = false;
+  bool _lastCanUndo = false;
+  bool _lastCanRedo = false;
+  String? _lastActiveTool;
 
-  Rect? _lastNativeToolbarCgRect;
-  bool nativeToolbarVisible = false;
+  late final void Function(String) _toolbarActionHandler =
+      _dispatchNativeToolbarAction;
 
-  // ---------------------------------------------------------------------------
-  // Abstract hooks — implementors must provide these
-  // ---------------------------------------------------------------------------
-
-  /// Whether the native toolbar is enabled for this screen.
-  bool get useNativeToolbar;
-
-  /// The window service to use for toolbar panel operations.
   WindowService get nativeToolbarWindowService;
 
-  /// The annotation state to read undo/redo/hasAnnotations from.
-  /// Return null if annotations are not available.
   AnnotationState? get nativeToolbarAnnotationState;
 
-  /// Whether the Pin button should be shown in the toolbar.
-  bool get nativeToolbarShowsPin;
+  bool get nativeToolbarShowPin;
 
-  /// Called for non-tool actions (copy, save, pin, discard, undo, redo).
-  /// The default implementation handles undo/redo via [nativeToolbarAnnotationState].
-  /// Override to add handling for copy, save, pin, discard.
-  void handleNativeAction(String action) {
-    switch (action) {
-      case 'undo':
-        nativeToolbarAnnotationState?.undo();
-        break;
-      case 'redo':
-        nativeToolbarAnnotationState?.redo();
-        break;
-    }
-  }
+  bool get nativeToolbarShowHistoryControls => true;
 
-  // ---------------------------------------------------------------------------
-  // Lifecycle helpers — call from initState / dispose
-  // ---------------------------------------------------------------------------
+  bool get nativeToolbarAnchorToWindow => false;
 
-  /// Call from [initState] to register the toolbar action callback.
+  void handleNativeToolbarAction(String action);
+
   void initNativeToolbar() {
-    if (!useNativeToolbar) return;
-    nativeToolbarWindowService.onToolbarAction = _handleNativeToolbarAction;
+    nativeToolbarWindowService.onToolbarAction = _toolbarActionHandler;
   }
 
-  /// Call from [dispose] to unregister the toolbar action callback and hide
-  /// the panel.
-  ///
-  /// The identity check ensures we only clear the callback if it still
-  /// belongs to this instance. This is safe as long as only one screen
-  /// using this mixin is active at a time (which the current architecture
-  /// guarantees via state-driven routing).
   void disposeNativeToolbar() {
-    if (nativeToolbarWindowService.onToolbarAction ==
-        _handleNativeToolbarAction) {
+    if (identical(
+      nativeToolbarWindowService.onToolbarAction,
+      _toolbarActionHandler,
+    )) {
       nativeToolbarWindowService.onToolbarAction = null;
     }
-    if (useNativeToolbar) {
-      unawaited(nativeToolbarWindowService.hideToolbarPanel());
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Toolbar state sync
-  // ---------------------------------------------------------------------------
-
-  /// Push the current tool/undo/redo state to the native toolbar panel.
-  void syncNativeToolbarState() {
-    final state = nativeToolbarAnnotationState;
-    if (!useNativeToolbar || state == null) return;
-    unawaited(
-      nativeToolbarWindowService.updateToolbarState(
-        activeTool: shapeTypeToToolId(activeShapeType),
-        canUndo: state.canUndo,
-        canRedo: state.canRedo,
-        hasAnnotations: state.hasAnnotations,
-        showsPin: nativeToolbarShowsPin,
-      ),
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Show / hide
-  // ---------------------------------------------------------------------------
-
-  /// Show the native toolbar at [cgRect] (CG coordinate space).
-  /// If the toolbar is already visible at the same rect, only syncs state.
-  void showNativeToolbarAtCgRect(Rect cgRect) {
-    if (nativeToolbarVisible && _lastNativeToolbarCgRect == cgRect) {
-      syncNativeToolbarState();
-      return;
-    }
-    nativeToolbarVisible = true;
-    _lastNativeToolbarCgRect = cgRect;
-    unawaited(
-      nativeToolbarWindowService.showToolbarPanel(
-        centerX: cgRect.center.dx,
-        belowY: cgRect.top,
-      ),
-    );
-    syncNativeToolbarState();
-  }
-
-  /// Show the native toolbar below [localRect], shifted by [screenOrigin]
-  /// to convert from local to CG coordinates.
-  void showNativeToolbarBelow(Rect localRect, Offset screenOrigin) {
-    showNativeToolbarAtCgRect(localRect.shift(screenOrigin));
-  }
-
-  /// Hide the native toolbar panel.
-  void hideNativeToolbar() {
-    if (!nativeToolbarVisible) return;
-    nativeToolbarVisible = false;
-    _lastNativeToolbarCgRect = null;
+    resetNativeToolbarSyncCache();
     unawaited(nativeToolbarWindowService.hideToolbarPanel());
   }
 
-  // ---------------------------------------------------------------------------
-  // Action routing
-  // ---------------------------------------------------------------------------
+  void resetNativeToolbarSyncCache() {
+    _lastToolbarRect = null;
+    _lastShowPin = false;
+    _lastShowHistoryControls = false;
+    _lastCanUndo = false;
+    _lastCanRedo = false;
+    _lastActiveTool = null;
+  }
 
-  void _handleNativeToolbarAction(String action) {
-    if (action.startsWith('toolTap:')) {
-      final toolId = action.substring('toolTap:'.length);
-      final type = toolIdToShapeType(toolId);
-      if (type != null) handleToolTap(type);
+  void hideNativeToolbar() {
+    if (_lastToolbarRect == null &&
+        !_lastShowPin &&
+        !_lastShowHistoryControls &&
+        !_lastCanUndo &&
+        !_lastCanRedo &&
+        _lastActiveTool == null) {
       return;
     }
-    handleNativeAction(action);
+    resetNativeToolbarSyncCache();
+    unawaited(nativeToolbarWindowService.hideToolbarPanel());
+  }
+
+  void syncNativeToolbar(Rect toolbarRect) {
+    final annotationState = nativeToolbarAnnotationState;
+    final showHistoryControls = nativeToolbarShowHistoryControls;
+    final canUndo = annotationState?.canUndo ?? false;
+    final canRedo = annotationState?.canRedo ?? false;
+    final activeTool = shapeTypeToToolId(activeShapeType);
+
+    if (_lastToolbarRect == toolbarRect &&
+        _lastShowPin == nativeToolbarShowPin &&
+        _lastShowHistoryControls == showHistoryControls &&
+        _lastCanUndo == canUndo &&
+        _lastCanRedo == canRedo &&
+        _lastActiveTool == activeTool) {
+      return;
+    }
+
+    _lastToolbarRect = toolbarRect;
+    _lastShowPin = nativeToolbarShowPin;
+    _lastShowHistoryControls = showHistoryControls;
+    _lastCanUndo = canUndo;
+    _lastCanRedo = canRedo;
+    _lastActiveTool = activeTool;
+
+    unawaited(
+      nativeToolbarWindowService.showToolbarPanel(
+        rect: toolbarRect,
+        showPin: nativeToolbarShowPin,
+        showHistoryControls: showHistoryControls,
+        canUndo: canUndo,
+        canRedo: canRedo,
+        activeTool: activeTool,
+        anchorToWindow: nativeToolbarAnchorToWindow,
+      ),
+    );
+  }
+
+  void _dispatchNativeToolbarAction(String action) {
+    final shapeType = toolIdToShapeType(action);
+    if (shapeType != null) {
+      handleToolTap(shapeType);
+      return;
+    }
+
+    switch (action) {
+      case 'undo':
+        nativeToolbarAnnotationState?.undo();
+        return;
+      case 'redo':
+        nativeToolbarAnnotationState?.redo();
+        return;
+      default:
+        handleNativeToolbarAction(action);
+        return;
+    }
   }
 }

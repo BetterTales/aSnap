@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
@@ -41,8 +41,10 @@ class ScreenCapture {
 class WindowService {
   /// Minimum preview window size for normal (non-scroll) captures.
   /// Scroll captures use a fullscreen overlay instead of this window.
-  static const _minPreviewSize = Size(400, 300);
+  static const _minPreviewSize = Size(80, 60);
   static const _channel = MethodChannel('com.asnap/window');
+  int _toolbarRequestId = 0;
+  final int _toolbarSessionId = DateTime.now().microsecondsSinceEpoch;
 
   /// Called when the native side detects a Space switch during overlay mode.
   VoidCallback? onOverlayCancelled;
@@ -60,19 +62,14 @@ class WindowService {
   /// Rects are in global CG coordinates (top-left origin).
   void Function(List<DetectedWindow> windows)? onRectsUpdated;
 
-  /// Called when a native toolbar button is tapped.
-  /// Action string identifies the button (e.g. "toolTap:rectangle", "copy").
-  void Function(String action)? onToolbarAction;
-
   /// Called when the user presses Space on a pinned image panel (edit request).
-  VoidCallback? onEditPinnedImage;
+  void Function(int panelId)? onEditPinnedImage;
 
   /// Called when the user presses Escape on a pinned image panel (close/destroy).
-  VoidCallback? onPinnedImageClosed;
+  void Function(int panelId)? onPinnedImageClosed;
 
-  /// Controls whether UI should actively reposition the native toolbar panel.
-  bool toolbarUpdatesEnabled = true;
-  VoidCallback? onToolbarNeedsUpdate;
+  /// Called when a native floating toolbar button is pressed.
+  void Function(String action)? onToolbarAction;
 
   /// True when a region selection is active (post-selection) in the overlay.
   /// Used to decide how to handle multi-display cursor moves.
@@ -91,13 +88,18 @@ class WindowService {
         onEscPressed?.call();
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
-      } else if (call.method == 'onToolbarAction') {
-        final action = call.arguments as String?;
-        if (action != null) onToolbarAction?.call(action);
       } else if (call.method == 'onEditPinnedImage') {
-        onEditPinnedImage?.call();
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final panelId = (args?['panelId'] as num?)?.toInt();
+        if (panelId != null) onEditPinnedImage?.call(panelId);
       } else if (call.method == 'onPinnedImageClosed') {
-        onPinnedImageClosed?.call();
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final panelId = (args?['panelId'] as num?)?.toInt();
+        if (panelId != null) onPinnedImageClosed?.call(panelId);
+      } else if (call.method == 'onToolbarAction') {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final action = args?['action'] as String?;
+        if (action != null) onToolbarAction?.call(action);
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -116,6 +118,14 @@ class WindowService {
         }
       }
     });
+
+    if (Platform.isMacOS) {
+      try {
+        await _channel.invokeMethod('resetToolbarPanelState');
+      } on MissingPluginException {
+        // Older/native-mismatched builds may not expose this method.
+      }
+    }
   }
 
   Future<void> hideOnReady() async {
@@ -134,8 +144,7 @@ class WindowService {
     );
   }
 
-  /// Show the preview window sized to the image. Returns the computed window
-  /// size in logical points (needed to position the native toolbar below it).
+  /// Show the preview window sized to the image.
   Future<Size?> showPreview({
     required int imageWidth,
     required int imageHeight,
@@ -300,34 +309,21 @@ class WindowService {
   }
 
   Future<void> revealPreviewWindow() async {
-    await windowManager.setOpacity(1.0);
-    await _focusAndActivateWindow();
+    // Use native method to reveal and trigger pending toolbar update.
+    await _channel.invokeMethod('revealPreviewWindow');
     await Future<void>.delayed(const Duration(milliseconds: 40));
     await _focusAndActivateWindow();
   }
 
   /// Shrink the overlay window in-place to the selection rect for preview.
   /// Stays borderless (no corner radius) and floating above other windows.
-  /// Enforces a minimum size so the toolbar always fits, expanding outward
-  /// from the selection center if needed.
+  /// Keeps the selected region size (toolbar is shown in a separate panel).
   Future<void> showPreviewInPlace({required Rect selectionRect}) async {
-    // Enforce minimum so the toolbar never overflows
-    final w = selectionRect.width.clamp(_minPreviewSize.width, double.infinity);
-    final h = selectionRect.height.clamp(
-      _minPreviewSize.height,
-      double.infinity,
-    );
-    final rect = Rect.fromCenter(
-      center: selectionRect.center,
-      width: w,
-      height: h,
-    );
-
     await _channel.invokeMethod('resizeToRect', {
-      'x': rect.left,
-      'y': rect.top,
-      'width': rect.width,
-      'height': rect.height,
+      'x': selectionRect.left,
+      'y': selectionRect.top,
+      'width': selectionRect.width,
+      'height': selectionRect.height,
     });
   }
 
@@ -564,52 +560,59 @@ class WindowService {
     // Restoring styleMask on a "hidden" window can still flash because macOS
     // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
+    unawaited(hideToolbarPanel());
     // Window is already invisible — no need to block on this.
     unawaited(windowManager.setAlwaysOnTop(false));
   }
 
-  // ---------------------------------------------------------------------------
-  // Native floating toolbar panel
-  // ---------------------------------------------------------------------------
-
-  Future<bool> supportsToolbarPanel() async {
-    if (!Platform.isMacOS) return false;
-    final result = await _channel.invokeMethod<bool>('supportsToolbarPanel');
-    return result ?? false;
-  }
-
-  /// Show the native toolbar panel centered at [centerX] with its top at
-  /// [belowY]. Coordinates are in CG coordinate space (top-left origin).
+  /// Show/update the native floating toolbar panel.
+  ///
+  /// [rect] is in the current Flutter window's local coordinates.
   Future<void> showToolbarPanel({
-    required double centerX,
-    required double belowY,
-  }) async {
-    await _channel.invokeMethod('showToolbarPanel', {
-      'centerX': centerX,
-      'belowY': belowY,
-    });
-  }
-
-  /// Hide and destroy the native toolbar panel.
-  Future<void> hideToolbarPanel() async {
-    await _channel.invokeMethod('hideToolbarPanel');
-  }
-
-  /// Update the native toolbar's button states (active tool, undo/redo).
-  Future<void> updateToolbarState({
-    String? activeTool,
+    required Rect rect,
+    required bool showPin,
+    required bool showHistoryControls,
     required bool canUndo,
     required bool canRedo,
-    required bool hasAnnotations,
-    bool showsPin = true,
+    String? activeTool,
+    bool anchorToWindow = false,
   }) async {
-    await _channel.invokeMethod('updateToolbarState', {
-      'activeTool': activeTool,
-      'canUndo': canUndo,
-      'canRedo': canRedo,
-      'hasAnnotations': hasAnnotations,
-      'showsPin': showsPin,
-    });
+    if (!Platform.isMacOS) return;
+    final requestId = ++_toolbarRequestId;
+    try {
+      await _channel.invokeMethod('showToolbarPanel', {
+        'x': rect.left,
+        'y': rect.top,
+        'width': rect.width,
+        'height': rect.height,
+        'showPin': showPin,
+        'showHistoryControls': showHistoryControls,
+        'canUndo': canUndo,
+        'canRedo': canRedo,
+        'activeTool': activeTool,
+        'anchorToWindow': anchorToWindow,
+        'requestId': requestId,
+        'sessionId': _toolbarSessionId,
+      });
+    } on MissingPluginException {
+      // Non-macOS runners may not provide this channel implementation.
+      return;
+    }
+  }
+
+  /// Hide the native floating toolbar panel.
+  Future<void> hideToolbarPanel() async {
+    if (!Platform.isMacOS) return;
+    final requestId = ++_toolbarRequestId;
+    try {
+      await _channel.invokeMethod('hideToolbarPanel', {
+        'requestId': requestId,
+        'sessionId': _toolbarSessionId,
+      });
+    } on MissingPluginException {
+      // Non-macOS runners may not provide this channel implementation.
+      return;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -621,8 +624,8 @@ class WindowService {
   /// [bytes] must be raw RGBA pixel data. [cgFrame] is an optional
   /// CG-coordinate rect (top-left origin) specifying the panel's screen
   /// position and size. If omitted, the panel appears at the current main
-  /// Flutter window frame.
-  Future<void> pinImage({
+  /// Flutter window frame. Returns the native pinned panel ID on success.
+  Future<int?> pinImage({
     required Uint8List bytes,
     required int width,
     required int height,
@@ -639,18 +642,24 @@ class WindowService {
       args['frameWidth'] = cgFrame.width;
       args['frameHeight'] = cgFrame.height;
     }
-    await _channel.invokeMethod('pinImage', args);
+    return (await _channel.invokeMethod<num>('pinImage', args))?.toInt();
   }
 
-  /// Close and destroy the native pinned image panel.
-  Future<void> closePinnedImage() async {
-    await _channel.invokeMethod('closePinnedImage');
+  /// Close and destroy a native pinned image panel.
+  /// When [panelId] is omitted, closes all pinned panels.
+  Future<void> closePinnedImage({int? panelId}) async {
+    final args = panelId == null ? null : {'panelId': panelId};
+    await _channel.invokeMethod('closePinnedImage', args);
   }
 
-  /// Get the current CG-coordinate frame of the pinned image panel.
-  /// Returns null if no panel exists.
-  Future<Rect?> getPinnedPanelFrame() async {
-    final result = await _channel.invokeMethod<Map>('getPinnedPanelFrame');
+  /// Get the current CG-coordinate frame of a pinned image panel.
+  /// Returns null if the requested panel does not exist.
+  Future<Rect?> getPinnedPanelFrame({int? panelId}) async {
+    final args = panelId == null ? null : {'panelId': panelId};
+    final result = await _channel.invokeMethod<Map>(
+      'getPinnedPanelFrame',
+      args,
+    );
     if (result == null) return null;
     return Rect.fromLTWH(
       (result['x'] as num).toDouble(),
@@ -661,42 +670,11 @@ class WindowService {
   }
 
   /// Get screen info (logical size + CG origin) for the display under the cursor.
-  /// Lightweight alternative to [captureScreen] when only screen info is needed.
+  /// Uses [captureScreen] metadata to avoid a separate native bridge.
   Future<({Size screenSize, Offset screenOrigin})?> getScreenInfo() async {
-    final result = await _channel.invokeMethod<Map>('getScreenInfo');
-    if (result == null) return null;
-    return (
-      screenSize: Size(
-        (result['screenWidth'] as num).toDouble(),
-        (result['screenHeight'] as num).toDouble(),
-      ),
-      screenOrigin: Offset(
-        (result['screenOriginX'] as num).toDouble(),
-        (result['screenOriginY'] as num).toDouble(),
-      ),
-    );
-  }
-
-  Future<({Size screenSize, Offset screenOrigin})?> getScreenInfoForRect(
-    Rect rect,
-  ) async {
-    final result = await _channel.invokeMethod<Map>('getScreenInfoForRect', {
-      'x': rect.left,
-      'y': rect.top,
-      'width': rect.width,
-      'height': rect.height,
-    });
-    if (result == null) return null;
-    return (
-      screenSize: Size(
-        (result['screenWidth'] as num).toDouble(),
-        (result['screenHeight'] as num).toDouble(),
-      ),
-      screenOrigin: Offset(
-        (result['screenOriginX'] as num).toDouble(),
-        (result['screenOriginY'] as num).toDouble(),
-      ),
-    );
+    final capture = await captureScreen();
+    if (capture == null) return null;
+    return (screenSize: capture.screenSize, screenOrigin: capture.screenOrigin);
   }
 
   Future<void> _focusAndActivateWindow() async {

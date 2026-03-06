@@ -93,6 +93,7 @@ class AnnotationState extends ChangeNotifier {
 
   bool get canUndo => _historyIndex > 0;
   bool get canRedo => _historyIndex < _history.length - 1;
+  bool get showHistoryControls => annotations.isNotEmpty || canUndo || canRedo;
   bool get hasAnnotations =>
       annotations.isNotEmpty || _activeAnnotation != null;
 

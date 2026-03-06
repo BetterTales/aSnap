@@ -17,6 +17,13 @@ Future<Image> _createTestImage() async {
   return image;
 }
 
+Future<void> _expectImageUsable(WidgetTester tester, Image image) async {
+  final byteData = await tester.runAsync(
+    () => image.toByteData(format: ImageByteFormat.png),
+  );
+  expect(byteData, isNotNull);
+}
+
 void main() {
   late AppState state;
 
@@ -31,6 +38,7 @@ void main() {
   group('initial state', () {
     test('starts idle with null fields', () {
       expect(state.status, CaptureStatus.idle);
+      expect(state.workflow, isA<IdleWorkflow>());
       expect(state.capturedImage, isNull);
       expect(state.decodedFullScreen, isNull);
       expect(state.windowRects, isNull);
@@ -39,14 +47,15 @@ void main() {
     });
   });
 
-  group('setCapturing', () {
+  group('setPreparingCapture', () {
     test('transitions to capturing and notifies', () {
       var notified = false;
       state.addListener(() => notified = true);
 
-      state.setCapturing();
+      state.setPreparingCapture(kind: CaptureKind.region);
 
       expect(state.status, CaptureStatus.capturing);
+      expect(state.workflow, isA<PreparingCaptureWorkflow>());
       expect(notified, isTrue);
     });
   });
@@ -57,6 +66,7 @@ void main() {
       state.setCapturedImage(image);
 
       expect(state.status, CaptureStatus.captured);
+      expect(state.workflow, isA<PreviewWorkflow>());
       expect(state.capturedImage, isNotNull);
       expect(state.decodedFullScreen, isNull);
       expect(state.windowRects, isNull);
@@ -65,17 +75,154 @@ void main() {
     });
   });
 
+  group('detach image lifecycle', () {
+    testWidgets('detachCapturedImage keeps image usable after clear', (
+      tester,
+    ) async {
+      final image = await _createTestImage();
+      state.setCapturedImage(image);
+
+      final detached = state.detachCapturedImage();
+      expect(detached, same(image));
+
+      state.clear();
+
+      expect(state.capturedImage, isNull);
+      await _expectImageUsable(tester, detached!);
+      detached.dispose();
+    });
+
+    testWidgets(
+      'detachCapturedImage keeps old image alive across replacement',
+      (tester) async {
+        final image = await _createTestImage();
+        state.setCapturedImage(image);
+
+        final detached = state.detachCapturedImage();
+        final replacement = await _createTestImage();
+        state.setCapturedImage(replacement);
+
+        expect(state.capturedImage, same(replacement));
+        await _expectImageUsable(tester, detached!);
+        detached.dispose();
+      },
+    );
+
+    testWidgets('detachDecodedFullScreen keeps image usable after clear', (
+      tester,
+    ) async {
+      final image = await _createTestImage();
+      state.setSelecting(
+        decodedImage: image,
+        windowRects: const [],
+        screenSize: const Size(1280, 720),
+        screenOrigin: const Offset(10, 20),
+      );
+
+      final detached = state.detachDecodedFullScreen();
+      expect(detached, same(image));
+
+      state.clear();
+
+      expect(state.decodedFullScreen, isNull);
+      await _expectImageUsable(tester, detached!);
+      detached.dispose();
+    });
+  });
+
   group('updateWindowRects', () {
-    test('updates rects and notifies', () {
+    testWidgets('updates rects and notifies', (tester) async {
       var notified = false;
       state.addListener(() => notified = true);
 
+      final image = await _createTestImage();
+      state.setSelecting(
+        decodedImage: image,
+        windowRects: const [],
+        screenSize: const Size(1280, 720),
+        screenOrigin: const Offset(10, 20),
+      );
+
+      notified = false;
       final rects = [const Rect.fromLTWH(0, 0, 100, 100)];
       state.updateWindowRects(rects);
 
       expect(state.windowRects, rects);
       expect(notified, isTrue);
     });
+  });
+
+  group('selection workflow', () {
+    testWidgets('stores selection payload in typed workflow', (tester) async {
+      final image = await _createTestImage();
+      final rects = [const Rect.fromLTWH(0, 0, 100, 100)];
+      const screenSize = Size(1920, 1080);
+      const screenOrigin = Offset(100, 200);
+      state.setSelecting(
+        decodedImage: image,
+        windowRects: rects,
+        screenSize: screenSize,
+        screenOrigin: screenOrigin,
+      );
+
+      expect(state.windowRects, rects);
+      expect(state.workflow, isA<RegionSelectionWorkflow>());
+      expect(state.screenSize, screenSize);
+      expect(state.screenOrigin, screenOrigin);
+    });
+  });
+
+  group('scroll workflow edges', () {
+    test('setScrollCapturing is a no-op without selection context', () {
+      state.setScrollCapturing(
+        captureRegion: const Rect.fromLTWH(0, 0, 100, 100),
+      );
+
+      expect(state.workflow, isA<IdleWorkflow>());
+      expect(state.status, CaptureStatus.idle);
+    });
+
+    testWidgets(
+      'setScrollResult falls back to preview when screen context is missing',
+      (tester) async {
+        final image = await _createTestImage();
+
+        state.setScrollResult(image);
+
+        expect(state.workflow, isA<PreviewWorkflow>());
+        expect(state.status, CaptureStatus.captured);
+        expect(state.isScrollCapture, isTrue);
+        expect(state.capturedImage, same(image));
+      },
+    );
+
+    testWidgets(
+      'updateScrollPreview updates image without notifying listeners',
+      (tester) async {
+        final image = await _createTestImage();
+        state.setScrollSelecting(
+          decodedImage: image,
+          windowRects: const [],
+          screenSize: const Size(800, 600),
+          screenOrigin: const Offset(20, 30),
+        );
+        state.setScrollCapturing(
+          captureRegion: const Rect.fromLTWH(25, 35, 300, 200),
+        );
+
+        var notifications = 0;
+        state.addListener(() => notifications++);
+
+        final preview = await _createTestImage();
+        state.updateScrollPreview(preview);
+
+        expect(state.scrollPreviewImage, same(preview));
+        expect(notifications, 0);
+
+        state.clear();
+        preview.dispose();
+      },
+    );
   });
 
   group('nudge', () {
@@ -99,6 +246,7 @@ void main() {
       state.clear();
 
       expect(state.status, CaptureStatus.idle);
+      expect(state.workflow, isA<IdleWorkflow>());
       expect(state.capturedImage, isNull);
       expect(state.decodedFullScreen, isNull);
       expect(state.windowRects, isNull);
@@ -130,7 +278,7 @@ void main() {
     testWidgets('idle → capturing → captured → idle', (tester) async {
       expect(state.status, CaptureStatus.idle);
 
-      state.setCapturing();
+      state.setPreparingCapture(kind: CaptureKind.fullScreen);
       expect(state.status, CaptureStatus.capturing);
 
       final image = await _createTestImage();
@@ -139,6 +287,36 @@ void main() {
 
       state.clear();
       expect(state.status, CaptureStatus.idle);
+    });
+
+    testWidgets('scroll selection → scroll capturing → scroll result', (
+      tester,
+    ) async {
+      final image = await _createTestImage();
+      state.setScrollSelecting(
+        decodedImage: image,
+        windowRects: const [Rect.fromLTWH(0, 0, 100, 100)],
+        screenSize: const Size(800, 600),
+        screenOrigin: const Offset(20, 30),
+      );
+
+      expect(state.workflow, isA<RegionSelectionWorkflow>());
+      expect(state.status, CaptureStatus.scrollSelecting);
+
+      state.setScrollCapturing(
+        captureRegion: const Rect.fromLTWH(25, 35, 300, 200),
+      );
+      expect(state.workflow, isA<ScrollCapturingWorkflow>());
+      expect(state.status, CaptureStatus.scrollCapturing);
+      expect(state.screenOrigin, const Offset(20, 30));
+
+      final result = await _createTestImage();
+      state.setScrollResult(result);
+
+      expect(state.workflow, isA<ScrollResultWorkflow>());
+      expect(state.status, CaptureStatus.scrollResult);
+      expect(state.screenSize, const Size(800, 600));
+      expect(state.screenOrigin, const Offset(20, 30));
     });
   });
 }

@@ -245,6 +245,62 @@ void main() {
       expect(rect.right, 110); // unchanged
     });
 
+    test('constrained ellipse top handle resizes continuously', () {
+      const a = Annotation(
+        type: ShapeType.ellipse,
+        start: Offset(10, 10),
+        end: Offset(60, 60),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+        constrained: true,
+      );
+
+      final first = applyAnnotationHandleDrag(
+        a,
+        const AnnHandle(AnnHandleType.top, Offset(35, 10)),
+        const Offset(35, 5),
+      );
+      final firstRect = first.boundingRect;
+      expect(firstRect.top, 5);
+      expect(firstRect.bottom, 60);
+      expect(firstRect.width, 55);
+      expect(firstRect.height, 55);
+
+      final second = applyAnnotationHandleDrag(
+        first,
+        const AnnHandle(AnnHandleType.top, Offset(35, 5)),
+        const Offset(35, 0),
+      );
+      final secondRect = second.boundingRect;
+      expect(secondRect.top, 0);
+      expect(secondRect.bottom, 60);
+      expect(secondRect.width, 60);
+      expect(secondRect.height, 60);
+    });
+
+    test('constrained rectangle corner follows dominant drag axis', () {
+      const a = Annotation(
+        type: ShapeType.rectangle,
+        start: Offset(10, 10),
+        end: Offset(60, 60),
+        color: Color(0xFFFF0000),
+        strokeWidth: 2,
+        constrained: true,
+      );
+
+      final result = applyAnnotationHandleDrag(
+        a,
+        const AnnHandle(AnnHandleType.topLeft, Offset(10, 10)),
+        const Offset(0, 8),
+      );
+      final rect = result.boundingRect;
+      expect(rect.left, 0);
+      expect(rect.top, 0);
+      expect(rect.right, 60);
+      expect(rect.bottom, 60);
+      expect(rect.width, rect.height);
+    });
+
     test('dragging line startPoint updates start', () {
       const a = Annotation(
         type: ShapeType.line,

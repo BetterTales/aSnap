@@ -1,4 +1,4 @@
-import 'dart:math' show min;
+import 'dart:math' show max, min;
 
 import 'package:flutter/services.dart';
 
@@ -134,6 +134,20 @@ Annotation applyAnnotationHandleDrag(
   AnnHandle handle,
   Offset newPosition,
 ) {
+  if (annotation.constrained &&
+      (annotation.type == ShapeType.rectangle ||
+          annotation.type == ShapeType.ellipse ||
+          annotation.type == ShapeType.mosaic)) {
+    final constrained = _applyConstrainedHandleDrag(
+      annotation,
+      handle,
+      newPosition,
+    );
+    if (constrained != null) {
+      return constrained;
+    }
+  }
+
   switch (handle.type) {
     // Rectangle corners: dragged corner moves, opposite stays pinned.
     case AnnHandleType.topLeft:
@@ -210,6 +224,118 @@ Annotation applyAnnotationHandleDrag(
   }
 }
 
+Annotation? _applyConstrainedHandleDrag(
+  Annotation annotation,
+  AnnHandle handle,
+  Offset newPosition,
+) {
+  final rect = _constrainedRect(annotation);
+
+  Rect square;
+  switch (handle.type) {
+    case AnnHandleType.topLeft:
+      square = _squareFromOppositeCorner(
+        anchor: rect.bottomRight,
+        dragged: newPosition,
+      );
+    case AnnHandleType.topRight:
+      square = _squareFromOppositeCorner(
+        anchor: rect.bottomLeft,
+        dragged: newPosition,
+      );
+    case AnnHandleType.bottomLeft:
+      square = _squareFromOppositeCorner(
+        anchor: rect.topRight,
+        dragged: newPosition,
+      );
+    case AnnHandleType.bottomRight:
+      square = _squareFromOppositeCorner(
+        anchor: rect.topLeft,
+        dragged: newPosition,
+      );
+    case AnnHandleType.top:
+      square = _squareFromVerticalHandle(
+        rect: rect,
+        draggedY: newPosition.dy,
+        fromTop: true,
+      );
+    case AnnHandleType.bottom:
+      square = _squareFromVerticalHandle(
+        rect: rect,
+        draggedY: newPosition.dy,
+        fromTop: false,
+      );
+    case AnnHandleType.left:
+      square = _squareFromHorizontalHandle(
+        rect: rect,
+        draggedX: newPosition.dx,
+        fromLeft: true,
+      );
+    case AnnHandleType.right:
+      square = _squareFromHorizontalHandle(
+        rect: rect,
+        draggedX: newPosition.dx,
+        fromLeft: false,
+      );
+    case AnnHandleType.startPoint:
+    case AnnHandleType.endPoint:
+    case AnnHandleType.controlPoint:
+      return null;
+  }
+
+  return _withStartEnd(annotation, square.topLeft, square.bottomRight);
+}
+
+Rect _squareFromOppositeCorner({
+  required Offset anchor,
+  required Offset dragged,
+}) {
+  final dx = dragged.dx - anchor.dx;
+  final dy = dragged.dy - anchor.dy;
+  final side = max(dx.abs(), dy.abs());
+  final target = Offset(
+    anchor.dx + (dx < 0 ? -side : side),
+    anchor.dy + (dy < 0 ? -side : side),
+  );
+  return Rect.fromPoints(anchor, target);
+}
+
+Rect _squareFromVerticalHandle({
+  required Rect rect,
+  required double draggedY,
+  required bool fromTop,
+}) {
+  final anchorY = fromTop ? rect.bottom : rect.top;
+  final delta = draggedY - anchorY;
+  final side = delta.abs();
+  final movingY = anchorY + (delta < 0 ? -side : side);
+
+  final centerX = rect.center.dx;
+  final left = centerX - side / 2;
+  final right = centerX + side / 2;
+  final top = min(movingY, anchorY);
+  final bottom = max(movingY, anchorY);
+  return Rect.fromLTRB(left, top, right, bottom);
+}
+
+Rect _squareFromHorizontalHandle({
+  required Rect rect,
+  required double draggedX,
+  required bool fromLeft,
+}) {
+  final anchorX = fromLeft ? rect.right : rect.left;
+  final delta = draggedX - anchorX;
+  final side = delta.abs();
+  final movingX = anchorX + (delta < 0 ? -side : side);
+
+  final centerY = rect.center.dy;
+  final top = centerY - side / 2;
+  final bottom = centerY + side / 2;
+  final left = min(movingX, anchorX);
+  final right = max(movingX, anchorX);
+  return Rect.fromLTRB(left, top, right, bottom);
+}
+
 /// Whether [type] is one of the four corner handles.
 bool isCornerAnnotationHandle(AnnHandleType type) => switch (type) {
   AnnHandleType.topLeft ||
@@ -220,10 +346,6 @@ bool isCornerAnnotationHandle(AnnHandleType type) => switch (type) {
 };
 
 /// Returns the appropriate resize cursor for an annotation [handle].
-///
-/// Corner handles return `resizeUpLeft`/etc. but note that on macOS these
-/// silently fall back to the arrow cursor — use [nativeDiagonalCursorType]
-/// with the platform channel for diagonal cursors on macOS.
 MouseCursor cursorForAnnotationHandle(AnnHandleType type) => switch (type) {
   AnnHandleType.topLeft => SystemMouseCursors.resizeUpLeft,
   AnnHandleType.topRight => SystemMouseCursors.resizeUpRight,
@@ -235,14 +357,6 @@ MouseCursor cursorForAnnotationHandle(AnnHandleType type) => switch (type) {
   AnnHandleType.right => SystemMouseCursors.resizeRight,
   AnnHandleType.startPoint || AnnHandleType.endPoint => SystemMouseCursors.grab,
   AnnHandleType.controlPoint => SystemMouseCursors.grab,
-};
-
-/// Returns the native macOS diagonal cursor type string ('nwse' or 'nesw')
-/// for corner handles, or null for non-corner handles.
-String? nativeDiagonalCursorType(AnnHandleType type) => switch (type) {
-  AnnHandleType.topLeft || AnnHandleType.bottomRight => 'nwse',
-  AnnHandleType.topRight || AnnHandleType.bottomLeft => 'nesw',
-  _ => null,
 };
 
 Annotation _withStartEnd(Annotation a, Offset start, Offset end) {

@@ -2,6 +2,8 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
+enum CaptureKind { fullScreen, region, scroll }
+
 enum CaptureStatus {
   idle,
   capturing,
@@ -12,78 +14,219 @@ enum CaptureStatus {
   captured,
 }
 
+sealed class WorkflowState {
+  const WorkflowState();
+}
+
+final class IdleWorkflow extends WorkflowState {
+  const IdleWorkflow();
+}
+
+final class PreparingCaptureWorkflow extends WorkflowState {
+  final CaptureKind kind;
+
+  const PreparingCaptureWorkflow({required this.kind});
+}
+
+final class RegionSelectionWorkflow extends WorkflowState {
+  final Image decodedImage;
+  final List<Rect> windowRects;
+  final Size screenSize;
+  final Offset screenOrigin;
+  final bool isScrollSelection;
+
+  const RegionSelectionWorkflow({
+    required this.decodedImage,
+    required this.windowRects,
+    required this.screenSize,
+    required this.screenOrigin,
+    required this.isScrollSelection,
+  });
+
+  RegionSelectionWorkflow copyWith({
+    Image? decodedImage,
+    List<Rect>? windowRects,
+    Size? screenSize,
+    Offset? screenOrigin,
+    bool? isScrollSelection,
+  }) {
+    return RegionSelectionWorkflow(
+      decodedImage: decodedImage ?? this.decodedImage,
+      windowRects: windowRects ?? this.windowRects,
+      screenSize: screenSize ?? this.screenSize,
+      screenOrigin: screenOrigin ?? this.screenOrigin,
+      isScrollSelection: isScrollSelection ?? this.isScrollSelection,
+    );
+  }
+}
+
+final class ScrollCapturingWorkflow extends WorkflowState {
+  final Rect captureRegion;
+  final int frameCount;
+  final Image? previewImage;
+  final Size screenSize;
+  final Offset screenOrigin;
+
+  const ScrollCapturingWorkflow({
+    required this.captureRegion,
+    required this.frameCount,
+    required this.previewImage,
+    required this.screenSize,
+    required this.screenOrigin,
+  });
+
+  ScrollCapturingWorkflow copyWith({
+    Rect? captureRegion,
+    int? frameCount,
+    Image? previewImage,
+    bool clearPreviewImage = false,
+    Size? screenSize,
+    Offset? screenOrigin,
+  }) {
+    return ScrollCapturingWorkflow(
+      captureRegion: captureRegion ?? this.captureRegion,
+      frameCount: frameCount ?? this.frameCount,
+      previewImage: clearPreviewImage
+          ? null
+          : (previewImage ?? this.previewImage),
+      screenSize: screenSize ?? this.screenSize,
+      screenOrigin: screenOrigin ?? this.screenOrigin,
+    );
+  }
+}
+
+final class PreviewWorkflow extends WorkflowState {
+  final Image image;
+  final bool isScrollCapture;
+
+  const PreviewWorkflow({required this.image, required this.isScrollCapture});
+}
+
+final class ScrollResultWorkflow extends WorkflowState {
+  final Image image;
+  final Size screenSize;
+  final Offset screenOrigin;
+
+  const ScrollResultWorkflow({
+    required this.image,
+    required this.screenSize,
+    required this.screenOrigin,
+  });
+}
+
 class AppState extends ChangeNotifier {
-  /// Pre-decoded full-screen image for instant display in the overlay.
-  /// Owned by AppState — disposed when replaced or cleared.
-  Image? _decodedFullScreen;
-  Image? get decodedFullScreen => _decodedFullScreen;
+  WorkflowState _workflow = const IdleWorkflow();
+  WorkflowState get workflow => _workflow;
 
-  /// The final captured image (full-screen or cropped region) for preview.
-  /// Owned by AppState — disposed when replaced or cleared.
-  Image? _capturedImage;
-  Image? get capturedImage => _capturedImage;
+  Image? _detachedCapturedImage;
+  Image? _detachedDecodedImage;
 
-  List<Rect>? _windowRects;
-  List<Rect>? get windowRects => _windowRects;
+  RegionSelectionWorkflow? get regionSelectionWorkflow => switch (_workflow) {
+    RegionSelectionWorkflow state => state,
+    _ => null,
+  };
 
-  /// Logical size of the display that was captured (for correct scaling).
-  Size? _screenSize;
-  Size? get screenSize => _screenSize;
+  ScrollCapturingWorkflow? get scrollCapturingWorkflow => switch (_workflow) {
+    ScrollCapturingWorkflow state => state,
+    _ => null,
+  };
 
-  /// Top-left origin (CG-style coordinates) of the captured display.
-  Offset? _screenOrigin;
-  Offset? get screenOrigin => _screenOrigin;
+  PreviewWorkflow? get previewWorkflow => switch (_workflow) {
+    PreviewWorkflow state => state,
+    _ => null,
+  };
 
-  /// Whether the current captured image is from a scroll capture (for scrollable preview).
-  bool _isScrollCapture = false;
-  bool get isScrollCapture => _isScrollCapture;
+  ScrollResultWorkflow? get scrollResultWorkflow => switch (_workflow) {
+    ScrollResultWorkflow state => state,
+    _ => null,
+  };
 
-  /// CG bounds of the scroll target window (for badge placement).
-  Rect? _scrollTargetBounds;
-  Rect? get scrollTargetBounds => _scrollTargetBounds;
+  Image? get decodedFullScreen => regionSelectionWorkflow?.decodedImage;
 
-  /// Live frame count during scroll capture (for badge).
-  int _scrollFrameCount = 0;
-  int get scrollFrameCount => _scrollFrameCount;
+  Image? get capturedImage => switch (_workflow) {
+    PreviewWorkflow(:final image) => image,
+    ScrollResultWorkflow(:final image) => image,
+    _ => null,
+  };
 
-  /// Growing composite image for live scroll preview.
-  /// Owned by ScrollCaptureService — do NOT dispose here.
-  Image? _scrollPreviewImage;
-  Image? get scrollPreviewImage => _scrollPreviewImage;
+  List<Rect>? get windowRects => regionSelectionWorkflow?.windowRects;
 
-  CaptureStatus _status = CaptureStatus.idle;
-  CaptureStatus get status => _status;
+  Size? get screenSize => switch (_workflow) {
+    RegionSelectionWorkflow(:final screenSize) => screenSize,
+    ScrollCapturingWorkflow(:final screenSize) => screenSize,
+    ScrollResultWorkflow(:final screenSize) => screenSize,
+    _ => null,
+  };
 
-  void setCapturing() {
-    _status = CaptureStatus.capturing;
-    notifyListeners();
+  Offset? get screenOrigin => switch (_workflow) {
+    RegionSelectionWorkflow(:final screenOrigin) => screenOrigin,
+    ScrollCapturingWorkflow(:final screenOrigin) => screenOrigin,
+    ScrollResultWorkflow(:final screenOrigin) => screenOrigin,
+    _ => null,
+  };
+
+  bool get isScrollCapture => switch (_workflow) {
+    PreviewWorkflow(:final isScrollCapture) => isScrollCapture,
+    ScrollResultWorkflow() => true,
+    _ => false,
+  };
+
+  Rect? get scrollTargetBounds => scrollCapturingWorkflow?.captureRegion;
+
+  int get scrollFrameCount => scrollCapturingWorkflow?.frameCount ?? 0;
+
+  Image? get scrollPreviewImage => scrollCapturingWorkflow?.previewImage;
+
+  CaptureStatus get status => switch (_workflow) {
+    IdleWorkflow() => CaptureStatus.idle,
+    PreparingCaptureWorkflow() => CaptureStatus.capturing,
+    RegionSelectionWorkflow(isScrollSelection: true) =>
+      CaptureStatus.scrollSelecting,
+    RegionSelectionWorkflow() => CaptureStatus.selecting,
+    ScrollCapturingWorkflow() => CaptureStatus.scrollCapturing,
+    ScrollResultWorkflow() => CaptureStatus.scrollResult,
+    PreviewWorkflow() => CaptureStatus.captured,
+  };
+
+  void setPreparingCapture({required CaptureKind kind}) {
+    _transitionTo(PreparingCaptureWorkflow(kind: kind));
   }
 
   void setScrollSelecting({
     required Image decodedImage,
-    List<Rect>? windowRects,
-    Size? screenSize,
-    Offset? screenOrigin,
+    required List<Rect> windowRects,
+    required Size screenSize,
+    required Offset screenOrigin,
   }) {
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = decodedImage;
-    _windowRects = windowRects;
-    _screenSize = screenSize;
-    _screenOrigin = screenOrigin;
-    _status = CaptureStatus.scrollSelecting;
-    notifyListeners();
+    _transitionTo(
+      RegionSelectionWorkflow(
+        decodedImage: decodedImage,
+        windowRects: windowRects,
+        screenSize: screenSize,
+        screenOrigin: screenOrigin,
+        isScrollSelection: true,
+      ),
+    );
   }
 
   void setScrollCapturing({required Rect captureRegion}) {
-    _scrollTargetBounds = captureRegion;
-    _scrollFrameCount = 0;
-    _status = CaptureStatus.scrollCapturing;
-    notifyListeners();
+    final selection = regionSelectionWorkflow;
+    if (selection == null) return;
+    _transitionTo(
+      ScrollCapturingWorkflow(
+        captureRegion: captureRegion,
+        frameCount: 0,
+        previewImage: null,
+        screenSize: selection.screenSize,
+        screenOrigin: selection.screenOrigin,
+      ),
+    );
   }
 
   void updateScrollFrameCount(int count) {
-    _scrollFrameCount = count;
-    notifyListeners();
+    final scrollCapture = scrollCapturingWorkflow;
+    if (scrollCapture == null) return;
+    _transitionTo(scrollCapture.copyWith(frameCount: count));
   }
 
   /// Update the live scroll preview image (called by ScrollCaptureService).
@@ -91,76 +234,66 @@ class AppState extends ChangeNotifier {
   /// Does NOT call notifyListeners() — the caller is responsible for
   /// triggering a rebuild (via updateScrollFrameCount) after setting this.
   void updateScrollPreview(Image newImage) {
-    _scrollPreviewImage = newImage;
+    final scrollCapture = scrollCapturingWorkflow;
+    if (scrollCapture == null) return;
+    _workflow = scrollCapture.copyWith(previewImage: newImage);
   }
 
   void setSelecting({
     required Image decodedImage,
-    List<Rect>? windowRects,
-    Size? screenSize,
-    Offset? screenOrigin,
+    required List<Rect> windowRects,
+    required Size screenSize,
+    required Offset screenOrigin,
   }) {
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = decodedImage;
-    _windowRects = windowRects;
-    _screenSize = screenSize;
-    _screenOrigin = screenOrigin;
-    _status = CaptureStatus.selecting;
-    notifyListeners();
+    _transitionTo(
+      RegionSelectionWorkflow(
+        decodedImage: decodedImage,
+        windowRects: windowRects,
+        screenSize: screenSize,
+        screenOrigin: screenOrigin,
+        isScrollSelection: false,
+      ),
+    );
   }
 
   /// Update only the window rects (used when rects arrive after the overlay
   /// is already showing, e.g. during a display change).
   void updateWindowRects(List<Rect> rects) {
-    _windowRects = rects;
-    notifyListeners();
+    final selection = regionSelectionWorkflow;
+    if (selection == null) return;
+    _transitionTo(selection.copyWith(windowRects: rects));
   }
 
   void setCapturedImage(Image image) {
-    _capturedImage?.dispose();
-    _capturedImage = image;
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = null;
-    _windowRects = null;
-    _screenSize = null;
-    _screenOrigin = null;
-    _isScrollCapture = false;
-    _status = CaptureStatus.captured;
-    notifyListeners();
+    _transitionTo(PreviewWorkflow(image: image, isScrollCapture: false));
   }
 
   void setCapturedScrollImage(Image image) {
-    _capturedImage?.dispose();
-    _capturedImage = image;
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = null;
-    _windowRects = null;
-    _scrollTargetBounds = null;
-    _scrollPreviewImage = null; // Service owns it; just clear reference
-    _isScrollCapture = true;
-    _status = CaptureStatus.captured;
-    notifyListeners();
+    _transitionTo(PreviewWorkflow(image: image, isScrollCapture: true));
   }
 
   /// Transition to scroll result displayed in the fullscreen overlay.
-  /// Keeps [screenSize] and [screenOrigin] because the overlay is still active.
   void setScrollResult(Image stitchedImage) {
-    _capturedImage?.dispose();
-    _capturedImage = stitchedImage;
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = null;
-    _windowRects = null;
-    _scrollTargetBounds = null;
-    _scrollPreviewImage = null; // Service owns it; just clear reference
-    _isScrollCapture = true;
-    // Keep _screenSize and _screenOrigin — overlay is still active.
-    _status = CaptureStatus.scrollResult;
-    notifyListeners();
+    final currentScreenSize = screenSize;
+    final currentScreenOrigin = screenOrigin;
+    if (currentScreenSize == null || currentScreenOrigin == null) {
+      _transitionTo(
+        PreviewWorkflow(image: stitchedImage, isScrollCapture: true),
+      );
+      return;
+    }
+    _transitionTo(
+      ScrollResultWorkflow(
+        image: stitchedImage,
+        screenSize: currentScreenSize,
+        screenOrigin: currentScreenOrigin,
+      ),
+    );
   }
 
   /// Encode the captured image to PNG bytes on demand (for clipboard/file save).
   Future<Uint8List?> capturedImageAsPng() async {
-    final image = _capturedImage;
+    final image = capturedImage;
     if (image == null) return null;
     final byteData = await image.toByteData(format: ImageByteFormat.png);
     return byteData?.buffer.asUint8List();
@@ -169,8 +302,10 @@ class AppState extends ChangeNotifier {
   /// Remove and return the captured image without disposing it.
   /// Caller takes ownership and is responsible for disposal.
   Image? detachCapturedImage() {
-    final image = _capturedImage;
-    _capturedImage = null;
+    final image = capturedImage;
+    if (image != null) {
+      _detachedCapturedImage = image;
+    }
     return image;
   }
 
@@ -178,8 +313,10 @@ class AppState extends ChangeNotifier {
   /// Caller takes ownership and is responsible for disposal.
   /// Used by overlay copy/save to detach before clear() disposes it.
   Image? detachDecodedFullScreen() {
-    final image = _decodedFullScreen;
-    _decodedFullScreen = null;
+    final image = decodedFullScreen;
+    if (image != null) {
+      _detachedDecodedImage = image;
+    }
     return image;
   }
 
@@ -190,18 +327,61 @@ class AppState extends ChangeNotifier {
   }
 
   void clear() {
-    _capturedImage?.dispose();
-    _capturedImage = null;
-    _decodedFullScreen?.dispose();
-    _decodedFullScreen = null;
-    _windowRects = null;
-    _screenSize = null;
-    _screenOrigin = null;
-    _isScrollCapture = false;
-    _scrollTargetBounds = null;
-    _scrollFrameCount = 0;
-    _scrollPreviewImage = null; // Service owns it; just clear reference
-    _status = CaptureStatus.idle;
+    _transitionTo(const IdleWorkflow());
+  }
+
+  void _transitionTo(WorkflowState next) {
+    final previous = _workflow;
+    _disposeOwnedImages(previous, next);
+    _workflow = next;
+    _releaseDetachedImages(previous);
     notifyListeners();
+  }
+
+  void _disposeOwnedImages(WorkflowState previous, WorkflowState next) {
+    for (final image in _ownedImages(previous)) {
+      if (_ownsImage(next, image)) continue;
+      if (identical(image, _detachedCapturedImage)) continue;
+      if (identical(image, _detachedDecodedImage)) continue;
+      image.dispose();
+    }
+  }
+
+  Iterable<Image> _ownedImages(WorkflowState state) sync* {
+    switch (state) {
+      case RegionSelectionWorkflow(:final decodedImage):
+        yield decodedImage;
+      case PreviewWorkflow(:final image):
+        yield image;
+      case ScrollResultWorkflow(:final image):
+        yield image;
+      default:
+        return;
+    }
+  }
+
+  bool _ownsImage(WorkflowState state, Image image) {
+    return _ownedImages(
+      state,
+    ).any((ownedImage) => identical(ownedImage, image));
+  }
+
+  void _releaseDetachedImages(WorkflowState previous) {
+    switch (previous) {
+      case RegionSelectionWorkflow(:final decodedImage):
+        if (identical(decodedImage, _detachedDecodedImage)) {
+          _detachedDecodedImage = null;
+        }
+      case PreviewWorkflow(:final image):
+        if (identical(image, _detachedCapturedImage)) {
+          _detachedCapturedImage = null;
+        }
+      case ScrollResultWorkflow(:final image):
+        if (identical(image, _detachedCapturedImage)) {
+          _detachedCapturedImage = null;
+        }
+      default:
+        break;
+    }
   }
 }

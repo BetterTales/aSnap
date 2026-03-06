@@ -133,6 +133,27 @@ void main() {
       state.undo();
       expect(state.selectedIndex, isNull);
     });
+
+    test('history controls remain visible after undoing back to empty', () {
+      final state = AnnotationState();
+      expect(state.showHistoryControls, isFalse);
+
+      state.startDrawing(Offset.zero);
+      state.updateDrawing(const Offset(100, 100));
+      state.finishDrawing();
+
+      expect(state.showHistoryControls, isTrue);
+
+      state.undo();
+
+      expect(state.annotations, isEmpty);
+      expect(state.canRedo, isTrue);
+      expect(state.showHistoryControls, isTrue);
+
+      state.clear();
+
+      expect(state.showHistoryControls, isFalse);
+    });
   });
 
   group('beginEdit / commitEdit', () {

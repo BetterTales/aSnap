@@ -12,7 +12,6 @@ class ASnapApp extends StatelessWidget {
   final AppState appState;
   final AnnotationState annotationState;
   final WindowService windowService;
-  final bool useNativeToolbar;
   final VoidCallback onCopy;
   final VoidCallback onSave;
   final VoidCallback? onPin;
@@ -34,7 +33,6 @@ class ASnapApp extends StatelessWidget {
     required this.appState,
     required this.annotationState,
     required this.windowService,
-    required this.useNativeToolbar,
     required this.onCopy,
     required this.onSave,
     this.onPin,
@@ -65,70 +63,73 @@ class ASnapApp extends StatelessWidget {
       home: ListenableBuilder(
         listenable: appState,
         builder: (context, _) {
-          if (appState.status == CaptureStatus.selecting &&
-              appState.decodedFullScreen != null) {
-            return RegionSelectionScreen(
-              decodedImage: appState.decodedFullScreen!,
-              windowRects: appState.windowRects ?? const [],
-              screenOrigin: appState.screenOrigin ?? Offset.zero,
-              onCancel: onRegionCancel,
-              windowService: windowService,
-              onCopy: onRegionCopy,
-              onSave: onRegionSave,
-              onPin: onRegionPin,
-              onHitTest: onHitTest,
-              annotationState: annotationState,
-              useNativeToolbar: useNativeToolbar,
-            );
-          }
-          if (appState.status == CaptureStatus.scrollSelecting &&
-              appState.decodedFullScreen != null) {
-            return RegionSelectionScreen(
-              decodedImage: appState.decodedFullScreen!,
-              windowRects: appState.windowRects ?? const [],
-              screenOrigin: appState.screenOrigin ?? Offset.zero,
-              onCancel: onRegionCancel,
-              windowService: windowService,
-              onRegionSelected: onScrollRegionSelected ?? onRegionSelected,
-              onHitTest: onHitTest,
+          switch (appState.workflow) {
+            case RegionSelectionWorkflow(
+              :final decodedImage,
+              :final windowRects,
+              isScrollSelection: false,
+            ):
+              return RegionSelectionScreen(
+                decodedImage: decodedImage,
+                windowRects: windowRects,
+                onCancel: onRegionCancel,
+                windowService: windowService,
+                onCopy: onRegionCopy,
+                onSave: onRegionSave,
+                onPin: onRegionPin,
+                onHitTest: onHitTest,
+                annotationState: annotationState,
+              );
+            case RegionSelectionWorkflow(
+              :final decodedImage,
+              :final windowRects,
               isScrollSelection: true,
-              useNativeToolbar: useNativeToolbar,
-            );
-          }
-          if (appState.status == CaptureStatus.scrollCapturing) {
-            return ScrollCapturePreview(
-              frameCount: appState.scrollFrameCount,
-              previewImage: appState.scrollPreviewImage,
-              captureRegion: appState.scrollTargetBounds ?? Rect.zero,
-              screenOrigin: appState.screenOrigin ?? Offset.zero,
-              screenSize: appState.screenSize ?? const Size(1920, 1080),
-              onDone: onScrollCaptureDone,
-              onStopButtonRect: onScrollStopButtonRect,
-            );
-          }
-          if (appState.status == CaptureStatus.scrollResult &&
-              appState.capturedImage != null) {
-            return ScrollResultScreen(
-              stitchedImage: appState.capturedImage!,
-              screenSize: appState.screenSize ?? const Size(1920, 1080),
-              screenOrigin: appState.screenOrigin ?? Offset.zero,
-              annotationState: annotationState,
-              onCopy: onCopy,
-              onSave: onSave,
-              onDiscard: onDiscard,
-              windowService: windowService,
-              useNativeToolbar: useNativeToolbar,
-            );
+            ):
+              return RegionSelectionScreen(
+                decodedImage: decodedImage,
+                windowRects: windowRects,
+                onCancel: onRegionCancel,
+                windowService: windowService,
+                onRegionSelected: onScrollRegionSelected ?? onRegionSelected,
+                onHitTest: onHitTest,
+                isScrollSelection: true,
+              );
+            case ScrollCapturingWorkflow(
+              :final frameCount,
+              :final previewImage,
+              :final captureRegion,
+              :final screenOrigin,
+              :final screenSize,
+            ):
+              return ScrollCapturePreview(
+                frameCount: frameCount,
+                previewImage: previewImage,
+                captureRegion: captureRegion,
+                screenOrigin: screenOrigin,
+                screenSize: screenSize,
+                onDone: onScrollCaptureDone,
+                onStopButtonRect: onScrollStopButtonRect,
+              );
+            case ScrollResultWorkflow(:final image):
+              return ScrollResultScreen(
+                stitchedImage: image,
+                annotationState: annotationState,
+                windowService: windowService,
+                onCopy: onCopy,
+                onSave: onSave,
+                onDiscard: onDiscard,
+              );
+            default:
+              break;
           }
           return PreviewScreen(
             appState: appState,
             annotationState: annotationState,
+            windowService: windowService,
             onCopy: onCopy,
             onSave: onSave,
             onPin: onPin,
             onDiscard: onDiscard,
-            windowService: windowService,
-            useNativeToolbar: useNativeToolbar,
           );
         },
       ),
