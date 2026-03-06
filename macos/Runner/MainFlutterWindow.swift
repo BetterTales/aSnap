@@ -20,6 +20,11 @@ class MainFlutterWindow: NSWindow {
   // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
   private var localEscMonitor: Any?
 
+  // Shortcut mapping for patching tray_manager NSMenu items with keyEquivalent.
+  // Keys are menu item titles, values are (keyEquivalent, modifierMask).
+  private var trayShortcuts: [String: (equiv: String, mask: NSEvent.ModifierFlags)] = [:]
+  private var trayMenuObserver: NSObjectProtocol?
+
   // Tiny borderless panel placed over the Flutter "Done" button so it receives
   // mouse clicks even though the main overlay has ignoresMouseEvents = true.
   private var scrollStopPanel: NSPanel?
@@ -450,6 +455,61 @@ class MainFlutterWindow: NSWindow {
         result(nil)
       case "stopRectPolling":
         self.stopRectPolling()
+        result(nil)
+      case "registerTrayShortcuts":
+        // tray_manager builds NSMenu natively, but doesn't expose macOS
+        // keyEquivalent in its Dart API. Patch shortcuts before menu display.
+        guard let items = call.arguments as? [[String: Any]] else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "registerTrayShortcuts requires a list of shortcut dicts",
+              details: nil))
+          return
+        }
+
+        var shortcuts: [String: (equiv: String, mask: NSEvent.ModifierFlags)] = [:]
+        for item in items {
+          guard let label = item["label"] as? String,
+            let equiv = item["keyEquivalent"] as? String
+          else { continue }
+
+          var mask: NSEvent.ModifierFlags = []
+          if let mods = item["modifiers"] as? [String] {
+            for mod in mods {
+              switch mod {
+              case "command":
+                mask.insert(.command)
+              case "shift":
+                mask.insert(.shift)
+              case "option":
+                mask.insert(.option)
+              case "control":
+                mask.insert(.control)
+              default:
+                break
+              }
+            }
+          }
+
+          shortcuts[label] = (equiv, mask)
+        }
+        self.trayShortcuts = shortcuts
+
+        if let old = self.trayMenuObserver {
+          NotificationCenter.default.removeObserver(old)
+          self.trayMenuObserver = nil
+        }
+        self.trayMenuObserver = NotificationCenter.default.addObserver(
+          forName: NSMenu.didBeginTrackingNotification,
+          object: nil,
+          queue: .main
+        ) { [weak self] notification in
+          guard let self = self,
+            let menu = notification.object as? NSMenu
+          else { return }
+          self.patchTrayMenuShortcuts(menu)
+        }
         result(nil)
       case "hitTestElement":
         // Real-time AX hit-test: find the deepest accessible element at
@@ -906,6 +966,10 @@ class MainFlutterWindow: NSWindow {
   }
 
   deinit {
+    if let observer = trayMenuObserver {
+      NotificationCenter.default.removeObserver(observer)
+      trayMenuObserver = nil
+    }
     if let observer = windowDidMoveObserver {
       NotificationCenter.default.removeObserver(observer)
       windowDidMoveObserver = nil
@@ -919,6 +983,19 @@ class MainFlutterWindow: NSWindow {
   // Borderless windows return false by default — override so we receive keyboard events
   override var canBecomeKey: Bool { true }
   override var canBecomeMain: Bool { true }
+
+  private func patchTrayMenuShortcuts(_ menu: NSMenu) {
+    guard !trayShortcuts.isEmpty else { return }
+    for item in menu.items {
+      if let shortcut = trayShortcuts[item.title] {
+        item.keyEquivalent = shortcut.equiv
+        item.keyEquivalentModifierMask = shortcut.mask
+      }
+      if let submenu = item.submenu {
+        patchTrayMenuShortcuts(submenu)
+      }
+    }
+  }
 
   // Allow window to span multiple displays during overlay mode.
   // macOS constrains windows to a single screen by default; bypass that for the overlay.
