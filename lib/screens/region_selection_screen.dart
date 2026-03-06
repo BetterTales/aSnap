@@ -131,7 +131,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
   Rect? _lastToolbarRect;
   bool _lastShowPin = false;
-  bool _lastHasAnnotations = false;
+  bool _lastShowHistoryControls = false;
   bool _lastCanUndo = false;
   bool _lastCanRedo = false;
   String? _lastActiveTool;
@@ -877,8 +877,9 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     var viewCount = 9; // tools
     var widthSum = 9 * buttonWidth;
 
-    final hasAnnotations = widget.annotationState?.hasAnnotations ?? false;
-    if (hasAnnotations) {
+    final showHistoryControls =
+        widget.annotationState?.showHistoryControls ?? false;
+    if (showHistoryControls) {
       viewCount += 3; // separator + undo + redo
       widthSum += separatorWidth + (2 * buttonWidth);
     }
@@ -944,7 +945,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   void _hideNativeToolbar() {
     if (_lastToolbarRect == null &&
         !_lastShowPin &&
-        !_lastHasAnnotations &&
+        !_lastShowHistoryControls &&
         !_lastCanUndo &&
         !_lastCanRedo &&
         _lastActiveTool == null) {
@@ -952,7 +953,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     }
     _lastToolbarRect = null;
     _lastShowPin = false;
-    _lastHasAnnotations = false;
+    _lastShowHistoryControls = false;
     _lastCanUndo = false;
     _lastCanRedo = false;
     _lastActiveTool = null;
@@ -961,14 +962,15 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
   void _syncNativeToolbar(Rect toolbarRect) {
     final showPin = widget.onPin != null;
-    final hasAnnotations = widget.annotationState?.hasAnnotations ?? false;
+    final showHistoryControls =
+        widget.annotationState?.showHistoryControls ?? false;
     final canUndo = widget.annotationState?.canUndo ?? false;
     final canRedo = widget.annotationState?.canRedo ?? false;
     final activeTool = activeShapeType?.name;
 
     if (_lastToolbarRect == toolbarRect &&
         _lastShowPin == showPin &&
-        _lastHasAnnotations == hasAnnotations &&
+        _lastShowHistoryControls == showHistoryControls &&
         _lastCanUndo == canUndo &&
         _lastCanRedo == canRedo &&
         _lastActiveTool == activeTool) {
@@ -977,7 +979,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
     _lastToolbarRect = toolbarRect;
     _lastShowPin = showPin;
-    _lastHasAnnotations = hasAnnotations;
+    _lastShowHistoryControls = showHistoryControls;
     _lastCanUndo = canUndo;
     _lastCanRedo = canRedo;
     _lastActiveTool = activeTool;
@@ -986,7 +988,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       widget.windowService.showToolbarPanel(
         rect: toolbarRect,
         showPin: showPin,
-        hasAnnotations: hasAnnotations,
+        showHistoryControls: showHistoryControls,
         canUndo: canUndo,
         canRedo: canRedo,
         activeTool: activeTool,

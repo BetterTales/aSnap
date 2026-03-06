@@ -52,7 +52,7 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
   ui.Image? _lastImage;
   Rect? _lastToolbarRect;
   bool _lastShowPin = false;
-  bool _lastHasAnnotations = false;
+  bool _lastShowHistoryControls = false;
   bool _lastCanUndo = false;
   bool _lastCanRedo = false;
   String? _lastActiveTool;
@@ -60,7 +60,7 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
   void _resetToolbarSyncCache() {
     _lastToolbarRect = null;
     _lastShowPin = false;
-    _lastHasAnnotations = false;
+    _lastShowHistoryControls = false;
     _lastCanUndo = false;
     _lastCanRedo = false;
     _lastActiveTool = null;
@@ -238,14 +238,14 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
 
   void _syncNativeToolbar(Rect toolbarRect) {
     final showPin = widget.onPin != null;
-    final hasAnnotations = widget.annotationState.hasAnnotations;
+    final showHistoryControls = widget.annotationState.showHistoryControls;
     final canUndo = widget.annotationState.canUndo;
     final canRedo = widget.annotationState.canRedo;
     final activeTool = activeShapeType?.name;
 
     if (_lastToolbarRect == toolbarRect &&
         _lastShowPin == showPin &&
-        _lastHasAnnotations == hasAnnotations &&
+        _lastShowHistoryControls == showHistoryControls &&
         _lastCanUndo == canUndo &&
         _lastCanRedo == canRedo &&
         _lastActiveTool == activeTool) {
@@ -254,7 +254,7 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
 
     _lastToolbarRect = toolbarRect;
     _lastShowPin = showPin;
-    _lastHasAnnotations = hasAnnotations;
+    _lastShowHistoryControls = showHistoryControls;
     _lastCanUndo = canUndo;
     _lastCanRedo = canRedo;
     _lastActiveTool = activeTool;
@@ -263,7 +263,7 @@ class _PreviewScreenState extends State<PreviewScreen> with ToolPopoverMixin {
       widget.windowService.showToolbarPanel(
         rect: toolbarRect,
         showPin: showPin,
-        hasAnnotations: hasAnnotations,
+        showHistoryControls: showHistoryControls,
         canUndo: canUndo,
         canRedo: canRedo,
         activeTool: activeTool,

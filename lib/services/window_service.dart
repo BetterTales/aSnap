@@ -44,6 +44,7 @@ class WindowService {
   static const _minPreviewSize = Size(80, 60);
   static const _channel = MethodChannel('com.asnap/window');
   int _toolbarRequestId = 0;
+  final int _toolbarSessionId = DateTime.now().microsecondsSinceEpoch;
 
   /// Called when the native side detects a Space switch during overlay mode.
   VoidCallback? onOverlayCancelled;
@@ -113,6 +114,14 @@ class WindowService {
         }
       }
     });
+
+    if (Platform.isMacOS) {
+      try {
+        await _channel.invokeMethod('resetToolbarPanelState');
+      } on MissingPluginException {
+        // Older/native-mismatched builds may not expose this method.
+      }
+    }
   }
 
   Future<void> hideOnReady() async {
@@ -558,7 +567,7 @@ class WindowService {
   Future<void> showToolbarPanel({
     required Rect rect,
     required bool showPin,
-    required bool hasAnnotations,
+    required bool showHistoryControls,
     required bool canUndo,
     required bool canRedo,
     String? activeTool,
@@ -573,12 +582,13 @@ class WindowService {
         'width': rect.width,
         'height': rect.height,
         'showPin': showPin,
-        'hasAnnotations': hasAnnotations,
+        'showHistoryControls': showHistoryControls,
         'canUndo': canUndo,
         'canRedo': canRedo,
         'activeTool': activeTool,
         'anchorToWindow': anchorToWindow,
         'requestId': requestId,
+        'sessionId': _toolbarSessionId,
       });
     } on MissingPluginException {
       // Non-macOS runners may not provide this channel implementation.
@@ -591,7 +601,10 @@ class WindowService {
     if (!Platform.isMacOS) return;
     final requestId = ++_toolbarRequestId;
     try {
-      await _channel.invokeMethod('hideToolbarPanel', {'requestId': requestId});
+      await _channel.invokeMethod('hideToolbarPanel', {
+        'requestId': requestId,
+        'sessionId': _toolbarSessionId,
+      });
     } on MissingPluginException {
       // Non-macOS runners may not provide this channel implementation.
       return;

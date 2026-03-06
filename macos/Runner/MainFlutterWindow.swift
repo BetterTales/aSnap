@@ -35,6 +35,7 @@ class MainFlutterWindow: NSWindow {
   private var pendingToolbarArgs: [String: Any]?
   private var lastToolbarArgs: [String: Any]?
   private var latestToolbarRequestId = 0
+  private var latestToolbarSessionId: Int64?
   private var toolbarMoveRefreshWorkItem: DispatchWorkItem?
   private var windowDidMoveObserver: NSObjectProtocol?
   private var windowDidResizeObserver: NSObjectProtocol?
@@ -349,6 +350,10 @@ class MainFlutterWindow: NSWindow {
         self.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
         self.installOverlayMonitors()
+        // Trigger any deferred toolbar update now that the overlay is visible.
+        if let args = self.pendingToolbarArgs {
+          self.showOrUpdateToolbarPanel(args)
+        }
         MainFlutterWindow.log("revealOverlay: alpha=1")
         result(nil)
       case "resizeToRect":
@@ -818,10 +823,16 @@ class MainFlutterWindow: NSWindow {
         result(nil)
       case "hideToolbarPanel":
         let args = call.arguments as? [String: Any]
+        if let args {
+          self.adoptToolbarSessionIfNeeded(args)
+        }
         let requestId =
           (args?["requestId"] as? NSNumber)?.intValue ?? (args?["requestId"] as? Int)
           ?? self.latestToolbarRequestId
         self.hideToolbarPanel(minRequestId: requestId)
+        result(nil)
+      case "resetToolbarPanelState":
+        self.resetToolbarPanelState()
         result(nil)
       case "revealPreviewWindow":
         self.alphaValue = 1.0
@@ -1417,7 +1428,11 @@ class MainFlutterWindow: NSWindow {
     return NSRect(x: macX, y: macY, width: width, height: height)
   }
 
-  private func toolbarPanelSize(showPin: Bool, hasAnnotations: Bool, fallbackHeight: CGFloat)
+  private func toolbarPanelSize(
+    showPin: Bool,
+    showHistoryControls: Bool,
+    fallbackHeight: CGFloat
+  )
     -> NSSize
   {
     let buttonWidth: CGFloat = 22
@@ -1429,7 +1444,7 @@ class MainFlutterWindow: NSWindow {
     var viewCount = 9
     var widthSum = CGFloat(9) * buttonWidth
 
-    if hasAnnotations {
+    if showHistoryControls {
       // undo + redo + separator before them
       viewCount += 3
       widthSum += (2 * buttonWidth) + separatorWidth
@@ -1473,9 +1488,13 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func showOrUpdateToolbarPanel(_ args: [String: Any]) {
+    self.adoptToolbarSessionIfNeeded(args)
+
     let requestId =
       (args["requestId"] as? NSNumber)?.intValue ?? (args["requestId"] as? Int) ?? 0
     if requestId < self.latestToolbarRequestId {
+      MainFlutterWindow.log(
+        "drop stale toolbar update: requestId=\(requestId) latest=\(self.latestToolbarRequestId)")
       return
     }
     self.latestToolbarRequestId = requestId
@@ -1484,6 +1503,9 @@ class MainFlutterWindow: NSWindow {
     // emit toolbar updates while hidden or fully transparent. Rendering the
     // toolbar in those intermediate states causes visible jumps/flashes.
     guard self.isVisible, self.alphaValue > 0.99 else {
+      MainFlutterWindow.log(
+        "defer toolbar update: requestId=\(requestId) isVisible=\(self.isVisible) alpha=\(self.alphaValue)"
+      )
       self.pendingToolbarArgs = args
       // Internal transition hide: keep last args for stale-update filtering.
       self.hideToolbarPanel(clearPending: false, clearLastArgs: false)
@@ -1496,7 +1518,7 @@ class MainFlutterWindow: NSWindow {
       let width = args["width"] as? Double,
       let height = args["height"] as? Double,
       let showPin = args["showPin"] as? Bool,
-      let hasAnnotations = args["hasAnnotations"] as? Bool,
+      let showHistoryControls = args["showHistoryControls"] as? Bool,
       let canUndo = args["canUndo"] as? Bool,
       let canRedo = args["canRedo"] as? Bool
     else {
@@ -1523,7 +1545,7 @@ class MainFlutterWindow: NSWindow {
 
     let targetSize = toolbarPanelSize(
       showPin: showPin,
-      hasAnnotations: hasAnnotations,
+      showHistoryControls: showHistoryControls,
       fallbackHeight: CGFloat(height)
     )
 
@@ -1595,7 +1617,7 @@ class MainFlutterWindow: NSWindow {
       width: Double(targetSize.width),
       height: Double(targetSize.height),
       showPin: showPin,
-      hasAnnotations: hasAnnotations,
+      showHistoryControls: showHistoryControls,
       canUndo: canUndo,
       canRedo: canRedo,
       activeTool: activeTool
@@ -1662,7 +1684,7 @@ class MainFlutterWindow: NSWindow {
     width: Double,
     height: Double,
     showPin: Bool,
-    hasAnnotations: Bool,
+    showHistoryControls: Bool,
     canUndo: Bool,
     canRedo: Bool,
     activeTool: String?
@@ -1724,7 +1746,7 @@ class MainFlutterWindow: NSWindow {
       )
     }
 
-    if hasAnnotations {
+    if showHistoryControls {
       stack.addArrangedSubview(makeToolbarSeparator())
       addButton(id: "undo", symbol: "arrow.uturn.backward", tip: "Undo", enabled: canUndo)
       addButton(id: "redo", symbol: "arrow.uturn.forward", tip: "Redo", enabled: canRedo)
@@ -1765,6 +1787,29 @@ class MainFlutterWindow: NSWindow {
       parent.removeChildWindow(panel)
     }
     panel.orderOut(nil)
+  }
+
+  private func resetToolbarPanelState() {
+    self.latestToolbarSessionId = nil
+    self.latestToolbarRequestId = 0
+    self.toolbarMoveRefreshWorkItem?.cancel()
+    self.toolbarMoveRefreshWorkItem = nil
+    self.hideToolbarPanel(clearPending: true, clearLastArgs: true)
+    MainFlutterWindow.log("resetToolbarPanelState")
+  }
+
+  private func adoptToolbarSessionIfNeeded(_ args: [String: Any]) {
+    guard let sessionValue = args["sessionId"] as? NSNumber else { return }
+    let sessionId = sessionValue.int64Value
+    if self.latestToolbarSessionId == sessionId { return }
+
+    self.latestToolbarSessionId = sessionId
+    self.latestToolbarRequestId = 0
+    self.pendingToolbarArgs = nil
+    self.lastToolbarArgs = nil
+    self.toolbarMoveRefreshWorkItem?.cancel()
+    self.toolbarMoveRefreshWorkItem = nil
+    MainFlutterWindow.log("toolbar session switched: \(sessionId)")
   }
 
   // MARK: - Overlay helpers

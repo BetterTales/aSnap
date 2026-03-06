@@ -47,14 +47,14 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   final _popoverAnchorLink = LayerLink();
   Rect? _lastToolbarRect;
-  bool _lastHasAnnotations = false;
+  bool _lastShowHistoryControls = false;
   bool _lastCanUndo = false;
   bool _lastCanRedo = false;
   String? _lastActiveTool;
 
   void _resetToolbarSyncCache() {
     _lastToolbarRect = null;
-    _lastHasAnnotations = false;
+    _lastShowHistoryControls = false;
     _lastCanUndo = false;
     _lastCanRedo = false;
     _lastActiveTool = null;
@@ -196,13 +196,13 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   }
 
   void _syncNativeToolbar(Rect toolbarRect) {
-    final hasAnnotations = widget.annotationState.hasAnnotations;
+    final showHistoryControls = widget.annotationState.showHistoryControls;
     final canUndo = widget.annotationState.canUndo;
     final canRedo = widget.annotationState.canRedo;
     final activeTool = activeShapeType?.name;
 
     if (_lastToolbarRect == toolbarRect &&
-        _lastHasAnnotations == hasAnnotations &&
+        _lastShowHistoryControls == showHistoryControls &&
         _lastCanUndo == canUndo &&
         _lastCanRedo == canRedo &&
         _lastActiveTool == activeTool) {
@@ -210,7 +210,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     }
 
     _lastToolbarRect = toolbarRect;
-    _lastHasAnnotations = hasAnnotations;
+    _lastShowHistoryControls = showHistoryControls;
     _lastCanUndo = canUndo;
     _lastCanRedo = canRedo;
     _lastActiveTool = activeTool;
@@ -219,7 +219,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       widget.windowService.showToolbarPanel(
         rect: toolbarRect,
         showPin: false,
-        hasAnnotations: hasAnnotations,
+        showHistoryControls: showHistoryControls,
         canUndo: canUndo,
         canRedo: canRedo,
         activeTool: activeTool,
@@ -292,10 +292,6 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       screenSize,
       toolbarSize: toolbarSize,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _syncNativeToolbar(toolbarRect);
-    });
 
     final image = widget.stitchedImage;
     final imagePixelSize = Size(
@@ -312,6 +308,11 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
       child: ListenableBuilder(
         listenable: widget.annotationState,
         builder: (context, _) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _syncNativeToolbar(toolbarRect);
+          });
+
           return Stack(
             children: [
               // Scrim background (full screen).
