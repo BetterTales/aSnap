@@ -1789,11 +1789,17 @@ class MainFlutterWindow: NSWindow {
     panel.orderOut(nil)
   }
 
-  private func resetToolbarPanelState() {
-    self.latestToolbarSessionId = nil
+  private func resetToolbarTrackingState(sessionId: Int64?) {
+    self.latestToolbarSessionId = sessionId
     self.latestToolbarRequestId = 0
+    self.pendingToolbarArgs = nil
+    self.lastToolbarArgs = nil
     self.toolbarMoveRefreshWorkItem?.cancel()
     self.toolbarMoveRefreshWorkItem = nil
+  }
+
+  private func resetToolbarPanelState() {
+    self.resetToolbarTrackingState(sessionId: nil)
     self.hideToolbarPanel(clearPending: true, clearLastArgs: true)
     MainFlutterWindow.log("resetToolbarPanelState")
   }
@@ -1803,12 +1809,8 @@ class MainFlutterWindow: NSWindow {
     let sessionId = sessionValue.int64Value
     if self.latestToolbarSessionId == sessionId { return }
 
-    self.latestToolbarSessionId = sessionId
-    self.latestToolbarRequestId = 0
-    self.pendingToolbarArgs = nil
-    self.lastToolbarArgs = nil
-    self.toolbarMoveRefreshWorkItem?.cancel()
-    self.toolbarMoveRefreshWorkItem = nil
+    self.resetToolbarTrackingState(sessionId: sessionId)
+    self.hideToolbarPanel(clearPending: true, clearLastArgs: true)
     MainFlutterWindow.log("toolbar session switched: \(sessionId)")
   }
 
