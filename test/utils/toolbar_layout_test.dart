@@ -99,6 +99,17 @@ void main() {
     });
   });
 
+  group('computeFloatingToolbarRect', () {
+    test('clamps toolbar to viewport bottom near the screen edge', () {
+      final rect = computeFloatingToolbarRect(
+        anchorRect: const Rect.fromLTWH(400, 1040, 300, 40),
+        screenSize: const Size(1200, 1080),
+      );
+
+      expect(rect.bottom, 1080 - 8);
+    });
+  });
+
   group('computeToolbarRectBelowWindow', () {
     test('places toolbar below window with gap', () {
       final rect = computeToolbarRectBelowWindow(

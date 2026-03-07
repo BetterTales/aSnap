@@ -109,10 +109,12 @@ Rect computeFloatingToolbarRect({
 Rect computeToolbarRectBelowWindow({
   required Rect windowRect,
   required Rect screenRect,
+  Size toolbarSize = kToolbarSize,
+  EdgeInsets viewportPadding = EdgeInsets.zero,
 }) {
-  var x = windowRect.center.dx - kToolbarSize.width / 2;
-  final minX = screenRect.left;
-  final maxX = screenRect.right - kToolbarSize.width;
+  var x = windowRect.center.dx - toolbarSize.width / 2;
+  final minX = screenRect.left + viewportPadding.left;
+  final maxX = screenRect.right - viewportPadding.right - toolbarSize.width;
   if (maxX <= minX) {
     x = minX;
   } else {
@@ -120,8 +122,11 @@ Rect computeToolbarRectBelowWindow({
   }
 
   final minY = windowRect.bottom + kToolbarGap;
-  final maxY = screenRect.bottom - kToolbarSize.height;
-  final y = (minY <= maxY ? minY : maxY).clamp(screenRect.top, maxY);
+  final viewportTop = screenRect.top + viewportPadding.top;
+  final maxY = screenRect.bottom - viewportPadding.bottom - toolbarSize.height;
+  final y = maxY <= viewportTop
+      ? viewportTop
+      : (minY <= maxY ? minY : maxY).clamp(viewportTop, maxY);
 
-  return Rect.fromLTWH(x, y, kToolbarSize.width, kToolbarSize.height);
+  return Rect.fromLTWH(x, y, toolbarSize.width, toolbarSize.height);
 }

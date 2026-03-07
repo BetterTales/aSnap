@@ -65,6 +65,8 @@ class WindowService {
   static const _channel = MethodChannel('com.asnap/window');
   int _toolbarRequestId = 0;
   final int _toolbarSessionId = DateTime.now().microsecondsSinceEpoch;
+  Rect? _currentPreviewWindowRect;
+  Rect? _currentPreviewScreenRect;
 
   /// Called when the native side detects a Space switch during overlay mode.
   VoidCallback? onOverlayCancelled;
@@ -94,6 +96,9 @@ class WindowService {
   /// True when a region selection is active (post-selection) in the overlay.
   /// Used to decide how to handle multi-display cursor moves.
   bool overlaySelectionActive = false;
+
+  Rect? get currentPreviewWindowRect => _currentPreviewWindowRect;
+  Rect? get currentPreviewScreenRect => _currentPreviewScreenRect;
 
   Future<void> ensureInitialized() async {
     await windowManager.ensureInitialized();
@@ -223,6 +228,18 @@ class WindowService {
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
     final y = screenOrigin.dy + (screenSize.height - previewSize.height) / 2;
     await windowManager.setPosition(Offset(x, y));
+    _currentPreviewWindowRect = Rect.fromLTWH(
+      x,
+      y,
+      previewSize.width,
+      previewSize.height,
+    );
+    _currentPreviewScreenRect = Rect.fromLTWH(
+      screenOrigin.dx,
+      screenOrigin.dy,
+      screenSize.width,
+      screenSize.height,
+    );
 
     // Restore opacity right before show — cleanupOverlayState leaves alpha=0
     // to prevent flash during styleMask restoration.
@@ -318,6 +335,8 @@ class WindowService {
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(true);
     await windowManager.setPosition(Offset(rect.left, rect.top));
+    _currentPreviewWindowRect = rect;
+    _currentPreviewScreenRect = await _screenRectForPoint(rect.center);
 
     await windowManager.setOpacity(opacity);
     await windowManager.show();
@@ -338,13 +357,29 @@ class WindowService {
   /// Shrink the overlay window in-place to the selection rect for preview.
   /// Stays borderless (no corner radius) and floating above other windows.
   /// Keeps the selected region size (toolbar is shown in a separate panel).
-  Future<void> showPreviewInPlace({required Rect selectionRect}) async {
+  Future<void> showPreviewInPlace({
+    required Rect selectionRect,
+    required Size screenSize,
+    required Offset screenOrigin,
+  }) async {
     await _channel.invokeMethod('resizeToRect', {
       'x': selectionRect.left,
       'y': selectionRect.top,
       'width': selectionRect.width,
       'height': selectionRect.height,
     });
+    _currentPreviewWindowRect = Rect.fromLTWH(
+      selectionRect.left + screenOrigin.dx,
+      selectionRect.top + screenOrigin.dy,
+      selectionRect.width,
+      selectionRect.height,
+    );
+    _currentPreviewScreenRect = Rect.fromLTWH(
+      screenOrigin.dx,
+      screenOrigin.dy,
+      screenSize.width,
+      screenSize.height,
+    );
   }
 
   /// Capture the screen.
@@ -563,6 +598,18 @@ class WindowService {
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
     final y = screenOrigin.dy + (screenSize.height - previewSize.height) / 2;
     await windowManager.setPosition(Offset(x, y));
+    _currentPreviewWindowRect = Rect.fromLTWH(
+      x,
+      y,
+      previewSize.width,
+      previewSize.height,
+    );
+    _currentPreviewScreenRect = Rect.fromLTWH(
+      screenOrigin.dx,
+      screenOrigin.dy,
+      screenSize.width,
+      screenSize.height,
+    );
 
     // Restore opacity right before show — cleanupOverlayState leaves alpha=0
     // to prevent flash during styleMask restoration.
@@ -580,6 +627,8 @@ class WindowService {
     // Restoring styleMask on a "hidden" window can still flash because macOS
     // may briefly redisplay the window when styleMask changes.
     await windowManager.hide();
+    _currentPreviewWindowRect = null;
+    _currentPreviewScreenRect = null;
     unawaited(hideToolbarPanel());
     // Window is already invisible — no need to block on this.
     unawaited(windowManager.setAlwaysOnTop(false));
@@ -587,6 +636,8 @@ class WindowService {
 
   Future<void> showSettingsWindow() async {
     await windowManager.hide();
+    _currentPreviewWindowRect = null;
+    _currentPreviewScreenRect = null;
     await _channel.invokeMethod('cleanupOverlayMode');
 
     const windowSize = Size(900, 620);
@@ -786,5 +837,19 @@ class WindowService {
     // Accessory apps can be visible but not active; activate explicitly so
     // keyboard events (Esc, shortcuts) route to our window immediately.
     await _channel.invokeMethod('activateApp');
+  }
+
+  Future<Rect?> _screenRectForPoint(Offset point) async {
+    final result = await _channel.invokeMethod<Map>('getScreenInfoForPoint', {
+      'x': point.dx,
+      'y': point.dy,
+    });
+    if (result == null) return null;
+    return Rect.fromLTWH(
+      (result['screenOriginX'] as num).toDouble(),
+      (result['screenOriginY'] as num).toDouble(),
+      (result['screenWidth'] as num).toDouble(),
+      (result['screenHeight'] as num).toDouble(),
+    );
   }
 }

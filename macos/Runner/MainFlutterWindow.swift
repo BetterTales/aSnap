@@ -615,6 +615,27 @@ class MainFlutterWindow: NSWindow {
           "screenOriginX": cgOriginX,
           "screenOriginY": cgOriginY,
         ])
+      case "getScreenInfoForPoint":
+        guard let args = call.arguments as? [String: Any] else {
+          result(nil)
+          return
+        }
+        let x = (args["x"] as? NSNumber)?.doubleValue ?? (args["x"] as? Double)
+        let y = (args["y"] as? NSNumber)?.doubleValue ?? (args["y"] as? Double)
+        guard let x, let y else {
+          result(nil)
+          return
+        }
+        guard let (screen, bounds) = self.screenAndBounds(forCGPoint: CGPoint(x: x, y: y)) else {
+          result(nil)
+          return
+        }
+        result([
+          "screenWidth": Double(screen.frame.width),
+          "screenHeight": Double(screen.frame.height),
+          "screenOriginX": Double(bounds.origin.x),
+          "screenOriginY": Double(bounds.origin.y),
+        ])
       case "enterOverlayMode":
         // Configure + position overlay at alpha=0.  Dart calls revealOverlay
         // after Flutter renders (which also installs monitors).
