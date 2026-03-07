@@ -38,6 +38,26 @@ class ScreenCapture {
   });
 }
 
+class LaunchAtLoginState {
+  const LaunchAtLoginState({
+    required this.supported,
+    required this.enabled,
+    required this.requiresApproval,
+  });
+
+  factory LaunchAtLoginState.fromMap(Map<dynamic, dynamic> map) {
+    return LaunchAtLoginState(
+      supported: map['supported'] as bool? ?? false,
+      enabled: map['enabled'] as bool? ?? false,
+      requiresApproval: map['requiresApproval'] as bool? ?? false,
+    );
+  }
+
+  final bool supported;
+  final bool enabled;
+  final bool requiresApproval;
+}
+
 class WindowService {
   /// Minimum preview window size for normal (non-scroll) captures.
   /// Scroll captures use a fullscreen overlay instead of this window.
@@ -565,6 +585,31 @@ class WindowService {
     unawaited(windowManager.setAlwaysOnTop(false));
   }
 
+  Future<void> showSettingsWindow() async {
+    await windowManager.hide();
+    await _channel.invokeMethod('cleanupOverlayMode');
+
+    const windowSize = Size(900, 620);
+    await windowManager.setMinimumSize(const Size(0, 0));
+    await windowManager.setMaximumSize(
+      const Size(double.infinity, double.infinity),
+    );
+    await windowManager.setTitleBarStyle(
+      TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    );
+    await windowManager.setSize(windowSize);
+    await windowManager.setMinimumSize(windowSize);
+    await windowManager.setMaximumSize(windowSize);
+    await windowManager.setAlwaysOnTop(false);
+    await windowManager.setSkipTaskbar(true);
+    await windowManager.setHasShadow(true);
+    await windowManager.center();
+    await windowManager.setOpacity(1.0);
+    await windowManager.show();
+    await _focusAndActivateWindow();
+  }
+
   /// Show/update the native floating toolbar panel.
   ///
   /// [rect] is in the current Flutter window's local coordinates.
@@ -612,6 +657,65 @@ class WindowService {
     } on MissingPluginException {
       // Non-macOS runners may not provide this channel implementation.
       return;
+    }
+  }
+
+  Future<LaunchAtLoginState> getLaunchAtLoginState() async {
+    if (!Platform.isMacOS) {
+      return const LaunchAtLoginState(
+        supported: false,
+        enabled: false,
+        requiresApproval: false,
+      );
+    }
+
+    try {
+      final result = await _channel.invokeMethod<Map>('getLaunchAtLoginState');
+      if (result == null) {
+        return const LaunchAtLoginState(
+          supported: false,
+          enabled: false,
+          requiresApproval: false,
+        );
+      }
+      return LaunchAtLoginState.fromMap(result);
+    } on MissingPluginException {
+      return const LaunchAtLoginState(
+        supported: false,
+        enabled: false,
+        requiresApproval: false,
+      );
+    }
+  }
+
+  Future<LaunchAtLoginState> setLaunchAtLoginEnabled(bool enabled) async {
+    if (!Platform.isMacOS) {
+      return const LaunchAtLoginState(
+        supported: false,
+        enabled: false,
+        requiresApproval: false,
+      );
+    }
+
+    try {
+      final result = await _channel.invokeMethod<Map>(
+        'setLaunchAtLoginEnabled',
+        {'enabled': enabled},
+      );
+      if (result == null) {
+        return const LaunchAtLoginState(
+          supported: false,
+          enabled: false,
+          requiresApproval: false,
+        );
+      }
+      return LaunchAtLoginState.fromMap(result);
+    } on MissingPluginException {
+      return const LaunchAtLoginState(
+        supported: false,
+        enabled: false,
+        requiresApproval: false,
+      );
     }
   }
 

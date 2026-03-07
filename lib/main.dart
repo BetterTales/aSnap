@@ -13,10 +13,12 @@ import 'services/clipboard_service.dart';
 import 'services/file_service.dart';
 import 'services/hotkey_service.dart';
 import 'services/scroll_capture_service.dart';
+import 'services/settings_service.dart';
 import 'services/tray_service.dart';
 import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
+import 'state/settings_state.dart';
 import 'utils/annotation_compositor.dart';
 
 bool _displayChangeInProgress = false;
@@ -94,6 +96,8 @@ late final FileService _fileService;
 late final HotkeyService _hotkeyService;
 late final TrayService _trayService;
 late final ScrollCaptureService _scrollCaptureService;
+late final SettingsService _settingsService;
+late final SettingsState _settingsState;
 late final WindowService _windowService;
 
 void main() async {
@@ -106,15 +110,26 @@ void main() async {
   _fileService = FileService();
   _hotkeyService = HotkeyService();
   _scrollCaptureService = ScrollCaptureService();
+  _settingsService = SettingsService();
   _trayService = TrayService();
   _windowService = WindowService();
 
   await _windowService.ensureInitialized();
 
+  final initialShortcuts = await _settingsService.loadShortcutBindings();
+  _settingsState = SettingsState(
+    initialShortcuts: initialShortcuts,
+    settingsService: _settingsService,
+    windowService: _windowService,
+    hotkeyService: _hotkeyService,
+    trayService: _trayService,
+  );
+
   runApp(
     ASnapApp(
       appState: _appState,
       annotationState: _annotationState,
+      settingsState: _settingsState,
       windowService: _windowService,
       onCopy: _handleCopy,
       onSave: _handleSave,
@@ -129,6 +144,9 @@ void main() async {
       onHitTest: _handleHitTest,
       onScrollCaptureDone: _handleScrollCaptureDone,
       onScrollStopButtonRect: _handleScrollStopButtonRect,
+      onCloseSettings: _handleCloseSettings,
+      onSuspendHotkeys: _handleSuspendHotkeys,
+      onResumeHotkeys: _handleResumeHotkeys,
     ),
   );
 
@@ -175,14 +193,16 @@ Future<void> _initAfterRunApp() async {
   _windowService.onEditPinnedImage = _handleEditPinnedImage;
   _windowService.onPinnedImageClosed = _handlePinnedImageClosed;
 
-  await _trayService.init();
+  await _trayService.init(shortcuts: _settingsState.shortcuts);
   _trayService.onCaptureFullScreen = _handleFullScreenCapture;
   _trayService.onCaptureRegion = _handleRegionCapture;
   _trayService.onCaptureScroll = _handleScrollCapture;
   _trayService.onPin = _handlePin;
+  _trayService.onOpenSettings = _handleOpenSettings;
   _trayService.onQuit = _handleQuit;
 
-  await _hotkeyService.register(
+  await _hotkeyService.initialize(
+    bindings: _settingsState.shortcuts,
     onFullScreen: _handleFullScreenCapture,
     onRegion: _handleRegionCapture,
     onScrollCapture: _handleScrollCapture,
@@ -230,9 +250,76 @@ void _handleEscPressed() {
         }),
       );
       return;
+    case SettingsWorkflow():
+      if (_escActionInProgress) return;
+      _escActionInProgress = true;
+      unawaited(
+        _handleCloseSettings().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+      return;
     case IdleWorkflow():
       return;
   }
+}
+
+Future<void> _handleOpenSettings() async {
+  if (_appState.workflow is PreparingCaptureWorkflow) {
+    return;
+  }
+
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
+  await _windowService.hideScrollStopButton();
+
+  switch (_appState.workflow) {
+    case RegionSelectionWorkflow():
+      await _handleRegionCancel();
+      break;
+    case ScrollCapturingWorkflow():
+      await _handleScrollCancel();
+      break;
+    case PreviewWorkflow():
+    case ScrollResultWorkflow():
+      await _handleDiscard();
+      break;
+    case SettingsWorkflow():
+      await _windowService.showSettingsWindow();
+      _appState.nudge();
+      unawaited(_settingsState.refreshLaunchAtLogin());
+      return;
+    case IdleWorkflow():
+      break;
+    case PreparingCaptureWorkflow():
+      return;
+  }
+
+  _annotationState.clear();
+  _clearDisplayCaches();
+  await _windowService.hideToolbarPanel();
+  _appState.setSettings();
+  await _windowService.showSettingsWindow();
+  _appState.nudge();
+  unawaited(_settingsState.refreshLaunchAtLogin());
+}
+
+Future<void> _handleCloseSettings() async {
+  _escActionInProgress = false;
+  await _windowService.stopEscMonitor();
+  await _windowService.hideToolbarPanel();
+  _appState.clear();
+  _annotationState.clear();
+  _clearDisplayCaches();
+  await _windowService.hidePreview();
+}
+
+Future<void> _handleSuspendHotkeys() async {
+  await _hotkeyService.suspend();
+}
+
+Future<void> _handleResumeHotkeys() async {
+  await _hotkeyService.resume();
 }
 
 /// Decode raw BGRA pixel bytes into a ui.Image via GPU upload.
