@@ -513,7 +513,7 @@ if [[ "$NO_UPLOAD" == "false" ]]; then
         if git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
             log_info "Remote git tag already exists: $TAG_NAME"
         else
-            git push origin "$TAG_NAME" >&2
+            git push origin "refs/tags/$TAG_NAME:refs/tags/$TAG_NAME" >&2
             log_success "Pushed git tag: $TAG_NAME"
         fi
     fi
