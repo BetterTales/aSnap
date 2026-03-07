@@ -850,15 +850,13 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         _phase == _SelectionPhase.moving;
   }
 
-  Rect? _toolbarRect() {
+  Rect? _toolbarRect(Size screenSize) {
     final sel = _selectionRect;
     if (sel == null) return null;
-    final size = _nativeToolbarSize();
-    return Rect.fromLTWH(
-      sel.center.dx - size.width / 2,
-      sel.bottom + kToolbarGap,
-      size.width,
-      size.height,
+    return computeFloatingToolbarRect(
+      anchorRect: sel,
+      screenSize: screenSize,
+      toolbarSize: _nativeToolbarSize(),
     );
   }
 
@@ -933,7 +931,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     }
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    final toolbarRect = _toolbarRect();
+    final toolbarRect = _toolbarRect(screenSize);
     final showToolbar = _shouldShowToolbar && toolbarRect != null;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {

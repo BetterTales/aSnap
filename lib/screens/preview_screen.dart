@@ -109,6 +109,29 @@ class _PreviewScreenState extends State<PreviewScreen>
     }
   }
 
+  Rect _toolbarRect(Size viewportSize, Size toolbarSize) {
+    final windowRect = widget.windowService.currentPreviewWindowRect;
+    final screenRect = widget.windowService.currentPreviewScreenRect;
+    if (windowRect != null && screenRect != null) {
+      final localScreenRect = screenRect.shift(
+        Offset(-windowRect.left, -windowRect.top),
+      );
+      return computeToolbarRectBelowWindow(
+        windowRect: Offset.zero & viewportSize,
+        screenRect: localScreenRect,
+        toolbarSize: toolbarSize,
+        viewportPadding: const EdgeInsets.all(8),
+      );
+    }
+
+    return Rect.fromLTWH(
+      (viewportSize.width - toolbarSize.width) / 2,
+      viewportSize.height + kToolbarGap,
+      toolbarSize.width,
+      toolbarSize.height,
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Keyboard (HardwareKeyboard — focus-independent)
   // ---------------------------------------------------------------------------
@@ -255,18 +278,11 @@ class _PreviewScreenState extends State<PreviewScreen>
                 fitted.destination,
                 Offset.zero & imageViewport,
               );
-              // Native toolbar panel should float BELOW the preview window,
-              // so don't clamp to the Flutter window bounds.
-              final toolbarRect = Rect.fromLTWH(
-                imageDisplayRect.center.dx - toolbarSize.width / 2,
-                imageDisplayRect.bottom + kToolbarGap,
-                toolbarSize.width,
-                toolbarSize.height,
-              );
-              final popoverAnchorX = imageDisplayRect.center.dx
+              final toolbarRect = _toolbarRect(imageViewport, toolbarSize);
+              final popoverAnchorX = toolbarRect.center.dx
                   .clamp(0.0, constraints.maxWidth)
                   .toDouble();
-              final popoverAnchorY = (imageDisplayRect.bottom - 1)
+              final popoverAnchorY = toolbarRect.top
                   .clamp(0.0, constraints.maxHeight)
                   .toDouble();
               WidgetsBinding.instance.addPostFrameCallback((_) {

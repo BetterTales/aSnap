@@ -720,7 +720,11 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
       );
     } else {
       _appState.setCapturedImage(cropped);
-      await _windowService.showPreviewInPlace(selectionRect: logicalRect);
+      await _windowService.showPreviewInPlace(
+        selectionRect: logicalRect,
+        screenSize: screenSize,
+        screenOrigin: screenOrigin,
+      );
       // Window is resized/focused after setCapturedImage(); force another
       // rebuild so focus sync runs with the visible window.
       _appState.nudge();
