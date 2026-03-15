@@ -1598,12 +1598,16 @@ class MainFlutterWindow: NSWindow {
   ) -> [[String: Double]] {
     let ownPID = ProcessInfo.processInfo.processIdentifier
     let axTrusted: Bool
-    if promptForAccess {
-      axTrusted = AXIsProcessTrustedWithOptions(
-        [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
-      )
+    if includeAxChildren {
+      if promptForAccess {
+        axTrusted = AXIsProcessTrustedWithOptions(
+          [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        )
+      } else {
+        axTrusted = AXIsProcessTrusted()
+      }
     } else {
-      axTrusted = AXIsProcessTrusted()
+      axTrusted = false
     }
 
     guard
