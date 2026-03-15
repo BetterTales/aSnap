@@ -1251,6 +1251,15 @@ class MainFlutterWindow: NSWindow {
           self.showOrUpdateToolbarPanel(args)
         }
         result(nil)
+      case "openUrl":
+        guard let args = call.arguments as? [String: Any],
+          let urlString = args["url"] as? String,
+          let url = URL(string: urlString)
+        else {
+          result(false)
+          return
+        }
+        result(NSWorkspace.shared.open(url))
       case "recognizeText":
         guard let args = call.arguments as? [String: Any],
           let typedData = args["pngBytes"] as? FlutterStandardTypedData

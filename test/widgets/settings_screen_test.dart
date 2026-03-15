@@ -18,6 +18,7 @@ class _FakeSettingsService extends SettingsService {
 
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
+  bool? savedOcrOpenUrlPromptEnabled;
 
   @override
   Future<void> saveShortcutBindings(ShortcutBindings bindings) async {
@@ -27,6 +28,11 @@ class _FakeSettingsService extends SettingsService {
   @override
   Future<void> saveOcrPreviewEnabled(bool enabled) async {
     savedOcrPreviewEnabled = enabled;
+  }
+
+  @override
+  Future<void> saveOcrOpenUrlPromptEnabled(bool enabled) async {
+    savedOcrOpenUrlPromptEnabled = enabled;
   }
 }
 
@@ -89,6 +95,7 @@ Future<_SettingsHarness> _pumpSettingsScreen(
   final state = SettingsState(
     initialShortcuts: initialShortcuts ?? ShortcutBindings.defaults(),
     initialOcrPreviewEnabled: false,
+    initialOcrOpenUrlPromptEnabled: true,
     settingsService: settingsService,
     windowService: _FakeWindowService(),
     hotkeyService: hotkeyService,
@@ -141,6 +148,7 @@ void main() {
     expect(find.text('Shortcuts'), findsOneWidget);
     expect(find.text('Launch at login'), findsOneWidget);
     expect(find.text('Show OCR preview'), findsOneWidget);
+    expect(find.text('Prompt to open URL after OCR'), findsOneWidget);
     expect(find.text('Region'), findsOneWidget);
     expect(find.text('Scroll'), findsOneWidget);
     expect(find.text('Full Screen'), findsOneWidget);

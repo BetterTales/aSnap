@@ -54,6 +54,22 @@ class SettingsService {
     await _writeSettingsMap(next);
   }
 
+  Future<bool> loadOcrOpenUrlPromptEnabled() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['ocrOpenUrlPromptEnabled'];
+      if (value is bool) return value;
+    } catch (_) {}
+    return true;
+  }
+
+  Future<void> saveOcrOpenUrlPromptEnabled(bool enabled) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['ocrOpenUrlPromptEnabled'] = enabled;
+    await _writeSettingsMap(next);
+  }
+
   Future<File> _settingsFile() async {
     final directory = await _supportDirectoryProvider();
     return File('${directory.path}/settings.json');
@@ -64,7 +80,9 @@ class SettingsService {
   }
 
   Map<String, dynamic> _normalizeSettingsMap(Map<String, dynamic> map) {
-    if (map.containsKey('shortcuts') || map.containsKey('ocrPreviewEnabled')) {
+    if (map.containsKey('shortcuts') ||
+        map.containsKey('ocrPreviewEnabled') ||
+        map.containsKey('ocrOpenUrlPromptEnabled')) {
       return {...map};
     }
     if (_looksLikeLegacyShortcutMap(map)) {

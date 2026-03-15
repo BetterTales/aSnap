@@ -23,9 +23,11 @@ void main() {
 
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
+    final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
 
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
+    expect(ocrOpenUrlPrompt, isTrue);
   });
 
   test('loads legacy shortcut map without OCR settings', () async {
@@ -38,9 +40,11 @@ void main() {
 
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
+    final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
 
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
+    expect(ocrOpenUrlPrompt, isTrue);
   });
 
   test('persists OCR preview flag alongside shortcuts', () async {
@@ -53,14 +57,17 @@ void main() {
 
     await service.saveShortcutBindings(updated);
     await service.saveOcrPreviewEnabled(true);
+    await service.saveOcrOpenUrlPromptEnabled(false);
 
     var map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
+    expect(map['ocrOpenUrlPromptEnabled'], isFalse);
     expect(map['shortcuts'], isA<Map>());
 
     await service.saveShortcutBindings(ShortcutBindings.defaults());
 
     map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
+    expect(map['ocrOpenUrlPromptEnabled'], isFalse);
   });
 }

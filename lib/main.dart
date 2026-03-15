@@ -20,6 +20,7 @@ import 'state/annotation_state.dart';
 import 'state/app_state.dart';
 import 'state/settings_state.dart';
 import 'utils/annotation_compositor.dart';
+import 'utils/url_detection.dart';
 
 bool _displayChangeInProgress = false;
 bool _displayChangePending = false;
@@ -121,9 +122,12 @@ void main() async {
   final initialShortcuts = await _settingsService.loadShortcutBindings();
   final initialOcrPreviewEnabled = await _settingsService
       .loadOcrPreviewEnabled();
+  final initialOcrOpenUrlPromptEnabled = await _settingsService
+      .loadOcrOpenUrlPromptEnabled();
   _settingsState = SettingsState(
     initialShortcuts: initialShortcuts,
     initialOcrPreviewEnabled: initialOcrPreviewEnabled,
+    initialOcrOpenUrlPromptEnabled: initialOcrOpenUrlPromptEnabled,
     settingsService: _settingsService,
     windowService: _windowService,
     hotkeyService: _hotkeyService,
@@ -952,14 +956,16 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
 
   final showPreview =
       _settingsState.ocrPreviewEnabled && !selection.isOcrSelection;
+  final keepWindowVisible =
+      showPreview || _settingsState.ocrOpenUrlPromptEnabled;
+  var windowHidden = false;
 
   _ocrInProgress = true;
   _appState.detachDecodedFullScreen();
   try {
-    if (showPreview) {
-      await _windowService.hideToolbarPanel();
-    } else {
-      // Hide FIRST — user perceives instant dismiss.
+    await _windowService.hideToolbarPanel();
+    if (!keepWindowVisible) {
+      // Hide FIRST — user perceives instant dismiss when no UI is needed.
       await _windowService.hidePreview();
       _appState.clear();
       _annotationState.clear();
@@ -967,6 +973,7 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
       unawaited(_windowService.stopEscMonitor());
       unawaited(_windowService.suspendOverlay());
       unawaited(_windowService.startRectPolling());
+      windowHidden = true;
     }
 
     final cropped = await _captureService.cropImage(
@@ -986,7 +993,7 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
     cropped.dispose();
   } finally {
     _ocrInProgress = false;
-    if (showPreview) {
+    if (!windowHidden) {
       await _windowService.hidePreview();
       _appState.clear();
       _annotationState.clear();
@@ -1121,12 +1128,56 @@ Future<String?> _recognizeTextFromPng(Uint8List pngBytes) async {
   return text.trim();
 }
 
+Future<void> _openUrlInBrowser(String url) async {
+  await _windowService.openUrl(url);
+}
+
+Future<void> _showOpenUrlPrompt(String url) async {
+  final context = _navigatorKey.currentContext;
+  if (context == null) return;
+
+  await showDialog<void>(
+    context: context,
+    builder: (context) {
+      return AlertDialog(
+        backgroundColor: const Color(0xFF2A2A2A),
+        title: const Text('Open URL?', style: TextStyle(color: Colors.white)),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 520),
+          child: SelectableText(
+            url,
+            style: const TextStyle(color: Colors.white70, height: 1.4),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              unawaited(_openUrlInBrowser(url));
+            },
+            child: const Text('Open'),
+          ),
+        ],
+      );
+    },
+  );
+}
+
 Future<void> _applyOcrResult(String text, {required bool showPreview}) async {
   if (text.isNotEmpty) {
     await _clipboardService.copyText(text);
   }
+  final url = _settingsState.ocrOpenUrlPromptEnabled
+      ? extractFirstUrl(text)
+      : null;
   if (showPreview) {
-    await _showOcrPreviewDialog(text);
+    await _showOcrPreviewDialog(text, url: url);
+  } else if (url != null) {
+    await _showOpenUrlPrompt(url);
   }
 }
 
@@ -1152,7 +1203,7 @@ Future<void> _handleOcr() async {
   }
 }
 
-Future<void> _showOcrPreviewDialog(String text) async {
+Future<void> _showOcrPreviewDialog(String text, {String? url}) async {
   final context = _navigatorKey.currentContext;
   if (context == null) return;
 
@@ -1166,12 +1217,35 @@ Future<void> _showOcrPreviewDialog(String text) async {
         content: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 520, maxHeight: 280),
           child: SingleChildScrollView(
-            child: SelectableText(
-              hasText ? text : 'No text recognized.',
-              style: TextStyle(
-                color: hasText ? Colors.white70 : Colors.white54,
-                height: 1.4,
-              ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SelectableText(
+                  hasText ? text : 'No text recognized.',
+                  style: TextStyle(
+                    color: hasText ? Colors.white70 : Colors.white54,
+                    height: 1.4,
+                  ),
+                ),
+                if (url != null) ...[
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Detected URL',
+                    style: TextStyle(
+                      color: Colors.white54,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  SelectableText(
+                    url,
+                    style: const TextStyle(color: Colors.white70, height: 1.4),
+                  ),
+                ],
+              ],
             ),
           ),
         ),
@@ -1187,6 +1261,14 @@ Future<void> _showOcrPreviewDialog(String text) async {
             onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
           ),
+          if (url != null)
+            FilledButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                unawaited(_openUrlInBrowser(url));
+              },
+              child: const Text('Open URL'),
+            ),
         ],
       );
     },

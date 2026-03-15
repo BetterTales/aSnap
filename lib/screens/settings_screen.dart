@@ -177,6 +177,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     _OcrPreviewRow(
                                       settingsState: widget.settingsState,
                                     ),
+                                    const _GroupDivider(),
+                                    _OcrOpenUrlPromptRow(
+                                      settingsState: widget.settingsState,
+                                    ),
                                   ],
                                 ),
                               ),
@@ -210,6 +214,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 const SizedBox(height: 10),
                                 _SectionNote(
                                   text: widget.settingsState.ocrPreviewError!,
+                                  color: _dangerColor,
+                                ),
+                              ],
+                              if (widget.settingsState.ocrOpenUrlPromptError !=
+                                  null) ...[
+                                const SizedBox(height: 10),
+                                _SectionNote(
+                                  text: widget
+                                      .settingsState
+                                      .ocrOpenUrlPromptError!,
                                   color: _dangerColor,
                                 ),
                               ],
@@ -425,6 +439,46 @@ class _OcrPreviewRow extends StatelessWidget {
             onChanged: (value) {
               settingsState.clearOcrPreviewError();
               settingsState.setOcrPreviewEnabled(value);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OcrOpenUrlPromptRow extends StatelessWidget {
+  const _OcrOpenUrlPromptRow({required this.settingsState});
+
+  final SettingsState settingsState;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Prompt to open URL after OCR',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Switch.adaptive(
+            value: settingsState.ocrOpenUrlPromptEnabled,
+            activeTrackColor: _accentColor,
+            activeThumbColor: _controlFillColor,
+            inactiveTrackColor: _inactiveControlColor,
+            inactiveThumbColor: _controlFillColor,
+            trackOutlineColor: const WidgetStatePropertyAll(
+              _surfaceBorderColor,
+            ),
+            onChanged: (value) {
+              settingsState.clearOcrOpenUrlPromptError();
+              settingsState.setOcrOpenUrlPromptEnabled(value);
             },
           ),
         ],

@@ -733,6 +733,16 @@ class WindowService {
     }
   }
 
+  Future<bool> openUrl(String url) async {
+    if (!Platform.isMacOS) return false;
+    try {
+      final result = await _channel.invokeMethod<bool>('openUrl', {'url': url});
+      return result ?? false;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
   Future<LaunchAtLoginState> getLaunchAtLoginState() async {
     if (!Platform.isMacOS) {
       return const LaunchAtLoginState(
