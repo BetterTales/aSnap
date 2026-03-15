@@ -22,9 +22,6 @@ class SettingsService {
       if (shortcuts is Map) {
         return ShortcutBindings.fromJson(Map<String, dynamic>.from(shortcuts));
       }
-      if (_looksLikeLegacyShortcutMap(map)) {
-        return ShortcutBindings.fromJson(map);
-      }
       return ShortcutBindings.defaults();
     } catch (_) {
       return ShortcutBindings.defaults();
@@ -75,21 +72,11 @@ class SettingsService {
     return File('${directory.path}/settings.json');
   }
 
-  bool _looksLikeLegacyShortcutMap(Map<String, dynamic> map) {
-    final actionNames = ShortcutAction.values
-        .map((action) => action.name)
-        .toSet();
-    return map.keys.any(actionNames.contains);
-  }
-
   Map<String, dynamic> _normalizeSettingsMap(Map<String, dynamic> map) {
     if (map.containsKey('shortcuts') ||
         map.containsKey('ocrPreviewEnabled') ||
         map.containsKey('ocrOpenUrlPromptEnabled')) {
       return {...map};
-    }
-    if (_looksLikeLegacyShortcutMap(map)) {
-      return {'shortcuts': map};
     }
     return {};
   }

@@ -1,9 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:hotkey_manager/hotkey_manager.dart';
 
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/services/settings_service.dart';
@@ -32,40 +30,17 @@ void main() {
     expect(ocrOpenUrlPrompt, isTrue);
   });
 
-  test('loads legacy shortcut map without OCR settings', () async {
+  test('loads defaults when settings file lacks shortcuts', () async {
     final dir = await _tempDir();
     final file = File('${dir.path}/settings.json');
-    await file.writeAsString(
-      jsonEncode(ShortcutBindings.defaults().toJson()),
-    );
+    await file.writeAsString(jsonEncode({'ocrPreviewEnabled': true}));
     final service = SettingsService(supportDirectoryProvider: () async => dir);
 
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
-    final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
 
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
-    expect(ocrPreview, isFalse);
-    expect(ocrOpenUrlPrompt, isTrue);
-  });
-
-  test('loads legacy shortcut map with custom bindings', () async {
-    final dir = await _tempDir();
-    final file = File('${dir.path}/settings.json');
-    final updated = ShortcutBindings.defaults().copyWithAction(
-      ShortcutAction.region,
-      HotKey(
-        key: PhysicalKeyboardKey.keyR,
-        modifiers: const [HotKeyModifier.control, HotKeyModifier.shift],
-        scope: HotKeyScope.system,
-      ),
-    );
-    await file.writeAsString(jsonEncode(updated.toJson()));
-    final service = SettingsService(supportDirectoryProvider: () async => dir);
-
-    final shortcuts = await service.loadShortcutBindings();
-
-    expect(shortcuts.encodeJson(), updated.encodeJson());
+    expect(ocrPreview, isTrue);
   });
 
   test('persists OCR preview flag alongside shortcuts', () async {
