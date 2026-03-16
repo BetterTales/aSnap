@@ -3,20 +3,50 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:a_snap/services/window_service.dart';
 
+const _windowChannel = MethodChannel('com.asnap/window');
+const _windowManagerChannel = MethodChannel('window_manager');
+
+Future<void> _dispatchWindowCallback(
+  String method,
+  Map<String, Object?> arguments,
+) async {
+  await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .handlePlatformMessage(
+        _windowChannel.name,
+        const StandardMethodCodec().encodeMethodCall(
+          MethodCall(method, arguments),
+        ),
+        (_) {},
+      );
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  const channel = MethodChannel('com.asnap/window');
   final windowService = WindowService();
+
+  setUp(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowManagerChannel, (call) async {
+          switch (call.method) {
+            case 'isMinimized':
+              return false;
+            default:
+              return null;
+          }
+        });
+  });
 
   tearDown(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, null);
+        .setMockMethodCallHandler(_windowChannel, null);
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowManagerChannel, null);
   });
 
   test('getLaunchAtLoginState falls back when plugin is unavailable', () async {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
+        .setMockMethodCallHandler(_windowChannel, (call) async {
           throw MissingPluginException();
         });
 
@@ -31,7 +61,7 @@ void main() {
     'setLaunchAtLoginEnabled falls back when plugin is unavailable',
     () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (call) async {
+          .setMockMethodCallHandler(_windowChannel, (call) async {
             throw MissingPluginException();
           });
 
@@ -43,31 +73,229 @@ void main() {
     },
   );
 
-  test('startRectPolling forwards includeAxChildren false by default', () async {
+  test(
+    'startRectPolling forwards includeAxChildren false by default',
+    () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await windowService.startRectPolling();
+
+      expect(capturedCall?.method, 'startRectPolling');
+      expect(capturedCall?.arguments, {'includeAxChildren': false});
+    },
+  );
+
+  test(
+    'startRectPolling forwards includeAxChildren true when requested',
+    () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await windowService.startRectPolling(includeAxChildren: true);
+
+      expect(capturedCall?.method, 'startRectPolling');
+      expect(capturedCall?.arguments, {'includeAxChildren': true});
+    },
+  );
+
+  test('showToolbarPanel forwards placement intent and anchor rect', () async {
     MethodCall? capturedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
+        .setMockMethodCallHandler(_windowChannel, (call) async {
           capturedCall = call;
           return null;
         });
 
-    await windowService.startRectPolling();
+    await windowService.showToolbarPanel(
+      request: const NativeToolbarRequest.belowAnchor(
+        anchorRect: Rect.fromLTWH(12, 34, 56, 78),
+        showPin: true,
+        showHistoryControls: true,
+        canUndo: false,
+        canRedo: true,
+        showOcr: true,
+        activeTool: 'ellipse',
+      ),
+    );
 
-    expect(capturedCall?.method, 'startRectPolling');
-    expect(capturedCall?.arguments, {'includeAxChildren': false});
+    expect(capturedCall?.method, 'showToolbarPanel');
+    final args = Map<String, dynamic>.from(capturedCall?.arguments as Map);
+    expect(args['placement'], 'belowAnchor');
+    expect(args['showPin'], isTrue);
+    expect(args['showHistoryControls'], isTrue);
+    expect(args['canUndo'], isFalse);
+    expect(args['canRedo'], isTrue);
+    expect(args['showOcr'], isTrue);
+    expect(args['activeTool'], 'ellipse');
+    expect(Map<String, dynamic>.from(args['anchorRect'] as Map), {
+      'x': 12.0,
+      'y': 34.0,
+      'width': 56.0,
+      'height': 78.0,
+    });
   });
 
-  test('startRectPolling forwards includeAxChildren true when requested', () async {
-    MethodCall? capturedCall;
+  test('showPreview flushes pending toolbar updates when visible', () async {
+    final windowCalls = <MethodCall>[];
+    final windowManagerCalls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-        .setMockMethodCallHandler(channel, (call) async {
-          capturedCall = call;
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          windowCalls.add(call);
+          return null;
+        });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowManagerChannel, (call) async {
+          windowManagerCalls.add(call);
+          switch (call.method) {
+            case 'isMinimized':
+              return false;
+            default:
+              return null;
+          }
+        });
+
+    await windowService.showPreview(
+      imageWidth: 100,
+      imageHeight: 50,
+      screenSize: const Size(1440, 900),
+      screenOrigin: Offset.zero,
+      focus: false,
+    );
+
+    expect(windowManagerCalls.map((call) => call.method), contains('show'));
+    expect(
+      windowCalls.map((call) => call.method),
+      containsAll(['cleanupOverlayMode', 'flushPendingToolbarPanel']),
+    );
+  });
+
+  test('showPreview does not flush toolbar when still transparent', () async {
+    final windowCalls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          windowCalls.add(call);
           return null;
         });
 
-    await windowService.startRectPolling(includeAxChildren: true);
+    await windowService.showPreview(
+      imageWidth: 100,
+      imageHeight: 50,
+      screenSize: const Size(1440, 900),
+      screenOrigin: Offset.zero,
+      opacity: 0.0,
+      focus: false,
+    );
 
-    expect(capturedCall?.method, 'startRectPolling');
-    expect(capturedCall?.arguments, {'includeAxChildren': true});
+    expect(
+      windowCalls.map((call) => call.method),
+      isNot(contains('flushPendingToolbarPanel')),
+    );
   });
+
+  test(
+    'ensureInitialized forwards only current toolbar frame callbacks',
+    () async {
+      final calls = <MethodCall>[];
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowChannel, (call) async {
+            calls.add(call);
+            return null;
+          });
+
+      await windowService.ensureInitialized();
+
+      final updates = <NativeToolbarFrameUpdate>[];
+      windowService.onToolbarFrameChanged = updates.add;
+
+      await windowService.showToolbarPanel(
+        request: const NativeToolbarRequest.belowWindow(
+          showPin: false,
+          showHistoryControls: true,
+          canUndo: false,
+          canRedo: false,
+          showOcr: true,
+        ),
+      );
+
+      final firstShowArgs = Map<String, dynamic>.from(
+        calls.last.arguments as Map,
+      );
+      final firstRequestId = firstShowArgs['requestId'] as int;
+      final sessionId = firstShowArgs['sessionId'] as int;
+
+      await _dispatchWindowCallback('onToolbarFrameChanged', {
+        'x': 10.0,
+        'y': 20.0,
+        'width': 30.0,
+        'height': 44.0,
+        'requestId': firstRequestId,
+        'sessionId': sessionId,
+      });
+
+      expect(updates, hasLength(1));
+      expect(updates.single.rect, const Rect.fromLTWH(10, 20, 30, 44));
+
+      await windowService.hideToolbarPanel();
+      await _dispatchWindowCallback('onToolbarFrameChanged', {
+        'x': 99.0,
+        'y': 88.0,
+        'width': 77.0,
+        'height': 44.0,
+        'requestId': firstRequestId,
+        'sessionId': sessionId,
+      });
+
+      expect(updates, hasLength(1));
+
+      await windowService.showToolbarPanel(
+        request: const NativeToolbarRequest.belowWindow(
+          showPin: true,
+          showHistoryControls: true,
+          canUndo: true,
+          canRedo: false,
+          showOcr: true,
+          activeTool: 'text',
+        ),
+      );
+
+      final secondShowArgs = Map<String, dynamic>.from(
+        calls.last.arguments as Map,
+      );
+      final secondRequestId = secondShowArgs['requestId'] as int;
+
+      await _dispatchWindowCallback('onToolbarFrameChanged', {
+        'x': 1.0,
+        'y': 2.0,
+        'width': 3.0,
+        'height': 44.0,
+        'requestId': secondRequestId,
+        'sessionId': sessionId + 1,
+      });
+
+      expect(updates, hasLength(1));
+
+      await _dispatchWindowCallback('onToolbarFrameChanged', {
+        'x': 40.0,
+        'y': 50.0,
+        'width': 60.0,
+        'height': 44.0,
+        'requestId': secondRequestId,
+        'sessionId': sessionId,
+      });
+
+      expect(updates, hasLength(2));
+      expect(updates.last.rect, const Rect.fromLTWH(40, 50, 60, 44));
+      expect(updates.last.requestId, secondRequestId);
+      expect(updates.last.sessionId, sessionId);
+    },
+  );
 }

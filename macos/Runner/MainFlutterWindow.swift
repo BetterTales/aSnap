@@ -14,7 +14,13 @@ class MainFlutterWindow: NSWindow {
     let details: Any?
   }
 
+  private enum ToolbarPlacement: String {
+    case belowWindow
+    case belowAnchor
+  }
+
   private static let hotKeySignature: OSType = 0x41534E50
+  private static let toolbarPanelHeight: CGFloat = 44.0
 
   private var savedStyleMask: NSWindow.StyleMask?
   private var flutterChannel: FlutterMethodChannel?
@@ -1242,6 +1248,13 @@ class MainFlutterWindow: NSWindow {
       case "resetToolbarPanelState":
         self.resetToolbarPanelState()
         result(nil)
+      case "flushPendingToolbarPanel":
+        if let args = self.pendingToolbarArgs {
+          self.showOrUpdateToolbarPanel(args)
+        } else {
+          self.refreshToolbarPanelIfNeeded()
+        }
+        result(nil)
       case "revealPreviewWindow":
         self.alphaValue = 1.0
         self.makeKeyAndOrderFront(nil)
@@ -2139,6 +2152,13 @@ class MainFlutterWindow: NSWindow {
     return NSRect(x: macX, y: macY, width: width, height: height)
   }
 
+  private func screenRectToLocalTopLeftRect(_ rect: NSRect) -> CGRect {
+    let windowFrame = self.frame
+    let localX = rect.minX - windowFrame.minX
+    let localY = windowFrame.maxY - rect.maxY
+    return CGRect(x: localX, y: localY, width: rect.width, height: rect.height)
+  }
+
   private func clampToolbarRectToVisibleScreen(_ rect: NSRect) -> NSRect {
     let allScreens = NSScreen.screens
     guard !allScreens.isEmpty else { return rect }
@@ -2171,6 +2191,25 @@ class MainFlutterWindow: NSWindow {
     return NSRect(x: x, y: y, width: rect.width, height: rect.height)
   }
 
+  private func emitToolbarFrameChanged(
+    screenRect: NSRect,
+    requestId: Int,
+    sessionId: Int64
+  ) {
+    let localRect = self.screenRectToLocalTopLeftRect(screenRect)
+    self.flutterChannel?.invokeMethod(
+      "onToolbarFrameChanged",
+      arguments: [
+        "x": localRect.origin.x,
+        "y": localRect.origin.y,
+        "width": localRect.size.width,
+        "height": localRect.size.height,
+        "requestId": requestId,
+        "sessionId": sessionId,
+      ]
+    )
+  }
+
   private func showOrUpdateToolbarPanel(_ args: [String: Any]) {
     self.adoptToolbarSessionIfNeeded(args)
 
@@ -2197,10 +2236,8 @@ class MainFlutterWindow: NSWindow {
     }
     self.pendingToolbarArgs = nil
 
-    guard let x = args["x"] as? Double,
-      let y = args["y"] as? Double,
-      let width = args["width"] as? Double,
-      let height = args["height"] as? Double,
+    guard let placementRaw = args["placement"] as? String,
+      let placement = ToolbarPlacement(rawValue: placementRaw),
       let showPin = args["showPin"] as? Bool,
       let showHistoryControls = args["showHistoryControls"] as? Bool,
       let canUndo = args["canUndo"] as? Bool,
@@ -2208,28 +2245,26 @@ class MainFlutterWindow: NSWindow {
     else {
       return
     }
-    guard width > 0, height > 0 else { return }
     let showOcr = args["showOcr"] as? Bool ?? false
     let activeTool = args["activeTool"] as? String
-    let anchorToWindow = args["anchorToWindow"] as? Bool ?? false
+    let sessionId =
+      (args["sessionId"] as? NSNumber)?.int64Value
+      ?? (args["sessionId"] as? Int64)
+      ?? self.latestToolbarSessionId
+    let previousPlacement =
+      (self.lastToolbarArgs?["placement"] as? String).flatMap(ToolbarPlacement.init(rawValue:))
 
-    let previousAnchorToWindow = self.lastToolbarArgs?["anchorToWindow"] as? Bool ?? false
-
-    // In preview mode we always use anchorToWindow=true.
-    // Ignore stale non-anchored updates that may arrive after transitions or
-    // drag-end notifications from prior overlay states.
-    if !anchorToWindow,
+    if placement == .belowAnchor,
       self.overlayScreenFrame == nil,
-      previousAnchorToWindow
+      previousPlacement == .belowWindow
     {
-      MainFlutterWindow.log("ignore stale NON-anchorToWindow update in preview")
+      MainFlutterWindow.log("ignore stale belowAnchor update in preview")
       return
     }
 
     self.lastToolbarArgs = args
 
     let (contentView, targetSize) = makeToolbarPanelContent(
-      fallbackHeight: CGFloat(height),
       showPin: showPin,
       showHistoryControls: showHistoryControls,
       canUndo: canUndo,
@@ -2239,13 +2274,11 @@ class MainFlutterWindow: NSWindow {
     )
 
     var screenRect: NSRect
-    if anchorToWindow {
-      // Preview mode: position toolbar directly below the preview window,
-      // ignoring the y value from Flutter (which may be stale after resize).
-      // Use a fixed gap of 8pt below the window.
+    switch placement {
+    case .belowWindow:
       let toolbarGap: CGFloat = 8.0
       MainFlutterWindow.log(
-        "anchorToWindow: self.frame=\(self.frame), isVisible=\(self.isVisible), alpha=\(self.alphaValue)"
+        "belowWindow: self.frame=\(self.frame), isVisible=\(self.isVisible), alpha=\(self.alphaValue)"
       )
       screenRect = NSRect(
         x: self.frame.midX - targetSize.width / 2,
@@ -2253,24 +2286,30 @@ class MainFlutterWindow: NSWindow {
         width: targetSize.width,
         height: targetSize.height
       )
-      MainFlutterWindow.log("anchorToWindow: computed screenRect=\(screenRect)")
-      // Keep the toolbar inside the visible screen bounds.
       screenRect = clampToolbarRectToVisibleScreen(screenRect)
-      MainFlutterWindow.log("anchorToWindow: after clamp screenRect=\(screenRect)")
-    } else {
-      let requestedRect = localTopLeftRectToScreenRect(x: x, y: y, width: width, height: height)
-      let requestedCenterX = requestedRect.midX
-      let requestedTopY = requestedRect.maxY
+      MainFlutterWindow.log("belowWindow: screenRect=\(screenRect)")
+    case .belowAnchor:
+      guard let anchorArgs = args["anchorRect"] as? [String: Any],
+        let x = anchorArgs["x"] as? Double,
+        let y = anchorArgs["y"] as? Double,
+        let width = anchorArgs["width"] as? Double,
+        let height = anchorArgs["height"] as? Double,
+        width > 0,
+        height > 0
+      else {
+        return
+      }
+      let toolbarGap: CGFloat = 8.0
+      let requestedCenterX = self.frame.minX + x + (width / 2)
+      let requestedTopY = self.frame.maxY - (y + height + Double(toolbarGap))
       screenRect = NSRect(
         x: requestedCenterX - targetSize.width / 2,
         y: requestedTopY - targetSize.height,
         width: targetSize.width,
         height: targetSize.height
       )
-      // Preserve horizontal alignment with selection center as much as
-      // possible while keeping the toolbar on-screen.
       screenRect = clampToolbarRectToVisibleScreen(screenRect)
-      MainFlutterWindow.log("NON-anchorToWindow: x=\(x), y=\(y), screenRect=\(screenRect)")
+      MainFlutterWindow.log("belowAnchor: x=\(x), y=\(y), screenRect=\(screenRect)")
     }
 
     let panel: NSPanel
@@ -2316,15 +2355,19 @@ class MainFlutterWindow: NSWindow {
     }
     MainFlutterWindow.log("orderFront: panel.frame=\(panel.frame)")
     panel.orderFront(nil)
+    if let sessionId {
+      self.emitToolbarFrameChanged(
+        screenRect: screenRect,
+        requestId: requestId,
+        sessionId: sessionId
+      )
+    }
   }
 
   private func refreshToolbarPanelIfNeeded() {
     guard self.isVisible, self.alphaValue > 0.99 else { return }
     guard self.pendingToolbarArgs == nil else { return }
-    guard var args = self.lastToolbarArgs else { return }
-    let nextRequestId = self.latestToolbarRequestId + 1
-    self.latestToolbarRequestId = nextRequestId
-    args["requestId"] = nextRequestId
+    guard let args = self.lastToolbarArgs else { return }
     self.showOrUpdateToolbarPanel(args)
   }
 
@@ -2366,7 +2409,6 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func makeToolbarPanelContent(
-    fallbackHeight: CGFloat,
     showPin: Bool,
     showHistoryControls: Bool,
     canUndo: Bool,
@@ -2444,13 +2486,13 @@ class MainFlutterWindow: NSWindow {
     addButton(id: "close", symbol: "xmark", tip: "Close", destructive: true)
 
     let fittedWidth = ceil(stack.fittingSize.width + 16)
-    let targetSize = NSSize(width: fittedWidth, height: fallbackHeight)
+    let targetSize = NSSize(width: fittedWidth, height: Self.toolbarPanelHeight)
     let root = ToolbarRootView(
       frame: NSRect(x: 0, y: 0, width: targetSize.width, height: targetSize.height)
     )
     root.wantsLayer = true
     root.layer?.backgroundColor = NSColor(calibratedWhite: 0.12, alpha: 0.88).cgColor
-    root.layer?.cornerRadius = fallbackHeight / 2
+    root.layer?.cornerRadius = Self.toolbarPanelHeight / 2
     root.layer?.masksToBounds = true
 
     root.addSubview(stack)

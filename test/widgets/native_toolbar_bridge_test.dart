@@ -13,59 +13,46 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 class _ToolbarShowCall {
-  final Rect rect;
-  final bool showPin;
-  final bool showHistoryControls;
-  final bool canUndo;
-  final bool canRedo;
-  final bool showOcr;
-  final String? activeTool;
-  final bool anchorToWindow;
+  const _ToolbarShowCall({required this.request, required this.requestId});
 
-  const _ToolbarShowCall({
-    required this.rect,
-    required this.showPin,
-    required this.showHistoryControls,
-    required this.canUndo,
-    required this.canRedo,
-    required this.showOcr,
-    required this.activeTool,
-    required this.anchorToWindow,
-  });
+  final NativeToolbarRequest request;
+  final int requestId;
+
+  NativeToolbarPlacement get placement => request.placement;
+  Rect? get anchorRect => request.anchorRect;
+  bool get showPin => request.showPin;
+  bool get showHistoryControls => request.showHistoryControls;
+  bool get canUndo => request.canUndo;
+  bool get canRedo => request.canRedo;
+  bool get showOcr => request.showOcr;
+  String? get activeTool => request.activeTool;
 }
 
 class _FakeWindowService extends WindowService {
   final List<_ToolbarShowCall> showCalls = [];
   int hideCalls = 0;
+  int _nextRequestId = 0;
 
   @override
-  Future<void> showToolbarPanel({
-    required Rect rect,
-    required bool showPin,
-    required bool showHistoryControls,
-    required bool canUndo,
-    required bool canRedo,
-    required bool showOcr,
-    String? activeTool,
-    bool anchorToWindow = false,
-  }) async {
+  Future<void> showToolbarPanel({required NativeToolbarRequest request}) async {
     showCalls.add(
-      _ToolbarShowCall(
-        rect: rect,
-        showPin: showPin,
-        showHistoryControls: showHistoryControls,
-        canUndo: canUndo,
-        canRedo: canRedo,
-        showOcr: showOcr,
-        activeTool: activeTool,
-        anchorToWindow: anchorToWindow,
-      ),
+      _ToolbarShowCall(request: request, requestId: ++_nextRequestId),
     );
   }
 
   @override
   Future<void> hideToolbarPanel() async {
     hideCalls++;
+  }
+
+  void emitToolbarFrameChanged(Rect rect, {int? requestId}) {
+    onToolbarFrameChanged?.call(
+      NativeToolbarFrameUpdate(
+        rect: rect,
+        requestId: requestId ?? _nextRequestId,
+        sessionId: 1,
+      ),
+    );
   }
 }
 
@@ -85,7 +72,8 @@ class _RegionSelectionHarness extends StatefulWidget {
   });
 
   @override
-  State<_RegionSelectionHarness> createState() => _RegionSelectionHarnessState();
+  State<_RegionSelectionHarness> createState() =>
+      _RegionSelectionHarnessState();
 }
 
 class _RegionSelectionHarnessState extends State<_RegionSelectionHarness> {
@@ -136,6 +124,13 @@ Future<void> _pumpTestApp(WidgetTester tester, Widget child) async {
   await tester.pump();
 }
 
+void _setTestSurface(WidgetTester tester) {
+  tester.view.devicePixelRatio = 1.0;
+  tester.view.physicalSize = const Size(800, 600);
+  addTearDown(tester.view.resetDevicePixelRatio);
+  addTearDown(tester.view.resetPhysicalSize);
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -163,71 +158,92 @@ void main() {
   });
 
   group('PreviewScreen native toolbar bridge', () {
-    testWidgets('dispatches actions and tool activation through window service', (
-      tester,
-    ) async {
-      final image = await _createTestImage();
-      final appState = AppState()..setCapturedImage(image);
-      final annotationState = AnnotationState();
-      final windowService = _FakeWindowService();
-      var copied = 0;
-      var saved = 0;
-      var pinned = 0;
-      var discarded = 0;
-      var ocr = 0;
+    testWidgets(
+      'dispatches actions and tool activation through window service',
+      (tester) async {
+        _setTestSurface(tester);
+        final image = await _createTestImage();
+        final appState = AppState()..setCapturedImage(image);
+        final annotationState = AnnotationState();
+        final windowService = _FakeWindowService();
+        var copied = 0;
+        var saved = 0;
+        var pinned = 0;
+        var discarded = 0;
+        var ocr = 0;
 
-      addTearDown(() {
-        appState.clear();
-        annotationState.clear();
-      });
+        addTearDown(() {
+          appState.clear();
+          annotationState.clear();
+        });
 
-      await _pumpTestApp(
-        tester,
-        PreviewScreen(
-          appState: appState,
-          annotationState: annotationState,
-          windowService: windowService,
-          onCopy: () => copied++,
-          onSave: () => saved++,
-          onPin: () => pinned++,
-          onDiscard: () => discarded++,
-          onOcr: () => ocr++,
-          onCopyText: (_) {},
-        ),
-      );
+        await _pumpTestApp(
+          tester,
+          PreviewScreen(
+            appState: appState,
+            annotationState: annotationState,
+            windowService: windowService,
+            onCopy: () => copied++,
+            onSave: () => saved++,
+            onPin: () => pinned++,
+            onDiscard: () => discarded++,
+            onOcr: () => ocr++,
+            onCopyText: (_) {},
+          ),
+        );
 
-      expect(windowService.onToolbarAction, isNotNull);
-      expect(windowService.showCalls, isNotEmpty);
-      expect(windowService.showCalls.last.showPin, isTrue);
-      expect(windowService.showCalls.last.showHistoryControls, isTrue);
-      expect(windowService.showCalls.last.showOcr, isTrue);
-      expect(windowService.showCalls.last.anchorToWindow, isTrue);
+        expect(windowService.onToolbarAction, isNotNull);
+        expect(windowService.showCalls, isNotEmpty);
+        expect(windowService.showCalls.last.showPin, isTrue);
+        expect(windowService.showCalls.last.showHistoryControls, isTrue);
+        expect(windowService.showCalls.last.showOcr, isTrue);
+        expect(
+          windowService.showCalls.last.placement,
+          NativeToolbarPlacement.belowWindow,
+        );
 
-      windowService.onToolbarAction!.call('copy');
-      windowService.onToolbarAction!.call('save');
-      windowService.onToolbarAction!.call('pin');
-      windowService.onToolbarAction!.call('ocr');
-      windowService.onToolbarAction!.call('close');
+        expect(
+          tester.getTopLeft(find.byType(CompositedTransformTarget)),
+          const Offset(400, 600),
+        );
+        windowService.emitToolbarFrameChanged(
+          const Rect.fromLTWH(120, 650, 412, 44),
+          requestId: windowService.showCalls.last.requestId,
+        );
+        await tester.pump();
 
-      expect(copied, 1);
-      expect(saved, 1);
-      expect(pinned, 1);
-      expect(ocr, 1);
-      expect(discarded, 1);
+        expect(
+          tester.getTopLeft(find.byType(CompositedTransformTarget)),
+          const Offset(326, 600),
+        );
 
-      windowService.onToolbarAction!.call('ellipse');
-      await tester.pump();
-      await tester.pump();
+        windowService.onToolbarAction!.call('copy');
+        windowService.onToolbarAction!.call('save');
+        windowService.onToolbarAction!.call('pin');
+        windowService.onToolbarAction!.call('ocr');
+        windowService.onToolbarAction!.call('close');
 
-      expect(annotationState.settings.shapeType, ShapeType.ellipse);
-      expect(find.byType(ShapePopover), findsOneWidget);
-    });
+        expect(copied, 1);
+        expect(saved, 1);
+        expect(pinned, 1);
+        expect(ocr, 1);
+        expect(discarded, 1);
+
+        windowService.onToolbarAction!.call('ellipse');
+        await tester.pump();
+        await tester.pump();
+
+        expect(annotationState.settings.shapeType, ShapeType.ellipse);
+        expect(find.byType(ShapePopover), findsOneWidget);
+      },
+    );
   });
 
   group('RegionSelectionScreen native toolbar visibility', () {
     testWidgets('stays hidden until a selection exists and hides on cancel', (
       tester,
     ) async {
+      _setTestSurface(tester);
       final image = await _createTestImage(width: 300, height: 200);
       final annotationState = AnnotationState();
       final windowService = _FakeWindowService();
@@ -260,6 +276,28 @@ void main() {
       expect(windowService.showCalls.last.showPin, isFalse);
       expect(windowService.showCalls.last.showHistoryControls, isTrue);
       expect(windowService.showCalls.last.showOcr, isTrue);
+      expect(
+        windowService.showCalls.last.placement,
+        NativeToolbarPlacement.belowAnchor,
+      );
+      expect(
+        windowService.showCalls.last.anchorRect,
+        const Rect.fromLTWH(20, 20, 140, 100),
+      );
+      expect(
+        tester.getTopLeft(find.byType(CompositedTransformTarget)),
+        const Offset(90, 128),
+      );
+      windowService.emitToolbarFrameChanged(
+        const Rect.fromLTWH(240, 150, 412, 44),
+        requestId: windowService.showCalls.last.requestId,
+      );
+      await tester.pump();
+
+      expect(
+        tester.getTopLeft(find.byType(CompositedTransformTarget)),
+        const Offset(446, 150),
+      );
 
       windowService.onToolbarAction!.call('ocr');
       expect(ocrCount, 1);
@@ -278,6 +316,7 @@ void main() {
     testWidgets('never requests pin and still routes tool actions', (
       tester,
     ) async {
+      _setTestSurface(tester);
       final image = await _createTestImage(width: 220, height: 420);
       final annotationState = AnnotationState();
       final windowService = _FakeWindowService();
@@ -303,6 +342,28 @@ void main() {
       expect(windowService.showCalls.last.showPin, isFalse);
       expect(windowService.showCalls.last.showHistoryControls, isTrue);
       expect(windowService.showCalls.last.showOcr, isTrue);
+      expect(
+        windowService.showCalls.last.placement,
+        NativeToolbarPlacement.belowAnchor,
+      );
+      expect(
+        windowService.showCalls.last.anchorRect,
+        const Rect.fromLTWH(290, 60, 220, 420),
+      );
+      expect(
+        tester.getTopLeft(find.byType(CompositedTransformTarget)),
+        const Offset(400, 488),
+      );
+      windowService.emitToolbarFrameChanged(
+        const Rect.fromLTWH(180, 500, 412, 44),
+        requestId: windowService.showCalls.last.requestId,
+      );
+      await tester.pump();
+
+      expect(
+        tester.getTopLeft(find.byType(CompositedTransformTarget)),
+        const Offset(386, 500),
+      );
 
       windowService.onToolbarAction!.call('text');
       await tester.pump();

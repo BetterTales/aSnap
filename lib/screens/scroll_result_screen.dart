@@ -174,12 +174,12 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   ///
   /// Width and height are computed independently because the container scrolls
   /// vertically — capping the height must NOT shrink the width.
-  Rect _imageContainerRect(Size screenSize, {required Size toolbarSize}) {
+  Rect _imageContainerRect(Size screenSize, {required double toolbarHeight}) {
     final image = widget.stitchedImage;
 
     final maxW = screenSize.width * 0.9;
     final availableHeight =
-        (screenSize.height - toolbarSize.height - kToolbarGap * 2).clamp(
+        (screenSize.height - toolbarHeight - kToolbarGap * 2).clamp(
           1.0,
           screenSize.height,
         );
@@ -202,18 +202,6 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
     return Rect.fromLTWH(x, y, w, h);
   }
 
-  Rect _toolbarRect(
-    Rect containerRect,
-    Size screenSize, {
-    required Size toolbarSize,
-  }) {
-    return computeFloatingToolbarRect(
-      anchorRect: containerRect,
-      screenSize: screenSize,
-      toolbarSize: toolbarSize,
-    );
-  }
-
   // ---------------------------------------------------------------------------
   // Build
   // ---------------------------------------------------------------------------
@@ -227,19 +215,19 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
         listenable: widget.annotationState,
         builder: (context, _) {
           final screenSize = MediaQuery.sizeOf(context);
-          final toolbarSize = computeNativeToolbarSize(
-            showPin: false,
-            showHistoryControls: true,
-            showOcr: nativeToolbarShowOcr,
-          );
+          final toolbarHeight =
+              resolvedNativeToolbarFrame?.height ??
+              kNativeToolbarFallbackHeight;
           final containerRect = _imageContainerRect(
             screenSize,
-            toolbarSize: toolbarSize,
+            toolbarHeight: toolbarHeight,
           );
-          final toolbarRect = _toolbarRect(
-            containerRect,
-            screenSize,
-            toolbarSize: toolbarSize,
+          final toolbarAnchor = nativeToolbarAnchorPoint(
+            viewportSize: screenSize,
+            fallbackAnchor: computeFloatingToolbarAnchor(
+              anchorRect: containerRect,
+              screenSize: screenSize,
+            ),
           );
           final image = widget.stitchedImage;
           final imagePixelSize = Size(
@@ -251,7 +239,10 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            syncNativeToolbar(toolbarRect);
+            syncNativeToolbar(
+              placement: NativeToolbarPlacement.belowAnchor,
+              anchorRect: containerRect,
+            );
           });
 
           return Stack(
@@ -402,8 +393,8 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
               // Toolbar — positioned below/above/inside the image container.
               Positioned(
-                top: toolbarRect.top,
-                left: toolbarRect.center.dx,
+                top: toolbarAnchor.dy,
+                left: toolbarAnchor.dx,
                 child: CompositedTransformTarget(
                   link: _popoverAnchorLink,
                   child: const SizedBox(width: 1, height: 1),
