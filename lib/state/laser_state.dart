@@ -43,16 +43,20 @@ class LaserState extends ChangeNotifier {
   bool prune({required double maxAgeSeconds}) {
     if (_samples.isEmpty) return false;
     final cutoff = nowSeconds() - maxAgeSeconds;
-    var removed = 0;
-    while (_samples.isNotEmpty && _samples.first.timestampSeconds < cutoff) {
-      _samples.removeAt(0);
-      removed += 1;
+    final keepIndex = _samples.indexWhere(
+      (sample) => sample.timestampSeconds >= cutoff,
+    );
+    if (keepIndex == 0) {
+      return false;
     }
-    if (removed > 0) {
+    if (keepIndex == -1) {
+      _samples.clear();
       notifyListeners();
       return true;
     }
-    return false;
+    _samples.removeRange(0, keepIndex);
+    notifyListeners();
+    return true;
   }
 
   void clear() {

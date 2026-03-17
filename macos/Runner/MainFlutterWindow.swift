@@ -1969,6 +1969,7 @@ class MainFlutterWindow: NSWindow {
     }
     self.inkShortcutActive = false
     self.laserShortcutActive = false
+    self.setOverlayCursorHidden(false)
   }
 
   private func inkModifierFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
@@ -2071,6 +2072,12 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func setOverlayCursorHidden(_ hidden: Bool) {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.setOverlayCursorHidden(hidden)
+      }
+      return
+    }
     guard hidden != self.overlayCursorHidden else { return }
     self.overlayCursorHidden = hidden
     self.refreshOverlayCursorIfNeeded()
