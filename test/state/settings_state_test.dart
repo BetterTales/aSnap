@@ -15,9 +15,19 @@ class _FakeSettingsService extends SettingsService {
   bool failSave = false;
   bool failOcrSave = false;
   bool failOcrOpenUrlSave = false;
+  bool failInkColorSave = false;
+  bool failInkStrokeSave = false;
+  bool failInkSmoothingSave = false;
+  bool failInkAutoFadeSave = false;
+  bool failInkEraserSizeSave = false;
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
+  Color? savedInkColor;
+  double? savedInkStrokeWidth;
+  double? savedInkSmoothingTolerance;
+  double? savedInkAutoFadeSeconds;
+  double? savedInkEraserSize;
 
   @override
   Future<void> saveShortcutBindings(ShortcutBindings bindings) async {
@@ -42,6 +52,47 @@ class _FakeSettingsService extends SettingsService {
     }
     savedOcrOpenUrlPromptEnabled = enabled;
   }
+
+  @override
+  Future<void> saveInkColor(Color color) async {
+    if (failInkColorSave) {
+      throw Exception('ink color save failed');
+    }
+    savedInkColor = color;
+  }
+
+  @override
+  Future<void> saveInkStrokeWidth(double width) async {
+    if (failInkStrokeSave) {
+      throw Exception('ink stroke save failed');
+    }
+    savedInkStrokeWidth = width;
+  }
+
+  @override
+  Future<void> saveInkSmoothingTolerance(double tolerance) async {
+    if (failInkSmoothingSave) {
+      throw Exception('ink smoothing save failed');
+    }
+    savedInkSmoothingTolerance = tolerance;
+  }
+
+  @override
+  Future<void> saveInkAutoFadeSeconds(double seconds) async {
+    if (failInkAutoFadeSave) {
+      throw Exception('ink auto fade save failed');
+    }
+    savedInkAutoFadeSeconds = seconds;
+  }
+
+  @override
+  Future<void> saveInkEraserSize(double size) async {
+    if (failInkEraserSizeSave) {
+      throw Exception('ink eraser size save failed');
+    }
+    savedInkEraserSize = size;
+  }
+
 }
 
 class _FakeWindowService extends WindowService {
@@ -51,9 +102,22 @@ class _FakeWindowService extends WindowService {
     requiresApproval: false,
   );
 
+  bool failInkShortcut = false;
+  int inkShortcutUpdates = 0;
+  HotKey? lastInkShortcut;
+
   @override
   Future<LaunchAtLoginState> getLaunchAtLoginState() async {
     return state;
+  }
+
+  @override
+  Future<void> setInkShortcut(HotKey hotKey) async {
+    if (failInkShortcut) {
+      throw Exception('ink shortcut update failed');
+    }
+    inkShortcutUpdates += 1;
+    lastInkShortcut = hotKey;
   }
 }
 
@@ -121,6 +185,11 @@ void main() {
       initialShortcuts: ShortcutBindings.defaults(),
       initialOcrPreviewEnabled: false,
       initialOcrOpenUrlPromptEnabled: true,
+      initialInkColor: const Color(0xFFFF0000),
+      initialInkStrokeWidth: 6.0,
+      initialInkSmoothingTolerance: 1.5,
+      initialInkAutoFadeSeconds: 0,
+      initialInkEraserSize: 16,
       settingsService: settingsService,
       windowService: windowService,
       hotkeyService: hotkeyService,
@@ -141,6 +210,11 @@ void main() {
     expect(trayService.updates, hasLength(1));
     expect(hotkeyService.updates.single.encodeJson(), updated.encodeJson());
     expect(trayService.updates.single.encodeJson(), updated.encodeJson());
+    expect(windowService.inkShortcutUpdates, 1);
+    expect(
+      shortcutSignature(windowService.lastInkShortcut!),
+      shortcutSignature(updated.forAction(ShortcutAction.ink)),
+    );
   });
 
   test('applyShortcuts persists Ctrl-backed shortcut updates', () async {
@@ -153,6 +227,11 @@ void main() {
     expect(settingsService.savedShortcuts?.encodeJson(), updated.encodeJson());
     expect(hotkeyService.updates.single.encodeJson(), updated.encodeJson());
     expect(trayService.updates.single.encodeJson(), updated.encodeJson());
+    expect(windowService.inkShortcutUpdates, 1);
+    expect(
+      shortcutSignature(windowService.lastInkShortcut!),
+      shortcutSignature(updated.forAction(ShortcutAction.ink)),
+    );
   });
 
   test('applyShortcuts rolls back runtime changes when save fails', () async {
@@ -172,6 +251,11 @@ void main() {
     expect(hotkeyService.updates.last.encodeJson(), initial.encodeJson());
     expect(trayService.updates.first.encodeJson(), updated.encodeJson());
     expect(trayService.updates.last.encodeJson(), initial.encodeJson());
+    expect(windowService.inkShortcutUpdates, 2);
+    expect(
+      shortcutSignature(windowService.lastInkShortcut!),
+      shortcutSignature(initial.forAction(ShortcutAction.ink)),
+    );
   });
 
   test(
@@ -186,10 +270,11 @@ void main() {
       expect(saved, isFalse);
       expect(state.shortcuts.encodeJson(), initial.encodeJson());
       expect(state.shortcutError, contains('hotkey update failed'));
-      expect(settingsService.savedShortcuts, isNull);
-      expect(hotkeyService.updates, isEmpty);
-      expect(trayService.updates, isEmpty);
-    },
+    expect(settingsService.savedShortcuts, isNull);
+    expect(hotkeyService.updates, isEmpty);
+    expect(trayService.updates, isEmpty);
+    expect(windowService.inkShortcutUpdates, 0);
+  },
   );
 
   test('refreshLaunchAtLogin loads the native state', () async {
@@ -224,6 +309,95 @@ void main() {
     expect(state.ocrPreviewEnabled, isFalse);
     expect(state.ocrPreviewError, contains('ocr save failed'));
   });
+
+  test('setInkColor persists the setting', () async {
+    const nextColor = Color(0xFF00C853);
+
+    await state.setInkColor(nextColor);
+
+    expect(state.inkColor, nextColor);
+    expect(settingsService.savedInkColor, nextColor);
+    expect(state.inkColorError, isNull);
+  });
+
+  test('setInkColor rolls back on save failure', () async {
+    settingsService.failInkColorSave = true;
+    const nextColor = Color(0xFF2979FF);
+
+    await state.setInkColor(nextColor);
+
+    expect(state.inkColor, const Color(0xFFFF0000));
+    expect(state.inkColorError, contains('ink color save failed'));
+  });
+
+  test('setInkStrokeWidth persists the setting', () async {
+    await state.setInkStrokeWidth(12);
+
+    expect(state.inkStrokeWidth, 12);
+    expect(settingsService.savedInkStrokeWidth, 12);
+    expect(state.inkStrokeWidthError, isNull);
+  });
+
+  test('setInkStrokeWidth rolls back on save failure', () async {
+    settingsService.failInkStrokeSave = true;
+
+    await state.setInkStrokeWidth(12);
+
+    expect(state.inkStrokeWidth, 6.0);
+    expect(state.inkStrokeWidthError, contains('ink stroke save failed'));
+  });
+
+  test('setInkSmoothingTolerance persists the setting', () async {
+    await state.setInkSmoothingTolerance(2.5);
+
+    expect(state.inkSmoothingTolerance, 2.5);
+    expect(settingsService.savedInkSmoothingTolerance, 2.5);
+    expect(state.inkSmoothingError, isNull);
+  });
+
+  test('setInkSmoothingTolerance rolls back on save failure', () async {
+    settingsService.failInkSmoothingSave = true;
+
+    await state.setInkSmoothingTolerance(2.5);
+
+    expect(state.inkSmoothingTolerance, 1.5);
+    expect(state.inkSmoothingError, contains('ink smoothing save failed'));
+  });
+
+  test('setInkAutoFadeSeconds persists the setting', () async {
+    await state.setInkAutoFadeSeconds(5);
+
+    expect(state.inkAutoFadeSeconds, 5);
+    expect(settingsService.savedInkAutoFadeSeconds, 5);
+    expect(state.inkAutoFadeError, isNull);
+  });
+
+  test('setInkAutoFadeSeconds rolls back on save failure', () async {
+    settingsService.failInkAutoFadeSave = true;
+
+    await state.setInkAutoFadeSeconds(5);
+
+    expect(state.inkAutoFadeSeconds, 0);
+    expect(state.inkAutoFadeError, contains('ink auto fade save failed'));
+  });
+
+  test('setInkEraserSize persists the setting', () async {
+    await state.setInkEraserSize(24);
+
+    expect(state.inkEraserSize, 24);
+    expect(settingsService.savedInkEraserSize, 24);
+    expect(state.inkEraserSizeError, isNull);
+  });
+
+  test('setInkEraserSize rolls back on save failure', () async {
+    settingsService.failInkEraserSizeSave = true;
+
+    await state.setInkEraserSize(24);
+
+    expect(state.inkEraserSize, 16);
+    expect(state.inkEraserSizeError, contains('ink eraser size save failed'));
+  });
+
 
   test('setOcrOpenUrlPromptEnabled persists the setting', () async {
     await state.setOcrOpenUrlPromptEnabled(false);

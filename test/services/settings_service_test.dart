@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/services/settings_service.dart';
+import 'package:a_snap/utils/ink_defaults.dart';
 
 Future<Directory> _tempDir() async {
   return Directory.systemTemp.createTemp('asnap_settings_test_');
@@ -24,10 +26,20 @@ void main() {
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
     final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
+    final inkColor = await service.loadInkColor();
+    final inkStrokeWidth = await service.loadInkStrokeWidth();
+    final inkSmoothingTolerance = await service.loadInkSmoothingTolerance();
+    final inkAutoFadeSeconds = await service.loadInkAutoFadeSeconds();
+    final inkEraserSize = await service.loadInkEraserSize();
 
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
     expect(ocrOpenUrlPrompt, isTrue);
+    expect(inkColor, kInkDefaultColor);
+    expect(inkStrokeWidth, kInkDefaultStrokeWidth);
+    expect(inkSmoothingTolerance, kInkDefaultSmoothingTolerance);
+    expect(inkAutoFadeSeconds, kInkDefaultAutoFadeSeconds);
+    expect(inkEraserSize, kInkDefaultEraserSize);
   });
 
   test('loads defaults when settings file lacks shortcuts', () async {
@@ -54,16 +66,31 @@ void main() {
     await service.saveShortcutBindings(updated);
     await service.saveOcrPreviewEnabled(true);
     await service.saveOcrOpenUrlPromptEnabled(false);
+    await service.saveInkColor(const Color(0xFF00C853));
+    await service.saveInkStrokeWidth(12);
+    await service.saveInkSmoothingTolerance(2.5);
+    await service.saveInkAutoFadeSeconds(5);
+    await service.saveInkEraserSize(24);
 
     var map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
     expect(map['shortcuts'], isA<Map>());
+    expect(map['inkColor'], 0xFF00C853);
+    expect(map['inkStrokeWidth'], 12);
+    expect(map['inkSmoothingTolerance'], 2.5);
+    expect(map['inkAutoFadeSeconds'], 5);
+    expect(map['inkEraserSize'], 24);
 
     await service.saveShortcutBindings(ShortcutBindings.defaults());
 
     map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
+    expect(map['inkColor'], 0xFF00C853);
+    expect(map['inkStrokeWidth'], 12);
+    expect(map['inkSmoothingTolerance'], 2.5);
+    expect(map['inkAutoFadeSeconds'], 5);
+    expect(map['inkEraserSize'], 24);
   });
 }

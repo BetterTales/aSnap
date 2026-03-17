@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import 'package:flutter/services.dart';
+import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../models/qr_code.dart';
+import '../utils/macos_key_codes.dart';
 
 /// A visible on-screen window detected via CGWindowListCopyWindowInfo.
 class DetectedWindow {
@@ -228,6 +230,12 @@ class WindowService {
   /// Called when a native floating toolbar button is pressed.
   void Function(String action)? onToolbarAction;
 
+  /// Called when the native ink shortcut is pressed.
+  VoidCallback? onInkKeyDown;
+
+  /// Called when the native ink shortcut is released.
+  VoidCallback? onInkKeyUp;
+
   /// Called after the native floating toolbar panel resolves its actual frame.
   ///
   /// The frame is reported in Flutter-local coordinates with a top-left origin.
@@ -251,6 +259,10 @@ class WindowService {
         onOverlayDisplayChanged?.call();
       } else if (call.method == 'onEscPressed') {
         onEscPressed?.call();
+      } else if (call.method == 'onInkKeyDown') {
+        onInkKeyDown?.call();
+      } else if (call.method == 'onInkKeyUp') {
+        onInkKeyUp?.call();
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
       } else if (call.method == 'onEditPinnedImage') {
@@ -421,9 +433,25 @@ class WindowService {
     await _channel.invokeMethod('enterOverlayMode', args);
   }
 
+  /// Show a transparent full-screen overlay for ink drawing.
+  Future<void> enterInkOverlay({Offset? screenOrigin}) async {
+    if (!Platform.isMacOS) return;
+    final args = screenOrigin != null
+        ? {'screenOriginX': screenOrigin.dx, 'screenOriginY': screenOrigin.dy}
+        : null;
+    await _channel.invokeMethod('enterInkOverlayMode', args);
+  }
+
   /// Fully exit overlay mode: restore window style, level, observers.
   Future<void> exitOverlay() async {
     await _channel.invokeMethod('exitOverlayMode');
+  }
+
+  Future<void> setOverlayMousePassthrough({required bool passthrough}) async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('setOverlayMousePassthrough', {
+      'passthrough': passthrough,
+    });
   }
 
   /// Clean overlay-only state without restoring styleMask.
@@ -578,6 +606,28 @@ class WindowService {
   /// Remove the native Esc key monitors. Safe to call even if not monitoring.
   Future<void> stopEscMonitor() async {
     await _channel.invokeMethod('stopEscMonitor');
+  }
+
+  Future<void> setInkShortcut(HotKey hotKey) async {
+    if (!Platform.isMacOS) return;
+    final keyCode = macOsKeyCodeForPhysicalKey(hotKey.physicalKey);
+    if (keyCode == null) {
+      throw Exception('Failed to encode ink shortcut key code.');
+    }
+    await _channel.invokeMethod('setInkShortcut', {
+      'keyCode': keyCode,
+      'modifiers': [...?hotKey.modifiers?.map((modifier) => modifier.name)],
+    });
+  }
+
+  Future<void> startInkMonitor() async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('startInkMonitor');
+  }
+
+  Future<void> stopInkMonitor() async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('stopInkMonitor');
   }
 
   /// Start background polling for window rects on a native background thread.

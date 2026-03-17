@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'models/annotation.dart';
+import 'models/shortcut_bindings.dart';
 import 'services/capture_service.dart';
 import 'services/clipboard_service.dart';
 import 'services/file_service.dart';
@@ -18,6 +19,7 @@ import 'services/tray_service.dart';
 import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
+import 'state/ink_state.dart';
 import 'state/settings_state.dart';
 import 'utils/annotation_compositor.dart';
 import 'utils/url_detection.dart';
@@ -91,6 +93,7 @@ List<Rect> _globalRectsToLocal(Offset screenOrigin) {
 
 late final AppState _appState;
 late final AnnotationState _annotationState;
+late final InkState _inkState;
 late final CaptureService _captureService;
 late final ClipboardService _clipboardService;
 late final FileService _fileService;
@@ -108,6 +111,7 @@ void main() async {
 
   _appState = AppState();
   _annotationState = AnnotationState();
+  _inkState = InkState();
   _captureService = CaptureService();
   _clipboardService = ClipboardService();
   _fileService = FileService();
@@ -124,10 +128,22 @@ void main() async {
       .loadOcrPreviewEnabled();
   final initialOcrOpenUrlPromptEnabled = await _settingsService
       .loadOcrOpenUrlPromptEnabled();
+  final initialInkColor = await _settingsService.loadInkColor();
+  final initialInkStrokeWidth = await _settingsService.loadInkStrokeWidth();
+  final initialInkSmoothingTolerance = await _settingsService
+      .loadInkSmoothingTolerance();
+  final initialInkAutoFadeSeconds = await _settingsService
+      .loadInkAutoFadeSeconds();
+  final initialInkEraserSize = await _settingsService.loadInkEraserSize();
   _settingsState = SettingsState(
     initialShortcuts: initialShortcuts,
     initialOcrPreviewEnabled: initialOcrPreviewEnabled,
     initialOcrOpenUrlPromptEnabled: initialOcrOpenUrlPromptEnabled,
+    initialInkColor: initialInkColor,
+    initialInkStrokeWidth: initialInkStrokeWidth,
+    initialInkSmoothingTolerance: initialInkSmoothingTolerance,
+    initialInkAutoFadeSeconds: initialInkAutoFadeSeconds,
+    initialInkEraserSize: initialInkEraserSize,
     settingsService: _settingsService,
     windowService: _windowService,
     hotkeyService: _hotkeyService,
@@ -138,6 +154,7 @@ void main() async {
     ASnapApp(
       appState: _appState,
       annotationState: _annotationState,
+      inkState: _inkState,
       settingsState: _settingsState,
       windowService: _windowService,
       navigatorKey: _navigatorKey,
@@ -160,6 +177,11 @@ void main() async {
       onCloseSettings: _handleCloseSettings,
       onSuspendHotkeys: _handleSuspendHotkeys,
       onResumeHotkeys: _handleResumeHotkeys,
+      onInkKeyDown: _handleInkKeyDown,
+      onInkKeyUp: _handleInkKeyUp,
+      onInkExit: () async {
+        _handleEscPressed();
+      },
     ),
   );
 
@@ -198,6 +220,8 @@ Future<void> _initAfterRunApp() async {
   };
   _windowService.onOverlayDisplayChanged = _handleDisplayChanged;
   _windowService.onEscPressed = _handleEscPressed;
+  _windowService.onInkKeyDown = _handleInkKeyDown;
+  _windowService.onInkKeyUp = _handleInkKeyUp;
   _windowService.onScrollCaptureDone = _handleScrollCaptureDone;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
@@ -221,7 +245,13 @@ Future<void> _initAfterRunApp() async {
     onScrollCapture: _handleScrollCapture,
     onPin: _handlePin,
     onOcr: _handleOcrShortcut,
+    onInk: _handleInkKeyDown,
   );
+
+  await _windowService.setInkShortcut(
+    _settingsState.shortcuts.forAction(ShortcutAction.ink),
+  );
+  await _windowService.startInkMonitor();
 
   // Start background rect polling — keeps top-level window rects warm
   // so captures are instant; element hit-testing stays on-demand.
@@ -254,6 +284,15 @@ void _handleEscPressed() {
         }),
       );
       return;
+    case InkOverlayWorkflow():
+      if (_escActionInProgress) return;
+      _escActionInProgress = true;
+      unawaited(
+        _exitInkOverlay().whenComplete(() {
+          _escActionInProgress = false;
+        }),
+      );
+      return;
     case ScrollCapturingWorkflow():
       // Esc during scroll capture = cancel (discard frames)
       if (_escActionInProgress) return;
@@ -278,7 +317,59 @@ void _handleEscPressed() {
   }
 }
 
+Future<void> _handleInkKeyDown() async {
+  if (!Platform.isMacOS) return;
+  if (_appState.workflow is PreparingCaptureWorkflow ||
+      _appState.workflow is RegionSelectionWorkflow ||
+      _appState.workflow is ScrollCapturingWorkflow ||
+      _appState.workflow is ScrollResultWorkflow ||
+      _appState.workflow is PreviewWorkflow ||
+      _appState.workflow is SettingsWorkflow) {
+    return;
+  }
+
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink != null) {
+    if (ink.drawingEnabled) return;
+    _appState.updateInkDrawing(true);
+    await _windowService.setOverlayMousePassthrough(passthrough: false);
+    return;
+  }
+
+  await _windowService.enterInkOverlay();
+  _appState.setInkOverlay(drawingEnabled: true);
+  await _windowService.setOverlayMousePassthrough(passthrough: false);
+  await _windowService.startEscMonitor();
+}
+
+Future<void> _handleInkKeyUp() async {
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink == null) return;
+
+  _inkState.finishStroke();
+  if (ink.drawingEnabled) {
+    _appState.updateInkDrawing(false);
+  }
+  await _windowService.setOverlayMousePassthrough(passthrough: true);
+}
+
+Future<void> _exitInkOverlay() async {
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink == null) return;
+  _inkState.clear();
+  _appState.clear();
+  await _windowService.stopEscMonitor();
+  await _windowService.exitOverlay();
+  await _windowService.hidePreview();
+}
+
+Future<void> _ensureInkOverlayClosed() async {
+  if (_appState.inkOverlayWorkflow == null) return;
+  await _exitInkOverlay();
+}
+
 Future<void> _handleOpenSettings() async {
+  await _ensureInkOverlayClosed();
   if (_appState.workflow is PreparingCaptureWorkflow) {
     return;
   }
@@ -297,6 +388,8 @@ Future<void> _handleOpenSettings() async {
     case PreviewWorkflow():
     case ScrollResultWorkflow():
       await _handleDiscard();
+      break;
+    case InkOverlayWorkflow():
       break;
     case SettingsWorkflow():
       await _windowService.showSettingsWindow();
@@ -450,6 +543,7 @@ Future<Rect?> _handleHitTest(Offset localPoint) async {
 }
 
 Future<void> _handleFullScreenCapture() async {
+  await _ensureInkOverlayClosed();
   if (_appState.workflow is PreparingCaptureWorkflow) return;
   _escActionInProgress = false;
   _clearLastCopiedPinCache();
@@ -607,6 +701,7 @@ Future<void> _startSelectionCapture({
 }
 
 Future<void> _handleRegionCapture() async {
+  await _ensureInkOverlayClosed();
   if (_appState.workflow is PreparingCaptureWorkflow) return;
   await _startSelectionCapture(
     kind: CaptureKind.region,
@@ -615,6 +710,7 @@ Future<void> _handleRegionCapture() async {
 }
 
 Future<void> _handleOcrShortcut() async {
+  await _ensureInkOverlayClosed();
   if (_appState.workflow is PreparingCaptureWorkflow) return;
   await _startSelectionCapture(
     kind: CaptureKind.ocr,
@@ -1545,6 +1641,7 @@ void _handlePinnedImageClosed(int panelId) {
 // ---------------------------------------------------------------------------
 
 Future<void> _handleScrollCapture() async {
+  await _ensureInkOverlayClosed();
   if (_appState.workflow is PreparingCaptureWorkflow ||
       switch (_appState.workflow) {
         RegionSelectionWorkflow(selectionMode: SelectionMode.scroll) => true,
@@ -1685,6 +1782,7 @@ Future<void> _handleQuit() async {
   unawaited(_windowService.closePinnedImage());
 
   await _windowService.stopEscMonitor();
+  await _windowService.stopInkMonitor();
   await _windowService.stopRectPolling();
   await _hotkeyService.unregisterAll();
   await _trayService.destroy();

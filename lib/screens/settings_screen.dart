@@ -3,10 +3,12 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
 import '../models/shortcut_bindings.dart';
 import '../state/settings_state.dart';
+import '../utils/ink_defaults.dart';
 
 const _canvasColor = Color(0xFFF4EEE4);
 const _surfaceColor = Color(0xFFF7F4EF);
@@ -20,6 +22,17 @@ const _accentColor = Color(0xFF7A6854);
 const _inactiveControlColor = Color(0xFFE5DED2);
 const _shortcutButtonWidth = 220.0;
 const _shortcutActionSlotWidth = 32.0;
+const _inkSectionTitle = 'Ink Drawing';
+const _inkColorRowHeight = 44.0;
+
+const _inkPresetColors = [
+  Color(0xFFFF0000),
+  Color(0xFF00C853),
+  Color(0xFF2979FF),
+  Color(0xFFFFD600),
+  Color(0xFFFFFFFF),
+  Color(0xFF000000),
+];
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -273,6 +286,132 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 const SizedBox(height: 10),
                                 _SectionNote(
                                   text: widget.settingsState.shortcutError!,
+                                  color: _dangerColor,
+                                ),
+                              ],
+                              const SizedBox(height: 28),
+                              Text(
+                                _inkSectionTitle,
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                              const SizedBox(height: 12),
+                              _SurfaceGroup(
+                                child: Column(
+                                  children: [
+                                    _InkColorRow(
+                                      color: widget.settingsState.inkColor,
+                                      onColorPicked: (color) {
+                                        widget.settingsState
+                                            .clearInkColorError();
+                                        unawaited(
+                                          widget.settingsState.setInkColor(
+                                            color,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _InkStrokeRow(
+                                      strokeWidth:
+                                          widget.settingsState.inkStrokeWidth,
+                                      onStrokeWidthChanged: (value) {
+                                        widget.settingsState
+                                            .clearInkStrokeWidthError();
+                                        unawaited(
+                                          widget.settingsState
+                                              .setInkStrokeWidth(value),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _InkSmoothingRow(
+                                      tolerance: widget
+                                          .settingsState
+                                          .inkSmoothingTolerance,
+                                      onToleranceChanged: (value) {
+                                        widget.settingsState
+                                            .clearInkSmoothingError();
+                                        unawaited(
+                                          widget.settingsState
+                                              .setInkSmoothingTolerance(value),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _InkAutoFadeRow(
+                                      seconds: widget
+                                          .settingsState
+                                          .inkAutoFadeSeconds,
+                                      onSecondsChanged: (value) {
+                                        widget.settingsState
+                                            .clearInkAutoFadeError();
+                                        unawaited(
+                                          widget.settingsState
+                                              .setInkAutoFadeSeconds(value),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _InkEraserSizeRow(
+                                      size: widget.settingsState.inkEraserSize,
+                                      onSizeChanged: (value) {
+                                        widget.settingsState
+                                            .clearInkEraserSizeError();
+                                        unawaited(
+                                          widget.settingsState.setInkEraserSize(
+                                            value,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const _SectionNote(
+                                text:
+                                    'Right-click to erase while drawing. Hold'
+                                    ' right-click and scroll to resize the'
+                                    ' eraser.',
+                              ),
+                              if (widget.settingsState.inkColorError != null ||
+                                  widget.settingsState.inkStrokeWidthError !=
+                                      null ||
+                                  widget.settingsState.inkSmoothingError !=
+                                      null ||
+                                  widget.settingsState.inkAutoFadeError !=
+                                      null ||
+                                  widget.settingsState.inkEraserSizeError !=
+                                      null) ...[
+                                const SizedBox(height: 10),
+                                _SectionNote(
+                                  text: [
+                                    if (widget.settingsState.inkColorError !=
+                                        null)
+                                      widget.settingsState.inkColorError!,
+                                    if (widget
+                                            .settingsState
+                                            .inkStrokeWidthError !=
+                                        null)
+                                      widget.settingsState.inkStrokeWidthError!,
+                                    if (widget
+                                            .settingsState
+                                            .inkSmoothingError !=
+                                        null)
+                                      widget.settingsState.inkSmoothingError!,
+                                    if (widget.settingsState.inkAutoFadeError !=
+                                        null)
+                                      widget.settingsState.inkAutoFadeError!,
+                                    if (widget
+                                            .settingsState
+                                            .inkEraserSizeError !=
+                                        null)
+                                      widget.settingsState.inkEraserSizeError!,
+                                  ].join(' '),
                                   color: _dangerColor,
                                 ),
                               ],
@@ -630,6 +769,386 @@ class _SectionNote extends StatelessWidget {
           fontWeight: FontWeight.w600,
         ),
       ),
+    );
+  }
+}
+
+class _InkColorRow extends StatelessWidget {
+  const _InkColorRow({required this.color, required this.onColorPicked});
+
+  final Color color;
+  final ValueChanged<Color> onColorPicked;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: _inkColorRowHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Color',
+                style: TextStyle(color: _inkColor, fontWeight: FontWeight.w600),
+              ),
+            ),
+            for (final preset in _inkPresetColors) ...[
+              _InkColorSwatch(
+                color: preset,
+                isSelected: color == preset,
+                onTap: () => onColorPicked(preset),
+              ),
+              const SizedBox(width: 6),
+            ],
+            _InkCustomColorButton(
+              currentColor: color,
+              onColorPicked: onColorPicked,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InkStrokeRow extends StatelessWidget {
+  const _InkStrokeRow({
+    required this.strokeWidth,
+    required this.onStrokeWidthChanged,
+  });
+
+  final double strokeWidth;
+  final ValueChanged<double> onStrokeWidthChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Stroke',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                '${strokeWidth.round()}px',
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: strokeWidth.clamp(kInkMinStrokeWidth, kInkMaxStrokeWidth),
+              min: kInkMinStrokeWidth,
+              max: kInkMaxStrokeWidth,
+              divisions: (kInkMaxStrokeWidth - kInkMinStrokeWidth).round(),
+              onChanged: onStrokeWidthChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InkSmoothingRow extends StatelessWidget {
+  const _InkSmoothingRow({
+    required this.tolerance,
+    required this.onToleranceChanged,
+  });
+
+  final double tolerance;
+  final ValueChanged<double> onToleranceChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = tolerance.clamp(
+      kInkMinSmoothingTolerance,
+      kInkMaxSmoothingTolerance,
+    );
+    final divisions =
+        ((kInkMaxSmoothingTolerance - kInkMinSmoothingTolerance) / 0.5).round();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Smoothing',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                clamped.toStringAsFixed(1),
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: clamped,
+              min: kInkMinSmoothingTolerance,
+              max: kInkMaxSmoothingTolerance,
+              divisions: divisions > 0 ? divisions : null,
+              onChanged: onToleranceChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InkAutoFadeRow extends StatelessWidget {
+  const _InkAutoFadeRow({
+    required this.seconds,
+    required this.onSecondsChanged,
+  });
+
+  final double seconds;
+  final ValueChanged<double> onSecondsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = seconds.clamp(
+      kInkMinAutoFadeSeconds,
+      kInkMaxAutoFadeSeconds,
+    );
+    final divisions = ((kInkMaxAutoFadeSeconds - kInkMinAutoFadeSeconds) / 0.5)
+        .round();
+    final label = clamped <= 0.01 ? 'Off' : '${clamped.toStringAsFixed(1)}s';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Auto-fade',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                label,
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: clamped,
+              min: kInkMinAutoFadeSeconds,
+              max: kInkMaxAutoFadeSeconds,
+              divisions: divisions > 0 ? divisions : null,
+              onChanged: onSecondsChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InkEraserSizeRow extends StatelessWidget {
+  const _InkEraserSizeRow({required this.size, required this.onSizeChanged});
+
+  final double size;
+  final ValueChanged<double> onSizeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = size.clamp(kInkMinEraserSize, kInkMaxEraserSize);
+    final divisions = (kInkMaxEraserSize - kInkMinEraserSize).round();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Eraser size',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                '${clamped.round()}px',
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: clamped,
+              min: kInkMinEraserSize,
+              max: kInkMaxEraserSize,
+              divisions: divisions > 0 ? divisions : null,
+              onChanged: onSizeChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InkColorSwatch extends StatelessWidget {
+  const _InkColorSwatch({
+    required this.color,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  final Color color;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        width: 18,
+        height: 18,
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: isSelected ? _accentColor : _surfaceBorderColor,
+            width: isSelected ? 2 : 1,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _InkCustomColorButton extends StatelessWidget {
+  const _InkCustomColorButton({
+    required this.currentColor,
+    required this.onColorPicked,
+  });
+
+  final Color currentColor;
+  final ValueChanged<Color> onColorPicked;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Custom color',
+      visualDensity: VisualDensity.compact,
+      splashRadius: 18,
+      icon: const Icon(
+        Icons.color_lens_outlined,
+        size: 18,
+        color: _mutedInkColor,
+      ),
+      onPressed: () async {
+        var nextColor = currentColor;
+        await showDialog<void>(
+          context: context,
+          builder: (context) {
+            return AlertDialog(
+              backgroundColor: _surfaceColor,
+              title: const Text('Pick color'),
+              content: SingleChildScrollView(
+                child: ColorPicker(
+                  pickerColor: currentColor,
+                  onColorChanged: (color) => nextColor = color,
+                  enableAlpha: true,
+                  labelTypes: const [],
+                  pickerAreaHeightPercent: 0.7,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancel'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    Navigator.of(context).pop();
+                    onColorPicked(nextColor);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }

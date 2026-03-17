@@ -20,6 +20,7 @@ class HotkeyService {
   VoidCallback? _onScrollCapture;
   VoidCallback? _onPin;
   VoidCallback? _onOcr;
+  VoidCallback? _onInk;
 
   Future<void> initialize({
     required ShortcutBindings bindings,
@@ -28,6 +29,7 @@ class HotkeyService {
     required VoidCallback onScrollCapture,
     required VoidCallback onPin,
     required VoidCallback onOcr,
+    VoidCallback? onInk,
   }) async {
     _bindings = bindings;
     _onFullScreen = onFullScreen;
@@ -35,6 +37,7 @@ class HotkeyService {
     _onScrollCapture = onScrollCapture;
     _onPin = onPin;
     _onOcr = onOcr;
+    _onInk = onInk;
     _enabled = true;
     _bindNativeChannel();
     await _registerCurrentBindings();
@@ -199,6 +202,8 @@ class HotkeyService {
         _onPin?.call();
       case ShortcutAction.ocr:
         _onOcr?.call();
+      case ShortcutAction.ink:
+        _onInk?.call();
     }
   }
 }

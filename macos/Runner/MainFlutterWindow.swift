@@ -40,6 +40,14 @@ class MainFlutterWindow: NSWindow {
   // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
   private var localEscMonitor: Any?
 
+  // Ink shortcut monitors (global)
+  private var inkKeyDownMonitor: Any?
+  private var inkKeyUpMonitor: Any?
+  private var inkFlagsMonitor: Any?
+  private var inkShortcutKeyCode: UInt16?
+  private var inkShortcutFlags: NSEvent.ModifierFlags = []
+  private var inkShortcutActive = false
+
   // Shortcut mapping for patching tray_manager NSMenu items with keyEquivalent.
   // Keys are menu item titles, values are (keyEquivalent, modifierMask).
   private var trayShortcuts: [String: (equiv: String, mask: NSEvent.ModifierFlags)] = [:]
@@ -649,6 +657,10 @@ class MainFlutterWindow: NSWindow {
         // after Flutter renders (which also installs monitors).
         self.configureOverlay(call.arguments as? [String: Double])
         result(nil)
+      case "enterInkOverlayMode":
+        // Configure + position a transparent overlay for ink drawing.
+        self.configureInkOverlay(call.arguments as? [String: Double])
+        result(nil)
       case "cleanupOverlayMode":
         // Overlay cleanup that also restores styleMask (needed so
         // window_manager's setTitleBarStyle won't crash on a borderless
@@ -732,6 +744,23 @@ class MainFlutterWindow: NSWindow {
           self.showOrUpdateToolbarPanel(args)
         }
         MainFlutterWindow.log("revealOverlay: alpha=1")
+        result(nil)
+      case "setOverlayMousePassthrough":
+        guard let args = call.arguments as? [String: Any],
+          let passthrough = args["passthrough"] as? Bool
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setOverlayMousePassthrough requires passthrough",
+              details: nil))
+          return
+        }
+        self.ignoresMouseEvents = passthrough
+        self.acceptsMouseMovedEvents = !passthrough
+        if !passthrough {
+          self.orderFrontRegardless()
+        }
         result(nil)
       case "resizeToRect":
         // Shrink the borderless overlay window to the selection rect for in-place preview.
@@ -831,6 +860,28 @@ class MainFlutterWindow: NSWindow {
       case "stopEscMonitor":
         self.stopEscMonitorImpl()
         MainFlutterWindow.log("stopEscMonitor: removed")
+        result(nil)
+      case "setInkShortcut":
+        guard let args = call.arguments as? [String: Any],
+          let keyCode = args["keyCode"] as? NSNumber
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setInkShortcut requires keyCode",
+              details: nil))
+          return
+        }
+        let modifierNames = args["modifiers"] as? [String] ?? []
+        self.inkShortcutKeyCode = UInt16(truncating: keyCode)
+        self.inkShortcutFlags = Self.inkModifierFlags(from: modifierNames)
+        self.inkShortcutActive = false
+        result(nil)
+      case "startInkMonitor":
+        self.startInkMonitorImpl()
+        result(nil)
+      case "stopInkMonitor":
+        self.stopInkMonitorImpl()
         result(nil)
       case "startRectPolling":
         let includeAxChildren =
@@ -1827,6 +1878,115 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  // MARK: - Ink shortcut helpers
+
+  private static func inkModifierFlags(from names: [String]) -> NSEvent.ModifierFlags {
+    var flags: NSEvent.ModifierFlags = []
+    for name in names {
+      switch name {
+      case "control":
+        flags.insert(.control)
+      case "shift":
+        flags.insert(.shift)
+      case "alt":
+        flags.insert(.option)
+      case "meta":
+        flags.insert(.command)
+      case "fn":
+        flags.insert(.function)
+      case "capsLock":
+        flags.insert(.capsLock)
+      default:
+        break
+      }
+    }
+    return flags
+  }
+
+  private func startInkMonitorImpl() {
+    stopInkMonitorImpl()
+
+    self.inkKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
+      [weak self] event in
+      self?.handleInkKeyDown(event)
+    }
+    self.inkKeyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) {
+      [weak self] event in
+      self?.handleInkKeyUp(event)
+    }
+    self.inkFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
+      [weak self] event in
+      self?.handleInkFlagsChanged(event)
+    }
+  }
+
+  private func stopInkMonitorImpl() {
+    if let monitor = self.inkKeyDownMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyDownMonitor = nil
+    }
+    if let monitor = self.inkKeyUpMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyUpMonitor = nil
+    }
+    if let monitor = self.inkFlagsMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkFlagsMonitor = nil
+    }
+    self.inkShortcutActive = false
+  }
+
+  private func inkModifierFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
+    return event.modifierFlags
+      .intersection(.deviceIndependentFlagsMask)
+      .subtracting([.capsLock, .function])
+  }
+
+  private func normalizedInkShortcutFlags() -> NSEvent.ModifierFlags {
+    return inkShortcutFlags
+      .intersection(.deviceIndependentFlagsMask)
+      .subtracting([.capsLock, .function])
+  }
+
+  private func matchesInkShortcut(_ event: NSEvent) -> Bool {
+    guard let keyCode = inkShortcutKeyCode else { return false }
+    guard event.keyCode == keyCode else { return false }
+    let requiredFlags = normalizedInkShortcutFlags()
+    let eventFlags = inkModifierFlags(for: event)
+    return eventFlags.isSuperset(of: requiredFlags)
+  }
+
+  private func handleInkKeyDown(_ event: NSEvent) {
+    guard matchesInkShortcut(event) else { return }
+    if event.isARepeat { return }
+    if inkShortcutActive { return }
+    inkShortcutActive = true
+    DispatchQueue.main.async { [weak self] in
+      self?.flutterChannel?.invokeMethod("onInkKeyDown", arguments: nil)
+    }
+  }
+
+  private func handleInkKeyUp(_ event: NSEvent) {
+    guard let keyCode = inkShortcutKeyCode, event.keyCode == keyCode else { return }
+    guard inkShortcutActive else { return }
+    inkShortcutActive = false
+    DispatchQueue.main.async { [weak self] in
+      self?.flutterChannel?.invokeMethod("onInkKeyUp", arguments: nil)
+    }
+  }
+
+  private func handleInkFlagsChanged(_ event: NSEvent) {
+    guard inkShortcutActive else { return }
+    let flags = inkModifierFlags(for: event)
+    let requiredFlags = normalizedInkShortcutFlags()
+    if !flags.isSuperset(of: requiredFlags) {
+      inkShortcutActive = false
+      DispatchQueue.main.async { [weak self] in
+        self?.flutterChannel?.invokeMethod("onInkKeyUp", arguments: nil)
+      }
+    }
+  }
+
   /// Remove overlay-only observers/panels/state.
   /// When [restoreStyleMask] is true, also restore the pre-overlay style mask.
   /// When false, keeps current style mask to avoid flash-prone style changes.
@@ -2632,6 +2792,80 @@ class MainFlutterWindow: NSWindow {
     self.setFrame(screenFrame, display: true, animate: false)
 
     MainFlutterWindow.log("configureOverlay: done, frame=\(NSStringFromRect(self.frame))")
+  }
+
+  /// Configure + position a transparent overlay for ink drawing.
+  private func configureInkOverlay(_ args: [String: Double]?) {
+    let allScreens = NSScreen.screens
+    guard !allScreens.isEmpty else { return }
+
+    func cgOrigin(for screen: NSScreen) -> (x: Double, y: Double)? {
+      guard let id = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+      else {
+        return nil
+      }
+      let bounds = CGDisplayBounds(id.uint32Value)
+      return (Double(bounds.origin.x), Double(bounds.origin.y))
+    }
+
+    let targetScreen: NSScreen
+    if let args = args,
+      let targetCGX = args["screenOriginX"],
+      let targetCGY = args["screenOriginY"]
+    {
+      targetScreen =
+        allScreens.first(where: { screen in
+          guard let origin = cgOrigin(for: screen) else { return false }
+          return abs(origin.x - targetCGX) < 2 && abs(origin.y - targetCGY) < 2
+        }) ?? allScreens.first(where: { $0.frame.contains(NSEvent.mouseLocation) })
+        ?? NSScreen.main ?? allScreens[0]
+      MainFlutterWindow.log("configureInkOverlay: matched by CG origin (\(targetCGX),\(targetCGY))")
+    } else {
+      let mouseLocation = NSEvent.mouseLocation
+      targetScreen =
+        allScreens.first(where: { $0.frame.contains(mouseLocation) })
+        ?? NSScreen.main ?? allScreens[0]
+      MainFlutterWindow.log("configureInkOverlay: matched by mouse \(mouseLocation)")
+    }
+    let screenFrame = targetScreen.frame
+    MainFlutterWindow.log("configureInkOverlay: target=\(NSStringFromRect(screenFrame))")
+
+    self.overlayScreenFrame = screenFrame
+
+    if self.savedStyleMask == nil {
+      self.savedStyleMask = self.styleMask
+    }
+
+    self.alphaValue = 1
+    self.styleMask = [.borderless]
+    self.backgroundColor = .clear
+    self.contentView?.wantsLayer = true
+    self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+    self.hasShadow = false
+    self.isMovableByWindowBackground = false
+    self.minSize = NSSize(width: 1, height: 1)
+    self.maxSize = NSSize(
+      width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    self.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.maximumWindow)) - 1)
+    self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+    self.ignoresMouseEvents = true
+    self.acceptsMouseMovedEvents = false
+
+    self.setFrame(screenFrame, display: true, animate: false)
+    self.orderFrontRegardless()
+    self.setFlutterSurfaceOpaque(false)
+
+    DispatchQueue.main.async { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
+
+    MainFlutterWindow.log("configureInkOverlay: done, frame=\(NSStringFromRect(self.frame))")
   }
 
   /// Install the Space-change and display-change monitors.

@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
-enum ShortcutAction { region, scrollCapture, fullScreen, pin, ocr }
+enum ShortcutAction { region, scrollCapture, fullScreen, pin, ocr, ink }
 
 extension ShortcutActionX on ShortcutAction {
   String get id => switch (this) {
@@ -13,6 +13,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.fullScreen => 'shortcut_full_screen',
     ShortcutAction.pin => 'shortcut_pin',
     ShortcutAction.ocr => 'shortcut_ocr',
+    ShortcutAction.ink => 'shortcut_ink',
   };
 
   String get label => switch (this) {
@@ -21,6 +22,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.fullScreen => 'Full Screen',
     ShortcutAction.pin => 'Pin',
     ShortcutAction.ocr => 'OCR',
+    ShortcutAction.ink => 'Ink',
   };
 
   String get description => switch (this) {
@@ -29,6 +31,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.fullScreen => 'Capture the display under the cursor.',
     ShortcutAction.pin => 'Pin the latest copied image to the screen.',
     ShortcutAction.ocr => 'Start an OCR region capture.',
+    ShortcutAction.ink => 'Hold to draw on screen.',
   };
 }
 
@@ -39,6 +42,7 @@ class ShortcutBindings {
     required this.fullScreen,
     required this.pin,
     required this.ocr,
+    required this.ink,
   });
 
   factory ShortcutBindings.defaults() {
@@ -73,6 +77,11 @@ class ShortcutBindings {
         key: PhysicalKeyboardKey.keyO,
         modifiers: [primaryModifier, secondaryModifier],
       ),
+      ink: defaultShortcutFor(
+        ShortcutAction.ink,
+        key: PhysicalKeyboardKey.keyD,
+        modifiers: [primaryModifier, secondaryModifier],
+      ),
     );
   }
 
@@ -96,6 +105,7 @@ class ShortcutBindings {
       fullScreen: read(ShortcutAction.fullScreen, defaults.fullScreen),
       pin: read(ShortcutAction.pin, defaults.pin),
       ocr: read(ShortcutAction.ocr, defaults.ocr),
+      ink: read(ShortcutAction.ink, defaults.ink),
     );
   }
 
@@ -104,6 +114,7 @@ class ShortcutBindings {
   final HotKey fullScreen;
   final HotKey pin;
   final HotKey ocr;
+  final HotKey ink;
 
   Iterable<MapEntry<ShortcutAction, HotKey>> get entries sync* {
     yield MapEntry(ShortcutAction.region, region);
@@ -111,6 +122,7 @@ class ShortcutBindings {
     yield MapEntry(ShortcutAction.fullScreen, fullScreen);
     yield MapEntry(ShortcutAction.pin, pin);
     yield MapEntry(ShortcutAction.ocr, ocr);
+    yield MapEntry(ShortcutAction.ink, ink);
   }
 
   HotKey forAction(ShortcutAction action) => switch (action) {
@@ -119,6 +131,7 @@ class ShortcutBindings {
     ShortcutAction.fullScreen => fullScreen,
     ShortcutAction.pin => pin,
     ShortcutAction.ocr => ocr,
+    ShortcutAction.ink => ink,
   };
 
   ShortcutBindings copyWithAction(ShortcutAction action, HotKey hotKey) {
@@ -131,6 +144,7 @@ class ShortcutBindings {
       fullScreen: action == ShortcutAction.fullScreen ? normalized : fullScreen,
       pin: action == ShortcutAction.pin ? normalized : pin,
       ocr: action == ShortcutAction.ocr ? normalized : ocr,
+      ink: action == ShortcutAction.ink ? normalized : ink,
     );
   }
 
@@ -140,6 +154,7 @@ class ShortcutBindings {
     ShortcutAction.fullScreen.name: fullScreen.toJson(),
     ShortcutAction.pin.name: pin.toJson(),
     ShortcutAction.ocr.name: ocr.toJson(),
+    ShortcutAction.ink.name: ink.toJson(),
   };
 
   ShortcutValidationResult validate() {
@@ -285,6 +300,7 @@ List<Map<String, dynamic>> trayShortcutDescriptors(ShortcutBindings bindings) {
   final descriptors = <Map<String, dynamic>>[];
 
   for (final entry in bindings.entries) {
+    if (entry.key == ShortcutAction.ink) continue;
     final keyEquivalent = trayKeyEquivalent(entry.value);
     if (keyEquivalent == null) continue;
     descriptors.add({
