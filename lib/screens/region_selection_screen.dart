@@ -858,24 +858,6 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         _phase == _SelectionPhase.moving;
   }
 
-  Rect? _toolbarRect(Size screenSize) {
-    final sel = _selectionRect;
-    if (sel == null) return null;
-    return computeFloatingToolbarRect(
-      anchorRect: sel,
-      screenSize: screenSize,
-      toolbarSize: _nativeToolbarSize(),
-    );
-  }
-
-  Size _nativeToolbarSize() {
-    return computeNativeToolbarSize(
-      showPin: widget.onPin != null,
-      showHistoryControls: true,
-      showOcr: nativeToolbarShowOcr,
-    );
-  }
-
   @override
   void handleNativeToolbarAction(String action) {
     switch (action) {
@@ -948,8 +930,17 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     }
     final screenSize = MediaQuery.sizeOf(context);
     final dpr = MediaQuery.devicePixelRatioOf(context);
-    final toolbarRect = _toolbarRect(screenSize);
-    final showToolbar = _shouldShowToolbar && toolbarRect != null;
+    final toolbarAnchorRect = _selectionRect;
+    final showToolbar = _shouldShowToolbar && toolbarAnchorRect != null;
+    final toolbarAnchor = showToolbar
+        ? nativeToolbarAnchorPoint(
+            viewportSize: screenSize,
+            fallbackAnchor: computeFloatingToolbarAnchor(
+              anchorRect: toolbarAnchorRect,
+              screenSize: screenSize,
+            ),
+          )
+        : null;
     final annotationState = widget.annotationState;
     final showQrOverlay =
         !widget.isQuickSelection &&
@@ -963,7 +954,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (showToolbar) {
-        syncNativeToolbar(toolbarRect);
+        syncNativeToolbar(
+          placement: NativeToolbarPlacement.belowAnchor,
+          anchorRect: toolbarAnchorRect,
+        );
       } else {
         hideNativeToolbar();
       }
@@ -1078,8 +1072,8 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
 
             if (showToolbar)
               Positioned(
-                left: toolbarRect.center.dx,
-                top: toolbarRect.top.clamp(0.0, screenSize.height).toDouble(),
+                left: toolbarAnchor!.dx,
+                top: toolbarAnchor.dy,
                 child: CompositedTransformTarget(
                   link: _popoverAnchorLink,
                   child: const SizedBox(width: 1, height: 1),

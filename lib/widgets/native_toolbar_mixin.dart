@@ -14,16 +14,13 @@ import 'tool_popover_mixin.dart';
 /// identical across preview, region-selection, and scroll-result flows.
 mixin NativeToolbarMixin<T extends StatefulWidget>
     on State<T>, ToolPopoverMixin<T> {
-  Rect? _lastToolbarRect;
-  bool _lastShowPin = false;
-  bool _lastShowHistoryControls = false;
-  bool _lastCanUndo = false;
-  bool _lastCanRedo = false;
-  bool _lastShowOcr = false;
-  String? _lastActiveTool;
+  NativeToolbarRequest? _lastToolbarRequest;
+  Rect? _resolvedToolbarFrame;
 
   late final void Function(String) _toolbarActionHandler =
       _dispatchNativeToolbarAction;
+  late final void Function(NativeToolbarFrameUpdate) _toolbarFrameHandler =
+      _handleNativeToolbarFrameChanged;
 
   WindowService get nativeToolbarWindowService;
 
@@ -33,14 +30,13 @@ mixin NativeToolbarMixin<T extends StatefulWidget>
 
   bool get nativeToolbarShowHistoryControls => true;
 
-  bool get nativeToolbarAnchorToWindow => false;
-
   bool get nativeToolbarShowOcr => false;
 
   void handleNativeToolbarAction(String action);
 
   void initNativeToolbar() {
     nativeToolbarWindowService.onToolbarAction = _toolbarActionHandler;
+    nativeToolbarWindowService.onToolbarFrameChanged = _toolbarFrameHandler;
   }
 
   void disposeNativeToolbar() {
@@ -50,70 +46,99 @@ mixin NativeToolbarMixin<T extends StatefulWidget>
     )) {
       nativeToolbarWindowService.onToolbarAction = null;
     }
+    if (identical(
+      nativeToolbarWindowService.onToolbarFrameChanged,
+      _toolbarFrameHandler,
+    )) {
+      nativeToolbarWindowService.onToolbarFrameChanged = null;
+    }
     resetNativeToolbarSyncCache();
     unawaited(nativeToolbarWindowService.hideToolbarPanel());
   }
 
   void resetNativeToolbarSyncCache() {
-    _lastToolbarRect = null;
-    _lastShowPin = false;
-    _lastShowHistoryControls = false;
-    _lastCanUndo = false;
-    _lastCanRedo = false;
-    _lastShowOcr = false;
-    _lastActiveTool = null;
+    _lastToolbarRequest = null;
+    _resolvedToolbarFrame = null;
   }
 
   void hideNativeToolbar() {
-    if (_lastToolbarRect == null &&
-        !_lastShowPin &&
-        !_lastShowHistoryControls &&
-        !_lastCanUndo &&
-        !_lastCanRedo &&
-        _lastActiveTool == null) {
+    if (_lastToolbarRequest == null && _resolvedToolbarFrame == null) {
       return;
     }
     resetNativeToolbarSyncCache();
     unawaited(nativeToolbarWindowService.hideToolbarPanel());
   }
 
-  void syncNativeToolbar(Rect toolbarRect) {
+  Rect? get resolvedNativeToolbarFrame => _resolvedToolbarFrame;
+
+  Offset nativeToolbarAnchorPoint({
+    required Size viewportSize,
+    required Offset fallbackAnchor,
+  }) {
+    final anchor = _resolvedToolbarFrame == null
+        ? fallbackAnchor
+        : Offset(_resolvedToolbarFrame!.center.dx, _resolvedToolbarFrame!.top);
+    return Offset(
+      anchor.dx.clamp(0.0, viewportSize.width).toDouble(),
+      anchor.dy.clamp(0.0, viewportSize.height).toDouble(),
+    );
+  }
+
+  void syncNativeToolbar({
+    required NativeToolbarPlacement placement,
+    Rect? anchorRect,
+  }) {
+    if (placement == NativeToolbarPlacement.belowAnchor && anchorRect == null) {
+      throw ArgumentError(
+        'anchorRect is required when placement is NativeToolbarPlacement.belowAnchor.',
+      );
+    }
     final annotationState = nativeToolbarAnnotationState;
     final showHistoryControls = nativeToolbarShowHistoryControls;
     final canUndo = annotationState?.canUndo ?? false;
     final canRedo = annotationState?.canRedo ?? false;
     final activeTool = shapeTypeToToolId(activeShapeType);
-
-    if (_lastToolbarRect == toolbarRect &&
-        _lastShowPin == nativeToolbarShowPin &&
-        _lastShowHistoryControls == showHistoryControls &&
-        _lastCanUndo == canUndo &&
-        _lastCanRedo == canRedo &&
-        _lastShowOcr == nativeToolbarShowOcr &&
-        _lastActiveTool == activeTool) {
-      return;
-    }
-
-    _lastToolbarRect = toolbarRect;
-    _lastShowPin = nativeToolbarShowPin;
-    _lastShowHistoryControls = showHistoryControls;
-    _lastCanUndo = canUndo;
-    _lastCanRedo = canRedo;
-    _lastShowOcr = nativeToolbarShowOcr;
-    _lastActiveTool = activeTool;
-
-    unawaited(
-      nativeToolbarWindowService.showToolbarPanel(
-        rect: toolbarRect,
+    final request = switch (placement) {
+      NativeToolbarPlacement.belowWindow => NativeToolbarRequest.belowWindow(
         showPin: nativeToolbarShowPin,
         showHistoryControls: showHistoryControls,
         canUndo: canUndo,
         canRedo: canRedo,
         showOcr: nativeToolbarShowOcr,
         activeTool: activeTool,
-        anchorToWindow: nativeToolbarAnchorToWindow,
       ),
-    );
+      NativeToolbarPlacement.belowAnchor => NativeToolbarRequest.belowAnchor(
+        anchorRect: anchorRect!,
+        showPin: nativeToolbarShowPin,
+        showHistoryControls: showHistoryControls,
+        canUndo: canUndo,
+        canRedo: canRedo,
+        showOcr: nativeToolbarShowOcr,
+        activeTool: activeTool,
+      ),
+    };
+
+    if (_lastToolbarRequest == request) {
+      return;
+    }
+
+    _lastToolbarRequest = request;
+    if (_resolvedToolbarFrame != null) {
+      setState(() {
+        _resolvedToolbarFrame = null;
+      });
+    }
+
+    unawaited(nativeToolbarWindowService.showToolbarPanel(request: request));
+  }
+
+  void _handleNativeToolbarFrameChanged(NativeToolbarFrameUpdate update) {
+    if (_resolvedToolbarFrame == update.rect || !mounted) {
+      return;
+    }
+    setState(() {
+      _resolvedToolbarFrame = update.rect;
+    });
   }
 
   void _dispatchNativeToolbarAction(String action) {

@@ -108,9 +108,14 @@ Channel: `com.asnap/window` — key methods:
 - `getWindowList` / `startRectPolling` / `stopRectPolling` — window/element rects
 - `startEscMonitor` / `stopEscMonitor` — Escape key detection
 - `resizeToRect` / `repositionOverlay` — preview positioning
+- `showToolbarPanel` / `hideToolbarPanel` — macOS floating toolbar panel
+- `onToolbarFrameChanged` — resolved native toolbar frame in Flutter-local coordinates
 - `activateApp` — bring app to front
 
-**Note:** The toolbar is now implemented entirely in Flutter (unified across platforms). Native toolbar panel was removed in v0.5.2.
+**Note:** On macOS the annotation toolbar is a hybrid implementation: Dart owns
+toolbar state and action routing, while AppKit renders and positions the
+floating toolbar panel. Flutter sends placement intent to the native bridge and
+uses `onToolbarFrameChanged` to follow the resolved native geometry.
 
 ## Code Conventions
 

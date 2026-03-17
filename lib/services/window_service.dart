@@ -60,6 +60,139 @@ class LaunchAtLoginState {
   final bool requiresApproval;
 }
 
+enum NativeToolbarPlacement { belowWindow, belowAnchor }
+
+class NativeToolbarRequest {
+  const NativeToolbarRequest._({
+    required this.placement,
+    required this.anchorRect,
+    required this.showPin,
+    required this.showHistoryControls,
+    required this.canUndo,
+    required this.canRedo,
+    required this.showOcr,
+    required this.activeTool,
+  });
+
+  const NativeToolbarRequest.belowWindow({
+    required bool showPin,
+    required bool showHistoryControls,
+    required bool canUndo,
+    required bool canRedo,
+    required bool showOcr,
+    String? activeTool,
+  }) : this._(
+         placement: NativeToolbarPlacement.belowWindow,
+         anchorRect: null,
+         showPin: showPin,
+         showHistoryControls: showHistoryControls,
+         canUndo: canUndo,
+         canRedo: canRedo,
+         showOcr: showOcr,
+         activeTool: activeTool,
+       );
+
+  const NativeToolbarRequest.belowAnchor({
+    required Rect anchorRect,
+    required bool showPin,
+    required bool showHistoryControls,
+    required bool canUndo,
+    required bool canRedo,
+    required bool showOcr,
+    String? activeTool,
+  }) : this._(
+         placement: NativeToolbarPlacement.belowAnchor,
+         anchorRect: anchorRect,
+         showPin: showPin,
+         showHistoryControls: showHistoryControls,
+         canUndo: canUndo,
+         canRedo: canRedo,
+         showOcr: showOcr,
+         activeTool: activeTool,
+       );
+
+  final NativeToolbarPlacement placement;
+  final Rect? anchorRect;
+  final bool showPin;
+  final bool showHistoryControls;
+  final bool canUndo;
+  final bool canRedo;
+  final bool showOcr;
+  final String? activeTool;
+
+  Map<String, Object?> toMap({required int requestId, required int sessionId}) {
+    return {
+      'placement': placement.name,
+      if (anchorRect != null)
+        'anchorRect': {
+          'x': anchorRect!.left,
+          'y': anchorRect!.top,
+          'width': anchorRect!.width,
+          'height': anchorRect!.height,
+        },
+      'showPin': showPin,
+      'showHistoryControls': showHistoryControls,
+      'canUndo': canUndo,
+      'canRedo': canRedo,
+      'showOcr': showOcr,
+      'activeTool': activeTool,
+      'requestId': requestId,
+      'sessionId': sessionId,
+    };
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (identical(this, other)) return true;
+    return other is NativeToolbarRequest &&
+        other.placement == placement &&
+        other.anchorRect == anchorRect &&
+        other.showPin == showPin &&
+        other.showHistoryControls == showHistoryControls &&
+        other.canUndo == canUndo &&
+        other.canRedo == canRedo &&
+        other.showOcr == showOcr &&
+        other.activeTool == activeTool;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+    placement,
+    anchorRect,
+    showPin,
+    showHistoryControls,
+    canUndo,
+    canRedo,
+    showOcr,
+    activeTool,
+  );
+}
+
+class NativeToolbarFrameUpdate {
+  const NativeToolbarFrameUpdate({
+    required this.rect,
+    required this.requestId,
+    required this.sessionId,
+  });
+
+  factory NativeToolbarFrameUpdate.fromMap(Map<dynamic, dynamic> map) {
+    return NativeToolbarFrameUpdate(
+      rect: Rect.fromLTWH(
+        (map['x'] as num).toDouble(),
+        (map['y'] as num).toDouble(),
+        (map['width'] as num).toDouble(),
+        (map['height'] as num).toDouble(),
+      ),
+      requestId: (map['requestId'] as num).toInt(),
+      sessionId: (map['sessionId'] as num).toInt(),
+    );
+  }
+
+  final Rect rect;
+  final int requestId;
+  final int sessionId;
+}
+
 class WindowService {
   /// Minimum preview window size for normal (non-scroll) captures.
   /// Scroll captures use a fullscreen overlay instead of this window.
@@ -95,6 +228,11 @@ class WindowService {
   /// Called when a native floating toolbar button is pressed.
   void Function(String action)? onToolbarAction;
 
+  /// Called after the native floating toolbar panel resolves its actual frame.
+  ///
+  /// The frame is reported in Flutter-local coordinates with a top-left origin.
+  void Function(NativeToolbarFrameUpdate update)? onToolbarFrameChanged;
+
   /// True when a region selection is active (post-selection) in the overlay.
   /// Used to decide how to handle multi-display cursor moves.
   bool overlaySelectionActive = false;
@@ -127,6 +265,13 @@ class WindowService {
         final args = call.arguments as Map<dynamic, dynamic>?;
         final action = args?['action'] as String?;
         if (action != null) onToolbarAction?.call(action);
+      } else if (call.method == 'onToolbarFrameChanged') {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        if (args == null) return;
+        final update = NativeToolbarFrameUpdate.fromMap(args);
+        if (update.sessionId != _toolbarSessionId) return;
+        if (update.requestId != _toolbarRequestId) return;
+        onToolbarFrameChanged?.call(update);
       } else if (call.method == 'onRectsUpdated') {
         final rawList = call.arguments as List<dynamic>?;
         if (rawList != null) {
@@ -247,6 +392,9 @@ class WindowService {
     // to prevent flash during styleMask restoration.
     await windowManager.setOpacity(opacity);
     await windowManager.show();
+    if (opacity > 0.99) {
+      await _channel.invokeMethod('flushPendingToolbarPanel');
+    }
     if (focus) {
       await _focusAndActivateWindow();
 
@@ -669,35 +817,16 @@ class WindowService {
 
   /// Show/update the native floating toolbar panel.
   ///
-  /// [rect] is in the current Flutter window's local coordinates.
-  Future<void> showToolbarPanel({
-    required Rect rect,
-    required bool showPin,
-    required bool showHistoryControls,
-    required bool canUndo,
-    required bool canRedo,
-    required bool showOcr,
-    String? activeTool,
-    bool anchorToWindow = false,
-  }) async {
+  /// Flutter sends placement intent and state; AppKit computes the real panel
+  /// geometry and reports the resolved frame back asynchronously.
+  Future<void> showToolbarPanel({required NativeToolbarRequest request}) async {
     if (!Platform.isMacOS) return;
     final requestId = ++_toolbarRequestId;
     try {
-      await _channel.invokeMethod('showToolbarPanel', {
-        'x': rect.left,
-        'y': rect.top,
-        'width': rect.width,
-        'height': rect.height,
-        'showPin': showPin,
-        'showHistoryControls': showHistoryControls,
-        'canUndo': canUndo,
-        'canRedo': canRedo,
-        'showOcr': showOcr,
-        'activeTool': activeTool,
-        'anchorToWindow': anchorToWindow,
-        'requestId': requestId,
-        'sessionId': _toolbarSessionId,
-      });
+      await _channel.invokeMethod(
+        'showToolbarPanel',
+        request.toMap(requestId: requestId, sessionId: _toolbarSessionId),
+      );
     } on MissingPluginException {
       // Non-macOS runners may not provide this channel implementation.
       return;

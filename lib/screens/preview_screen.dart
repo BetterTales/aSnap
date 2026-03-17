@@ -8,7 +8,6 @@ import 'package:window_manager/window_manager.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../state/app_state.dart';
-import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
@@ -75,9 +74,6 @@ class _PreviewScreenState extends State<PreviewScreen>
   bool get nativeToolbarShowOcr => true;
 
   @override
-  bool get nativeToolbarAnchorToWindow => true;
-
-  @override
   void initState() {
     super.initState();
     HardwareKeyboard.instance.addHandler(_handleKeyEvent);
@@ -115,29 +111,6 @@ class _PreviewScreenState extends State<PreviewScreen>
       if (_focusNode.hasFocus) return;
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-  }
-
-  Rect _toolbarRect(Size viewportSize, Size toolbarSize) {
-    final windowRect = widget.windowService.currentPreviewWindowRect;
-    final screenRect = widget.windowService.currentPreviewScreenRect;
-    if (windowRect != null && screenRect != null) {
-      final localScreenRect = screenRect.shift(
-        Offset(-windowRect.left, -windowRect.top),
-      );
-      return computeToolbarRectBelowWindow(
-        windowRect: Offset.zero & viewportSize,
-        screenRect: localScreenRect,
-        toolbarSize: toolbarSize,
-        viewportPadding: const EdgeInsets.all(8),
-      );
-    }
-
-    return Rect.fromLTWH(
-      (viewportSize.width - toolbarSize.width) / 2,
-      viewportSize.height + kToolbarGap,
-      toolbarSize.width,
-      toolbarSize.height,
-    );
   }
 
   // ---------------------------------------------------------------------------
@@ -275,11 +248,6 @@ class _PreviewScreenState extends State<PreviewScreen>
                 image.width.toDouble(),
                 image.height.toDouble(),
               );
-              final toolbarSize = computeNativeToolbarSize(
-                showPin: widget.onPin != null,
-                showHistoryControls: true,
-                showOcr: nativeToolbarShowOcr,
-              );
               final imageViewport = constraints.biggest;
               final fitted = applyBoxFit(
                 BoxFit.scaleDown,
@@ -290,16 +258,18 @@ class _PreviewScreenState extends State<PreviewScreen>
                 fitted.destination,
                 Offset.zero & imageViewport,
               );
-              final toolbarRect = _toolbarRect(imageViewport, toolbarSize);
-              final popoverAnchorX = toolbarRect.center.dx
-                  .clamp(0.0, constraints.maxWidth)
-                  .toDouble();
-              final popoverAnchorY = toolbarRect.top
-                  .clamp(0.0, constraints.maxHeight)
-                  .toDouble();
+              final popoverAnchor = nativeToolbarAnchorPoint(
+                viewportSize: imageViewport,
+                fallbackAnchor: Offset(
+                  imageViewport.width / 2,
+                  imageViewport.height,
+                ),
+              );
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
-                syncNativeToolbar(toolbarRect);
+                syncNativeToolbar(
+                  placement: NativeToolbarPlacement.belowWindow,
+                );
               });
 
               return Stack(
@@ -338,8 +308,8 @@ class _PreviewScreenState extends State<PreviewScreen>
                   ),
 
                   Positioned(
-                    left: popoverAnchorX,
-                    top: popoverAnchorY,
+                    left: popoverAnchor.dx,
+                    top: popoverAnchor.dy,
                     child: CompositedTransformTarget(
                       link: _popoverAnchorLink,
                       child: const SizedBox(width: 1, height: 1),
