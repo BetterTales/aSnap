@@ -88,6 +88,11 @@ mixin NativeToolbarMixin<T extends StatefulWidget>
     required NativeToolbarPlacement placement,
     Rect? anchorRect,
   }) {
+    if (placement == NativeToolbarPlacement.belowAnchor && anchorRect == null) {
+      throw ArgumentError(
+        'anchorRect is required when placement is NativeToolbarPlacement.belowAnchor.',
+      );
+    }
     final annotationState = nativeToolbarAnnotationState;
     final showHistoryControls = nativeToolbarShowHistoryControls;
     final canUndo = annotationState?.canUndo ?? false;
@@ -118,6 +123,11 @@ mixin NativeToolbarMixin<T extends StatefulWidget>
     }
 
     _lastToolbarRequest = request;
+    if (_resolvedToolbarFrame != null) {
+      setState(() {
+        _resolvedToolbarFrame = null;
+      });
+    }
 
     unawaited(nativeToolbarWindowService.showToolbarPanel(request: request));
   }
