@@ -153,6 +153,7 @@ class _InkOverlayState extends State<InkOverlay>
 
   void _onPointerCancel(PointerCancelEvent event) {
     if (!widget.drawingEnabled) return;
+    widget.inkState.cancelStroke();
     _rightButtonDown = false;
     _setCursorIsEraser(false);
   }
@@ -247,7 +248,19 @@ class _InkPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    canvas.saveLayer(Offset.zero & size, Paint());
+    var needsLayer = false;
+    for (final stroke in inkState.strokes) {
+      if (stroke.isEraser) {
+        needsLayer = true;
+        break;
+      }
+    }
+    if (!needsLayer && inkState.activeStroke?.isEraser == true) {
+      needsLayer = true;
+    }
+    if (needsLayer) {
+      canvas.saveLayer(Offset.zero & size, Paint());
+    }
     for (final stroke in inkState.strokes) {
       _paintStroke(canvas, stroke);
     }
@@ -255,7 +268,9 @@ class _InkPainter extends CustomPainter {
     if (active != null) {
       _paintStroke(canvas, active);
     }
-    canvas.restore();
+    if (needsLayer) {
+      canvas.restore();
+    }
   }
 
   void _paintStroke(Canvas canvas, InkStroke stroke) {

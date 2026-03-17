@@ -4,7 +4,7 @@ import '../utils/path_simplify.dart';
 import '../utils/ink_defaults.dart';
 
 class InkStroke {
-  const InkStroke({
+  InkStroke({
     required this.points,
     required this.color,
     required this.strokeWidth,
@@ -12,21 +12,12 @@ class InkStroke {
     required this.smoothingTolerance,
   });
 
+  // Active strokes mutate points in-place to avoid per-move allocations.
   final List<Offset> points;
   final Color color;
   final double strokeWidth;
   final bool isEraser;
   final double smoothingTolerance;
-
-  InkStroke appendPoint(Offset point) {
-    return InkStroke(
-      points: [...points, point],
-      color: color,
-      strokeWidth: strokeWidth,
-      isEraser: isEraser,
-      smoothingTolerance: smoothingTolerance,
-    );
-  }
 
   InkStroke withStrokeWidth(double nextWidth) {
     return InkStroke(
@@ -77,7 +68,7 @@ class InkState extends ChangeNotifier {
 
   void appendStroke(Offset point) {
     if (_activeStroke == null) return;
-    _activeStroke = _activeStroke!.appendPoint(point);
+    _activeStroke!.points.add(point);
     notifyListeners();
   }
 

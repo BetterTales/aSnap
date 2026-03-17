@@ -1937,13 +1937,23 @@ class MainFlutterWindow: NSWindow {
   }
 
   private func inkModifierFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
-    return event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+    return event.modifierFlags
+      .intersection(.deviceIndependentFlagsMask)
+      .subtracting([.capsLock, .function])
+  }
+
+  private func normalizedInkShortcutFlags() -> NSEvent.ModifierFlags {
+    return inkShortcutFlags
+      .intersection(.deviceIndependentFlagsMask)
+      .subtracting([.capsLock, .function])
   }
 
   private func matchesInkShortcut(_ event: NSEvent) -> Bool {
     guard let keyCode = inkShortcutKeyCode else { return false }
     guard event.keyCode == keyCode else { return false }
-    return inkModifierFlags(for: event) == inkShortcutFlags
+    let requiredFlags = normalizedInkShortcutFlags()
+    let eventFlags = inkModifierFlags(for: event)
+    return eventFlags.isSuperset(of: requiredFlags)
   }
 
   private func handleInkKeyDown(_ event: NSEvent) {
@@ -1968,7 +1978,8 @@ class MainFlutterWindow: NSWindow {
   private func handleInkFlagsChanged(_ event: NSEvent) {
     guard inkShortcutActive else { return }
     let flags = inkModifierFlags(for: event)
-    if flags != inkShortcutFlags {
+    let requiredFlags = normalizedInkShortcutFlags()
+    if !flags.isSuperset(of: requiredFlags) {
       inkShortcutActive = false
       DispatchQueue.main.async { [weak self] in
         self?.flutterChannel?.invokeMethod("onInkKeyUp", arguments: nil)
