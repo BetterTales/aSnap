@@ -14,6 +14,7 @@ enum CaptureStatus {
   scrollCapturing,
   scrollResult,
   captured,
+  inkOverlay,
 }
 
 sealed class WorkflowState {
@@ -124,6 +125,18 @@ final class SettingsWorkflow extends WorkflowState {
   const SettingsWorkflow();
 }
 
+final class InkOverlayWorkflow extends WorkflowState {
+  final bool drawingEnabled;
+
+  const InkOverlayWorkflow({required this.drawingEnabled});
+
+  InkOverlayWorkflow copyWith({bool? drawingEnabled}) {
+    return InkOverlayWorkflow(
+      drawingEnabled: drawingEnabled ?? this.drawingEnabled,
+    );
+  }
+}
+
 class AppState extends ChangeNotifier {
   WorkflowState _workflow = const IdleWorkflow();
   WorkflowState get workflow => _workflow;
@@ -148,6 +161,11 @@ class AppState extends ChangeNotifier {
 
   ScrollResultWorkflow? get scrollResultWorkflow => switch (_workflow) {
     ScrollResultWorkflow state => state,
+    _ => null,
+  };
+
+  InkOverlayWorkflow? get inkOverlayWorkflow => switch (_workflow) {
+    InkOverlayWorkflow state => state,
     _ => null,
   };
 
@@ -197,6 +215,7 @@ class AppState extends ChangeNotifier {
     ScrollCapturingWorkflow() => CaptureStatus.scrollCapturing,
     ScrollResultWorkflow() => CaptureStatus.scrollResult,
     PreviewWorkflow() => CaptureStatus.captured,
+    InkOverlayWorkflow() => CaptureStatus.inkOverlay,
   };
 
   void setPreparingCapture({required CaptureKind kind}) {
@@ -302,6 +321,16 @@ class AppState extends ChangeNotifier {
 
   void setSettings() {
     _transitionTo(const SettingsWorkflow());
+  }
+
+  void setInkOverlay({required bool drawingEnabled}) {
+    _transitionTo(InkOverlayWorkflow(drawingEnabled: drawingEnabled));
+  }
+
+  void updateInkDrawing(bool drawingEnabled) {
+    final ink = inkOverlayWorkflow;
+    if (ink == null) return;
+    _transitionTo(ink.copyWith(drawingEnabled: drawingEnabled));
   }
 
   /// Transition to scroll result displayed in the fullscreen overlay.

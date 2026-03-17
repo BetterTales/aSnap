@@ -1,18 +1,24 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import 'screens/ink_overlay_screen.dart';
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/scroll_result_screen.dart';
 import 'services/window_service.dart';
+import 'models/shortcut_bindings.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
+import 'state/ink_state.dart';
 import 'state/settings_state.dart';
 import 'widgets/scroll_progress_badge.dart';
 
 class ASnapApp extends StatelessWidget {
   final AppState appState;
   final AnnotationState annotationState;
+  final InkState inkState;
   final SettingsState settingsState;
   final WindowService windowService;
   final GlobalKey<NavigatorState> navigatorKey;
@@ -38,10 +44,14 @@ class ASnapApp extends StatelessWidget {
   final Future<void> Function() onCloseSettings;
   final Future<void> Function() onSuspendHotkeys;
   final Future<void> Function() onResumeHotkeys;
+  final VoidCallback onInkKeyDown;
+  final VoidCallback onInkKeyUp;
+  final Future<void> Function() onInkExit;
   const ASnapApp({
     super.key,
     required this.appState,
     required this.annotationState,
+    required this.inkState,
     required this.settingsState,
     required this.windowService,
     required this.navigatorKey,
@@ -64,6 +74,9 @@ class ASnapApp extends StatelessWidget {
     required this.onCloseSettings,
     required this.onSuspendHotkeys,
     required this.onResumeHotkeys,
+    required this.onInkKeyDown,
+    required this.onInkKeyUp,
+    required this.onInkExit,
   });
 
   @override
@@ -80,7 +93,7 @@ class ASnapApp extends StatelessWidget {
         scaffoldBackgroundColor: Colors.transparent,
       ),
       home: ListenableBuilder(
-        listenable: appState,
+        listenable: Listenable.merge([appState, settingsState]),
         builder: (context, _) {
           switch (appState.workflow) {
             case RegionSelectionWorkflow(
@@ -162,6 +175,25 @@ class ASnapApp extends StatelessWidget {
                 onClose: onCloseSettings,
                 onSuspendHotkeys: onSuspendHotkeys,
                 onResumeHotkeys: onResumeHotkeys,
+              );
+            case InkOverlayWorkflow(:final drawingEnabled):
+              return InkOverlayScreen(
+                inkState: inkState,
+                drawingEnabled: drawingEnabled,
+                inkHotKey: settingsState.shortcuts.forAction(
+                  ShortcutAction.ink,
+                ),
+                onInkKeyDown: onInkKeyDown,
+                onInkKeyUp: onInkKeyUp,
+                strokeColor: settingsState.inkColor,
+                strokeWidth: settingsState.inkStrokeWidth,
+                smoothingTolerance: settingsState.inkSmoothingTolerance,
+                autoFadeSeconds: settingsState.inkAutoFadeSeconds,
+                eraserSize: settingsState.inkEraserSize,
+                onEraserSizeChanged: (size) {
+                  unawaited(settingsState.setInkEraserSize(size));
+                },
+                onExitRequested: onInkExit,
               );
             default:
               break;

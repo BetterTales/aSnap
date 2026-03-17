@@ -1,9 +1,11 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:path_provider/path_provider.dart';
 
 import '../models/shortcut_bindings.dart';
+import '../utils/ink_defaults.dart';
 
 class SettingsService {
   SettingsService({Future<Directory> Function()? supportDirectoryProvider})
@@ -67,6 +69,86 @@ class SettingsService {
     await _writeSettingsMap(next);
   }
 
+  Future<Color> loadInkColor() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['inkColor'];
+      if (value is int) return Color(value);
+    } catch (_) {}
+    return kInkDefaultColor;
+  }
+
+  Future<void> saveInkColor(Color color) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['inkColor'] = color.toARGB32();
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadInkStrokeWidth() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['inkStrokeWidth'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kInkDefaultStrokeWidth;
+  }
+
+  Future<void> saveInkStrokeWidth(double width) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['inkStrokeWidth'] = width;
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadInkSmoothingTolerance() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['inkSmoothingTolerance'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kInkDefaultSmoothingTolerance;
+  }
+
+  Future<void> saveInkSmoothingTolerance(double tolerance) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['inkSmoothingTolerance'] = tolerance;
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadInkAutoFadeSeconds() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['inkAutoFadeSeconds'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kInkDefaultAutoFadeSeconds;
+  }
+
+  Future<void> saveInkAutoFadeSeconds(double seconds) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['inkAutoFadeSeconds'] = seconds;
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadInkEraserSize() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['inkEraserSize'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kInkDefaultEraserSize;
+  }
+
+  Future<void> saveInkEraserSize(double size) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['inkEraserSize'] = size;
+    await _writeSettingsMap(next);
+  }
+
   Future<File> _settingsFile() async {
     final directory = await _supportDirectoryProvider();
     return File('${directory.path}/settings.json');
@@ -75,7 +157,12 @@ class SettingsService {
   Map<String, dynamic> _normalizeSettingsMap(Map<String, dynamic> map) {
     if (map.containsKey('shortcuts') ||
         map.containsKey('ocrPreviewEnabled') ||
-        map.containsKey('ocrOpenUrlPromptEnabled')) {
+        map.containsKey('ocrOpenUrlPromptEnabled') ||
+        map.containsKey('inkColor') ||
+        map.containsKey('inkStrokeWidth') ||
+        map.containsKey('inkSmoothingTolerance') ||
+        map.containsKey('inkAutoFadeSeconds') ||
+        map.containsKey('inkEraserSize')) {
       return {...map};
     }
     return {};
