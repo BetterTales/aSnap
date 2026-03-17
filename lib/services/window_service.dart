@@ -236,6 +236,12 @@ class WindowService {
   /// Called when the native ink shortcut is released.
   VoidCallback? onInkKeyUp;
 
+  /// Called when the native laser shortcut is pressed.
+  VoidCallback? onLaserKeyDown;
+
+  /// Called when the native laser shortcut is released.
+  VoidCallback? onLaserKeyUp;
+
   /// Called after the native floating toolbar panel resolves its actual frame.
   ///
   /// The frame is reported in Flutter-local coordinates with a top-left origin.
@@ -263,6 +269,10 @@ class WindowService {
         onInkKeyDown?.call();
       } else if (call.method == 'onInkKeyUp') {
         onInkKeyUp?.call();
+      } else if (call.method == 'onLaserKeyDown') {
+        onLaserKeyDown?.call();
+      } else if (call.method == 'onLaserKeyUp') {
+        onLaserKeyUp?.call();
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
       } else if (call.method == 'onEditPinnedImage') {
@@ -615,6 +625,18 @@ class WindowService {
       throw Exception('Failed to encode ink shortcut key code.');
     }
     await _channel.invokeMethod('setInkShortcut', {
+      'keyCode': keyCode,
+      'modifiers': [...?hotKey.modifiers?.map((modifier) => modifier.name)],
+    });
+  }
+
+  Future<void> setLaserShortcut(HotKey hotKey) async {
+    if (!Platform.isMacOS) return;
+    final keyCode = macOsKeyCodeForPhysicalKey(hotKey.physicalKey);
+    if (keyCode == null) {
+      throw Exception('Failed to encode laser shortcut key code.');
+    }
+    await _channel.invokeMethod('setLaserShortcut', {
       'keyCode': keyCode,
       'modifiers': [...?hotKey.modifiers?.map((modifier) => modifier.name)],
     });

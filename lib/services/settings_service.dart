@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/shortcut_bindings.dart';
 import '../utils/ink_defaults.dart';
+import '../utils/laser_defaults.dart';
 
 class SettingsService {
   SettingsService({Future<Directory> Function()? supportDirectoryProvider})
@@ -149,6 +150,54 @@ class SettingsService {
     await _writeSettingsMap(next);
   }
 
+  Future<Color> loadLaserColor() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['laserColor'];
+      if (value is int) return Color(value);
+    } catch (_) {}
+    return kLaserDefaultColor;
+  }
+
+  Future<void> saveLaserColor(Color color) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['laserColor'] = color.toARGB32();
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadLaserSize() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['laserSize'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kLaserDefaultSize;
+  }
+
+  Future<void> saveLaserSize(double size) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['laserSize'] = size;
+    await _writeSettingsMap(next);
+  }
+
+  Future<double> loadLaserFadeSeconds() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['laserFadeSeconds'];
+      if (value is num) return value.toDouble();
+    } catch (_) {}
+    return kLaserDefaultFadeSeconds;
+  }
+
+  Future<void> saveLaserFadeSeconds(double seconds) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['laserFadeSeconds'] = seconds;
+    await _writeSettingsMap(next);
+  }
+
   Future<File> _settingsFile() async {
     final directory = await _supportDirectoryProvider();
     return File('${directory.path}/settings.json');
@@ -162,7 +211,10 @@ class SettingsService {
         map.containsKey('inkStrokeWidth') ||
         map.containsKey('inkSmoothingTolerance') ||
         map.containsKey('inkAutoFadeSeconds') ||
-        map.containsKey('inkEraserSize')) {
+        map.containsKey('inkEraserSize') ||
+        map.containsKey('laserColor') ||
+        map.containsKey('laserSize') ||
+        map.containsKey('laserFadeSeconds')) {
       return {...map};
     }
     return {};

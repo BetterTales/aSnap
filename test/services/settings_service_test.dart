@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/services/settings_service.dart';
 import 'package:a_snap/utils/ink_defaults.dart';
+import 'package:a_snap/utils/laser_defaults.dart';
 
 Future<Directory> _tempDir() async {
   return Directory.systemTemp.createTemp('asnap_settings_test_');
@@ -31,6 +32,9 @@ void main() {
     final inkSmoothingTolerance = await service.loadInkSmoothingTolerance();
     final inkAutoFadeSeconds = await service.loadInkAutoFadeSeconds();
     final inkEraserSize = await service.loadInkEraserSize();
+    final laserColor = await service.loadLaserColor();
+    final laserSize = await service.loadLaserSize();
+    final laserFadeSeconds = await service.loadLaserFadeSeconds();
 
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
@@ -40,6 +44,9 @@ void main() {
     expect(inkSmoothingTolerance, kInkDefaultSmoothingTolerance);
     expect(inkAutoFadeSeconds, kInkDefaultAutoFadeSeconds);
     expect(inkEraserSize, kInkDefaultEraserSize);
+    expect(laserColor, kLaserDefaultColor);
+    expect(laserSize, kLaserDefaultSize);
+    expect(laserFadeSeconds, kLaserDefaultFadeSeconds);
   });
 
   test('loads defaults when settings file lacks shortcuts', () async {
@@ -71,6 +78,9 @@ void main() {
     await service.saveInkSmoothingTolerance(2.5);
     await service.saveInkAutoFadeSeconds(5);
     await service.saveInkEraserSize(24);
+    await service.saveLaserColor(const Color(0xFF2962FF));
+    await service.saveLaserSize(20);
+    await service.saveLaserFadeSeconds(1.2);
 
     var map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
@@ -81,6 +91,9 @@ void main() {
     expect(map['inkSmoothingTolerance'], 2.5);
     expect(map['inkAutoFadeSeconds'], 5);
     expect(map['inkEraserSize'], 24);
+    expect(map['laserColor'], 0xFF2962FF);
+    expect(map['laserSize'], 20);
+    expect(map['laserFadeSeconds'], 1.2);
 
     await service.saveShortcutBindings(ShortcutBindings.defaults());
 
@@ -92,5 +105,8 @@ void main() {
     expect(map['inkSmoothingTolerance'], 2.5);
     expect(map['inkAutoFadeSeconds'], 5);
     expect(map['inkEraserSize'], 24);
+    expect(map['laserColor'], 0xFF2962FF);
+    expect(map['laserSize'], 20);
+    expect(map['laserFadeSeconds'], 1.2);
   });
 }

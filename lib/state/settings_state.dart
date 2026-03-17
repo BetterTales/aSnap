@@ -8,6 +8,7 @@ import '../services/settings_service.dart';
 import '../services/tray_service.dart';
 import '../services/window_service.dart';
 import '../utils/ink_defaults.dart';
+import '../utils/laser_defaults.dart';
 
 class SettingsState extends ChangeNotifier {
   SettingsState({
@@ -19,6 +20,9 @@ class SettingsState extends ChangeNotifier {
     required double initialInkSmoothingTolerance,
     required double initialInkAutoFadeSeconds,
     required double initialInkEraserSize,
+    required Color initialLaserColor,
+    required double initialLaserSize,
+    required double initialLaserFadeSeconds,
     required SettingsService settingsService,
     required WindowService windowService,
     required HotkeyService hotkeyService,
@@ -31,6 +35,9 @@ class SettingsState extends ChangeNotifier {
        _inkSmoothingTolerance = initialInkSmoothingTolerance,
        _inkAutoFadeSeconds = initialInkAutoFadeSeconds,
        _inkEraserSize = initialInkEraserSize,
+       _laserColor = initialLaserColor,
+       _laserSize = initialLaserSize,
+       _laserFadeSeconds = initialLaserFadeSeconds,
        _settingsService = settingsService,
        _windowService = windowService,
        _hotkeyService = hotkeyService,
@@ -71,6 +78,15 @@ class SettingsState extends ChangeNotifier {
   double _inkEraserSize = kInkDefaultEraserSize;
   double get inkEraserSize => _inkEraserSize;
 
+  Color _laserColor = kLaserDefaultColor;
+  Color get laserColor => _laserColor;
+
+  double _laserSize = kLaserDefaultSize;
+  double get laserSize => _laserSize;
+
+  double _laserFadeSeconds = kLaserDefaultFadeSeconds;
+  double get laserFadeSeconds => _laserFadeSeconds;
+
   String? _inkColorError;
   String? get inkColorError => _inkColorError;
 
@@ -85,6 +101,15 @@ class SettingsState extends ChangeNotifier {
 
   String? _inkEraserSizeError;
   String? get inkEraserSizeError => _inkEraserSizeError;
+
+  String? _laserColorError;
+  String? get laserColorError => _laserColorError;
+
+  String? _laserSizeError;
+  String? get laserSizeError => _laserSizeError;
+
+  String? _laserFadeError;
+  String? get laserFadeError => _laserFadeError;
 
   bool _launchAtLoginSupported = false;
   bool get launchAtLoginSupported => _launchAtLoginSupported;
@@ -144,6 +169,7 @@ class SettingsState extends ChangeNotifier {
     var hotkeysUpdated = false;
     var trayUpdated = false;
     var inkUpdated = false;
+    var laserUpdated = false;
 
     _shortcutError = null;
     notifyListeners();
@@ -157,11 +183,22 @@ class SettingsState extends ChangeNotifier {
         shortcuts.forAction(ShortcutAction.ink),
       );
       inkUpdated = true;
+      await _windowService.setLaserShortcut(
+        shortcuts.forAction(ShortcutAction.laser),
+      );
+      laserUpdated = true;
       await _settingsService.saveShortcutBindings(shortcuts);
       _shortcuts = shortcuts;
       notifyListeners();
       return true;
     } catch (error) {
+      if (laserUpdated) {
+        try {
+          await _windowService.setLaserShortcut(
+            previousShortcuts.forAction(ShortcutAction.laser),
+          );
+        } catch (_) {}
+      }
       if (inkUpdated) {
         try {
           await _windowService.setInkShortcut(
@@ -342,6 +379,72 @@ class SettingsState extends ChangeNotifier {
   void clearInkEraserSizeError() {
     if (_inkEraserSizeError == null) return;
     _inkEraserSizeError = null;
+    notifyListeners();
+  }
+
+  Future<void> setLaserColor(Color color) async {
+    if (_laserColor == color) return;
+    final previous = _laserColor;
+    _laserColor = color;
+    _laserColorError = null;
+    notifyListeners();
+
+    try {
+      await _settingsService.saveLaserColor(color);
+    } catch (error) {
+      _laserColor = previous;
+      _laserColorError = error.toString();
+      notifyListeners();
+    }
+  }
+
+  void clearLaserColorError() {
+    if (_laserColorError == null) return;
+    _laserColorError = null;
+    notifyListeners();
+  }
+
+  Future<void> setLaserSize(double size) async {
+    if ((_laserSize - size).abs() < 0.01) return;
+    final previous = _laserSize;
+    _laserSize = size;
+    _laserSizeError = null;
+    notifyListeners();
+
+    try {
+      await _settingsService.saveLaserSize(size);
+    } catch (error) {
+      _laserSize = previous;
+      _laserSizeError = error.toString();
+      notifyListeners();
+    }
+  }
+
+  void clearLaserSizeError() {
+    if (_laserSizeError == null) return;
+    _laserSizeError = null;
+    notifyListeners();
+  }
+
+  Future<void> setLaserFadeSeconds(double seconds) async {
+    if ((_laserFadeSeconds - seconds).abs() < 0.01) return;
+    final previous = _laserFadeSeconds;
+    _laserFadeSeconds = seconds;
+    _laserFadeError = null;
+    notifyListeners();
+
+    try {
+      await _settingsService.saveLaserFadeSeconds(seconds);
+    } catch (error) {
+      _laserFadeSeconds = previous;
+      _laserFadeError = error.toString();
+      notifyListeners();
+    }
+  }
+
+  void clearLaserFadeError() {
+    if (_laserFadeError == null) return;
+    _laserFadeError = null;
     notifyListeners();
   }
 

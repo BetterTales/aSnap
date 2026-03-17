@@ -12,6 +12,7 @@ import 'models/shortcut_bindings.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
 import 'state/ink_state.dart';
+import 'state/laser_state.dart';
 import 'state/settings_state.dart';
 import 'widgets/scroll_progress_badge.dart';
 
@@ -19,6 +20,7 @@ class ASnapApp extends StatelessWidget {
   final AppState appState;
   final AnnotationState annotationState;
   final InkState inkState;
+  final LaserState laserState;
   final SettingsState settingsState;
   final WindowService windowService;
   final GlobalKey<NavigatorState> navigatorKey;
@@ -46,12 +48,15 @@ class ASnapApp extends StatelessWidget {
   final Future<void> Function() onResumeHotkeys;
   final VoidCallback onInkKeyDown;
   final VoidCallback onInkKeyUp;
+  final VoidCallback onLaserKeyDown;
+  final VoidCallback onLaserKeyUp;
   final Future<void> Function() onInkExit;
   const ASnapApp({
     super.key,
     required this.appState,
     required this.annotationState,
     required this.inkState,
+    required this.laserState,
     required this.settingsState,
     required this.windowService,
     required this.navigatorKey,
@@ -76,6 +81,8 @@ class ASnapApp extends StatelessWidget {
     required this.onResumeHotkeys,
     required this.onInkKeyDown,
     required this.onInkKeyUp,
+    required this.onLaserKeyDown,
+    required this.onLaserKeyUp,
     required this.onInkExit,
   });
 
@@ -176,20 +183,30 @@ class ASnapApp extends StatelessWidget {
                 onSuspendHotkeys: onSuspendHotkeys,
                 onResumeHotkeys: onResumeHotkeys,
               );
-            case InkOverlayWorkflow(:final drawingEnabled):
+            case InkOverlayWorkflow(:final tool, :final drawingEnabled):
               return InkOverlayScreen(
                 inkState: inkState,
+                laserState: laserState,
                 drawingEnabled: drawingEnabled,
+                tool: tool,
                 inkHotKey: settingsState.shortcuts.forAction(
                   ShortcutAction.ink,
                 ),
+                laserHotKey: settingsState.shortcuts.forAction(
+                  ShortcutAction.laser,
+                ),
                 onInkKeyDown: onInkKeyDown,
                 onInkKeyUp: onInkKeyUp,
+                onLaserKeyDown: onLaserKeyDown,
+                onLaserKeyUp: onLaserKeyUp,
                 strokeColor: settingsState.inkColor,
                 strokeWidth: settingsState.inkStrokeWidth,
                 smoothingTolerance: settingsState.inkSmoothingTolerance,
                 autoFadeSeconds: settingsState.inkAutoFadeSeconds,
                 eraserSize: settingsState.inkEraserSize,
+                laserColor: settingsState.laserColor,
+                laserSize: settingsState.laserSize,
+                laserFadeSeconds: settingsState.laserFadeSeconds,
                 onEraserSizeChanged: (size) {
                   unawaited(settingsState.setInkEraserSize(size));
                 },

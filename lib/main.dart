@@ -20,6 +20,7 @@ import 'services/window_service.dart';
 import 'state/annotation_state.dart';
 import 'state/app_state.dart';
 import 'state/ink_state.dart';
+import 'state/laser_state.dart';
 import 'state/settings_state.dart';
 import 'utils/annotation_compositor.dart';
 import 'utils/url_detection.dart';
@@ -94,6 +95,7 @@ List<Rect> _globalRectsToLocal(Offset screenOrigin) {
 late final AppState _appState;
 late final AnnotationState _annotationState;
 late final InkState _inkState;
+late final LaserState _laserState;
 late final CaptureService _captureService;
 late final ClipboardService _clipboardService;
 late final FileService _fileService;
@@ -112,6 +114,7 @@ void main() async {
   _appState = AppState();
   _annotationState = AnnotationState();
   _inkState = InkState();
+  _laserState = LaserState();
   _captureService = CaptureService();
   _clipboardService = ClipboardService();
   _fileService = FileService();
@@ -135,6 +138,9 @@ void main() async {
   final initialInkAutoFadeSeconds = await _settingsService
       .loadInkAutoFadeSeconds();
   final initialInkEraserSize = await _settingsService.loadInkEraserSize();
+  final initialLaserColor = await _settingsService.loadLaserColor();
+  final initialLaserSize = await _settingsService.loadLaserSize();
+  final initialLaserFadeSeconds = await _settingsService.loadLaserFadeSeconds();
   _settingsState = SettingsState(
     initialShortcuts: initialShortcuts,
     initialOcrPreviewEnabled: initialOcrPreviewEnabled,
@@ -144,6 +150,9 @@ void main() async {
     initialInkSmoothingTolerance: initialInkSmoothingTolerance,
     initialInkAutoFadeSeconds: initialInkAutoFadeSeconds,
     initialInkEraserSize: initialInkEraserSize,
+    initialLaserColor: initialLaserColor,
+    initialLaserSize: initialLaserSize,
+    initialLaserFadeSeconds: initialLaserFadeSeconds,
     settingsService: _settingsService,
     windowService: _windowService,
     hotkeyService: _hotkeyService,
@@ -155,6 +164,7 @@ void main() async {
       appState: _appState,
       annotationState: _annotationState,
       inkState: _inkState,
+      laserState: _laserState,
       settingsState: _settingsState,
       windowService: _windowService,
       navigatorKey: _navigatorKey,
@@ -179,6 +189,8 @@ void main() async {
       onResumeHotkeys: _handleResumeHotkeys,
       onInkKeyDown: _handleInkKeyDown,
       onInkKeyUp: _handleInkKeyUp,
+      onLaserKeyDown: _handleLaserKeyDown,
+      onLaserKeyUp: _handleLaserKeyUp,
       onInkExit: () async {
         _handleEscPressed();
       },
@@ -222,6 +234,8 @@ Future<void> _initAfterRunApp() async {
   _windowService.onEscPressed = _handleEscPressed;
   _windowService.onInkKeyDown = _handleInkKeyDown;
   _windowService.onInkKeyUp = _handleInkKeyUp;
+  _windowService.onLaserKeyDown = _handleLaserKeyDown;
+  _windowService.onLaserKeyUp = _handleLaserKeyUp;
   _windowService.onScrollCaptureDone = _handleScrollCaptureDone;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
@@ -246,10 +260,14 @@ Future<void> _initAfterRunApp() async {
     onPin: _handlePin,
     onOcr: _handleOcrShortcut,
     onInk: _handleInkKeyDown,
+    onLaser: _handleLaserKeyDown,
   );
 
   await _windowService.setInkShortcut(
     _settingsState.shortcuts.forAction(ShortcutAction.ink),
+  );
+  await _windowService.setLaserShortcut(
+    _settingsState.shortcuts.forAction(ShortcutAction.laser),
   );
   await _windowService.startInkMonitor();
 
@@ -330,25 +348,66 @@ Future<void> _handleInkKeyDown() async {
 
   final ink = _appState.inkOverlayWorkflow;
   if (ink != null) {
-    if (ink.drawingEnabled) return;
-    _appState.updateInkDrawing(true);
+    if (ink.drawingEnabled) {
+      if (ink.tool == InkTool.ink) return;
+      return;
+    }
+    _appState.updateInkOverlay(tool: InkTool.ink, drawingEnabled: true);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     return;
   }
 
   await _windowService.enterInkOverlay();
-  _appState.setInkOverlay(drawingEnabled: true);
+  _appState.setInkOverlay(tool: InkTool.ink, drawingEnabled: true);
   await _windowService.setOverlayMousePassthrough(passthrough: false);
   await _windowService.startEscMonitor();
 }
 
 Future<void> _handleInkKeyUp() async {
   final ink = _appState.inkOverlayWorkflow;
-  if (ink == null) return;
+  if (ink == null || ink.tool != InkTool.ink) return;
 
   _inkState.finishStroke();
   if (ink.drawingEnabled) {
-    _appState.updateInkDrawing(false);
+    _appState.updateInkOverlay(drawingEnabled: false);
+  }
+  await _windowService.setOverlayMousePassthrough(passthrough: true);
+}
+
+Future<void> _handleLaserKeyDown() async {
+  if (!Platform.isMacOS) return;
+  if (_appState.workflow is PreparingCaptureWorkflow ||
+      _appState.workflow is RegionSelectionWorkflow ||
+      _appState.workflow is ScrollCapturingWorkflow ||
+      _appState.workflow is ScrollResultWorkflow ||
+      _appState.workflow is PreviewWorkflow ||
+      _appState.workflow is SettingsWorkflow) {
+    return;
+  }
+
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink != null) {
+    if (ink.drawingEnabled) {
+      if (ink.tool == InkTool.laser) return;
+      return;
+    }
+    _appState.updateInkOverlay(tool: InkTool.laser, drawingEnabled: true);
+    await _windowService.setOverlayMousePassthrough(passthrough: false);
+    return;
+  }
+
+  await _windowService.enterInkOverlay();
+  _appState.setInkOverlay(tool: InkTool.laser, drawingEnabled: true);
+  await _windowService.setOverlayMousePassthrough(passthrough: false);
+  await _windowService.startEscMonitor();
+}
+
+Future<void> _handleLaserKeyUp() async {
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink == null || ink.tool != InkTool.laser) return;
+
+  if (ink.drawingEnabled) {
+    _appState.updateInkOverlay(drawingEnabled: false);
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
 }
@@ -357,6 +416,7 @@ Future<void> _exitInkOverlay() async {
   final ink = _appState.inkOverlayWorkflow;
   if (ink == null) return;
   _inkState.clear();
+  _laserState.clear();
   _appState.clear();
   await _windowService.stopEscMonitor();
   await _windowService.exitOverlay();
