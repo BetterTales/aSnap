@@ -91,12 +91,11 @@ flutter test
 For a signed macOS release build intended for offline distribution, use:
 
 ```bash
-# Use version/build from pubspec.yaml and publish a GitHub Release
+# Use version from pubspec.yaml and publish a GitHub Release
 ./scripts/release.sh
 
 # Publish a specific version
 ./scripts/release.sh 0.6.0
-./scripts/release.sh 0.6.1 --build-number 2
 
 # Build/sign/notarize locally without touching GitHub Releases
 ./scripts/release.sh --no-upload
