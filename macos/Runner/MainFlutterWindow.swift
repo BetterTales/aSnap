@@ -44,6 +44,9 @@ class MainFlutterWindow: NSWindow {
   private var inkKeyDownMonitor: Any?
   private var inkKeyUpMonitor: Any?
   private var inkFlagsMonitor: Any?
+  private var inkKeyDownLocalMonitor: Any?
+  private var inkKeyUpLocalMonitor: Any?
+  private var inkFlagsLocalMonitor: Any?
   private var inkShortcutKeyCode: UInt16?
   private var inkShortcutFlags: NSEvent.ModifierFlags = []
   private var inkShortcutActive = false
@@ -776,6 +779,19 @@ class MainFlutterWindow: NSWindow {
           NSApp.activate(ignoringOtherApps: true)
           self.refreshOverlayCursorIfNeeded()
         }
+        result(nil)
+      case "setOverlayCursorHidden":
+        guard let args = call.arguments as? [String: Any],
+          let hidden = args["hidden"] as? Bool
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setOverlayCursorHidden requires hidden",
+              details: nil))
+          return
+        }
+        self.setOverlayCursorHidden(hidden)
         result(nil)
       case "resizeToRect":
         // Shrink the borderless overlay window to the selection rect for in-place preview.
@@ -1952,6 +1968,24 @@ class MainFlutterWindow: NSWindow {
       self?.handleInkFlagsChanged(event)
       self?.handleLaserFlagsChanged(event)
     }
+    self.inkKeyDownLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+      [weak self] event in
+      self?.handleInkKeyDown(event)
+      self?.handleLaserKeyDown(event)
+      return event
+    }
+    self.inkKeyUpLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) {
+      [weak self] event in
+      self?.handleInkKeyUp(event)
+      self?.handleLaserKeyUp(event)
+      return event
+    }
+    self.inkFlagsLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+      [weak self] event in
+      self?.handleInkFlagsChanged(event)
+      self?.handleLaserFlagsChanged(event)
+      return event
+    }
   }
 
   private func stopInkMonitorImpl() {
@@ -1967,9 +2001,21 @@ class MainFlutterWindow: NSWindow {
       NSEvent.removeMonitor(monitor)
       self.inkFlagsMonitor = nil
     }
+    if let monitor = self.inkKeyDownLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyDownLocalMonitor = nil
+    }
+    if let monitor = self.inkKeyUpLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyUpLocalMonitor = nil
+    }
+    if let monitor = self.inkFlagsLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkFlagsLocalMonitor = nil
+    }
     self.inkShortcutActive = false
     self.laserShortcutActive = false
-    self.setOverlayCursorHidden(false)
+    self.restoreOverlayCursor()
   }
 
   private func inkModifierFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
@@ -2042,7 +2088,6 @@ class MainFlutterWindow: NSWindow {
     if event.isARepeat { return }
     if laserShortcutActive { return }
     laserShortcutActive = true
-    self.setOverlayCursorHidden(true)
     DispatchQueue.main.async { [weak self] in
       self?.flutterChannel?.invokeMethod("onLaserKeyDown", arguments: nil)
     }
@@ -2052,7 +2097,6 @@ class MainFlutterWindow: NSWindow {
     guard let keyCode = laserShortcutKeyCode, event.keyCode == keyCode else { return }
     guard laserShortcutActive else { return }
     laserShortcutActive = false
-    self.setOverlayCursorHidden(false)
     DispatchQueue.main.async { [weak self] in
       self?.flutterChannel?.invokeMethod("onLaserKeyUp", arguments: nil)
     }
@@ -2064,7 +2108,6 @@ class MainFlutterWindow: NSWindow {
     let requiredFlags = normalizedLaserShortcutFlags()
     if !flags.isSuperset(of: requiredFlags) {
       laserShortcutActive = false
-      self.setOverlayCursorHidden(false)
       DispatchQueue.main.async { [weak self] in
         self?.flutterChannel?.invokeMethod("onLaserKeyUp", arguments: nil)
       }
@@ -2083,7 +2126,26 @@ class MainFlutterWindow: NSWindow {
     self.refreshOverlayCursorIfNeeded()
   }
 
+  private func restoreOverlayCursor() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.restoreOverlayCursor()
+      }
+      return
+    }
+    if self.overlayCursorHidden {
+      self.overlayCursorHidden = false
+    }
+    self.refreshOverlayCursorIfNeeded()
+  }
+
   private func refreshOverlayCursorIfNeeded() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.refreshOverlayCursorIfNeeded()
+      }
+      return
+    }
     if self.overlayCursorHidden {
       self.invisibleCursor.set()
       if NSApp.isActive && !self.overlayCursorCGHidden {
