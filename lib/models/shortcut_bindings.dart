@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
-enum ShortcutAction { region, scrollCapture, fullScreen, pin, ocr, ink }
+enum ShortcutAction { region, scrollCapture, fullScreen, pin, ocr, ink, laser }
 
 extension ShortcutActionX on ShortcutAction {
   String get id => switch (this) {
@@ -14,6 +14,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.pin => 'shortcut_pin',
     ShortcutAction.ocr => 'shortcut_ocr',
     ShortcutAction.ink => 'shortcut_ink',
+    ShortcutAction.laser => 'shortcut_laser',
   };
 
   String get label => switch (this) {
@@ -23,6 +24,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.pin => 'Pin',
     ShortcutAction.ocr => 'OCR',
     ShortcutAction.ink => 'Ink',
+    ShortcutAction.laser => 'Laser',
   };
 
   String get description => switch (this) {
@@ -32,6 +34,7 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.pin => 'Pin the latest copied image to the screen.',
     ShortcutAction.ocr => 'Start an OCR region capture.',
     ShortcutAction.ink => 'Hold to draw on screen.',
+    ShortcutAction.laser => 'Hold to show a laser pointer.',
   };
 }
 
@@ -43,6 +46,7 @@ class ShortcutBindings {
     required this.pin,
     required this.ocr,
     required this.ink,
+    required this.laser,
   });
 
   factory ShortcutBindings.defaults() {
@@ -82,6 +86,11 @@ class ShortcutBindings {
         key: PhysicalKeyboardKey.keyD,
         modifiers: [primaryModifier, secondaryModifier],
       ),
+      laser: defaultShortcutFor(
+        ShortcutAction.laser,
+        key: PhysicalKeyboardKey.keyE,
+        modifiers: [primaryModifier, secondaryModifier],
+      ),
     );
   }
 
@@ -106,6 +115,7 @@ class ShortcutBindings {
       pin: read(ShortcutAction.pin, defaults.pin),
       ocr: read(ShortcutAction.ocr, defaults.ocr),
       ink: read(ShortcutAction.ink, defaults.ink),
+      laser: read(ShortcutAction.laser, defaults.laser),
     );
   }
 
@@ -115,6 +125,7 @@ class ShortcutBindings {
   final HotKey pin;
   final HotKey ocr;
   final HotKey ink;
+  final HotKey laser;
 
   Iterable<MapEntry<ShortcutAction, HotKey>> get entries sync* {
     yield MapEntry(ShortcutAction.region, region);
@@ -123,6 +134,7 @@ class ShortcutBindings {
     yield MapEntry(ShortcutAction.pin, pin);
     yield MapEntry(ShortcutAction.ocr, ocr);
     yield MapEntry(ShortcutAction.ink, ink);
+    yield MapEntry(ShortcutAction.laser, laser);
   }
 
   HotKey forAction(ShortcutAction action) => switch (action) {
@@ -132,6 +144,7 @@ class ShortcutBindings {
     ShortcutAction.pin => pin,
     ShortcutAction.ocr => ocr,
     ShortcutAction.ink => ink,
+    ShortcutAction.laser => laser,
   };
 
   ShortcutBindings copyWithAction(ShortcutAction action, HotKey hotKey) {
@@ -145,6 +158,7 @@ class ShortcutBindings {
       pin: action == ShortcutAction.pin ? normalized : pin,
       ocr: action == ShortcutAction.ocr ? normalized : ocr,
       ink: action == ShortcutAction.ink ? normalized : ink,
+      laser: action == ShortcutAction.laser ? normalized : laser,
     );
   }
 
@@ -155,6 +169,7 @@ class ShortcutBindings {
     ShortcutAction.pin.name: pin.toJson(),
     ShortcutAction.ocr.name: ocr.toJson(),
     ShortcutAction.ink.name: ink.toJson(),
+    ShortcutAction.laser.name: laser.toJson(),
   };
 
   ShortcutValidationResult validate() {
@@ -300,7 +315,9 @@ List<Map<String, dynamic>> trayShortcutDescriptors(ShortcutBindings bindings) {
   final descriptors = <Map<String, dynamic>>[];
 
   for (final entry in bindings.entries) {
-    if (entry.key == ShortcutAction.ink) continue;
+    if (entry.key == ShortcutAction.ink || entry.key == ShortcutAction.laser) {
+      continue;
+    }
     final keyEquivalent = trayKeyEquivalent(entry.value);
     if (keyEquivalent == null) continue;
     descriptors.add({

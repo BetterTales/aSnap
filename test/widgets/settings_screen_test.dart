@@ -13,6 +13,7 @@ import 'package:a_snap/services/tray_service.dart';
 import 'package:a_snap/services/window_service.dart';
 import 'package:a_snap/state/settings_state.dart';
 import 'package:a_snap/utils/ink_defaults.dart';
+import 'package:a_snap/utils/laser_defaults.dart';
 
 class _FakeSettingsService extends SettingsService {
   _FakeSettingsService() : super();
@@ -51,11 +52,23 @@ class _FakeSettingsService extends SettingsService {
   @override
   Future<void> saveInkEraserSize(double size) async {}
 
+  @override
+  Future<void> saveLaserColor(Color color) async {}
+
+  @override
+  Future<void> saveLaserSize(double size) async {}
+
+  @override
+  Future<void> saveLaserFadeSeconds(double seconds) async {}
+
 }
 
 class _FakeWindowService extends WindowService {
   @override
   Future<void> setInkShortcut(HotKey hotKey) async {}
+
+  @override
+  Future<void> setLaserShortcut(HotKey hotKey) async {}
 }
 
 class _FakeHotkeyService extends HotkeyService {
@@ -121,6 +134,9 @@ Future<_SettingsHarness> _pumpSettingsScreen(
     initialInkSmoothingTolerance: kInkDefaultSmoothingTolerance,
     initialInkAutoFadeSeconds: kInkDefaultAutoFadeSeconds,
     initialInkEraserSize: kInkDefaultEraserSize,
+    initialLaserColor: kLaserDefaultColor,
+    initialLaserSize: kLaserDefaultSize,
+    initialLaserFadeSeconds: kLaserDefaultFadeSeconds,
     settingsService: settingsService,
     windowService: _FakeWindowService(),
     hotkeyService: hotkeyService,
@@ -172,9 +188,11 @@ void main() {
     expect(find.text('General'), findsOneWidget);
     expect(find.text('Shortcuts'), findsOneWidget);
     expect(find.text('Ink Drawing'), findsOneWidget);
+    expect(find.text('Laser Pointer'), findsOneWidget);
     expect(find.text('Smoothing'), findsOneWidget);
     expect(find.text('Auto-fade'), findsOneWidget);
     expect(find.text('Eraser size'), findsOneWidget);
+    expect(find.text('Fade'), findsOneWidget);
     expect(find.text('Launch at login'), findsOneWidget);
     expect(find.text('Show OCR preview'), findsOneWidget);
     expect(find.text('Prompt to open URL after OCR'), findsOneWidget);
@@ -184,6 +202,7 @@ void main() {
     expect(find.text('Pin'), findsOneWidget);
     expect(find.text('OCR'), findsOneWidget);
     expect(find.text('Ink'), findsOneWidget);
+    expect(find.text('Laser'), findsOneWidget);
     expect(find.text('Save changes'), findsNothing);
     expect(tester.takeException(), isNull);
   });
@@ -193,7 +212,7 @@ void main() {
   ) async {
     await _pumpSettingsScreen(tester);
 
-    expect(find.byType(OutlinedButton), findsNWidgets(6));
+    expect(find.byType(OutlinedButton), findsNWidgets(7));
     expect(tester.takeException(), isNull);
   });
 

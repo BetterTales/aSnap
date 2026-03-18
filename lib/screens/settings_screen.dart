@@ -9,6 +9,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import '../models/shortcut_bindings.dart';
 import '../state/settings_state.dart';
 import '../utils/ink_defaults.dart';
+import '../utils/laser_defaults.dart';
 
 const _canvasColor = Color(0xFFF4EEE4);
 const _surfaceColor = Color(0xFFF7F4EF);
@@ -24,6 +25,8 @@ const _shortcutButtonWidth = 220.0;
 const _shortcutActionSlotWidth = 32.0;
 const _inkSectionTitle = 'Ink Drawing';
 const _inkColorRowHeight = 44.0;
+const _laserSectionTitle = 'Laser Pointer';
+const _laserColorRowHeight = 44.0;
 
 const _inkPresetColors = [
   Color(0xFFFF0000),
@@ -33,6 +36,8 @@ const _inkPresetColors = [
   Color(0xFFFFFFFF),
   Color(0xFF000000),
 ];
+
+const _laserPresetColors = _inkPresetColors;
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -411,6 +416,87 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             .inkEraserSizeError !=
                                         null)
                                       widget.settingsState.inkEraserSizeError!,
+                                  ].join(' '),
+                                  color: _dangerColor,
+                                ),
+                              ],
+                              const SizedBox(height: 28),
+                              Text(
+                                _laserSectionTitle,
+                                style: Theme.of(context).textTheme.titleMedium
+                                    ?.copyWith(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                              ),
+                              const SizedBox(height: 12),
+                              _SurfaceGroup(
+                                child: Column(
+                                  children: [
+                                    _LaserColorRow(
+                                      color: widget.settingsState.laserColor,
+                                      onColorPicked: (color) {
+                                        widget.settingsState
+                                            .clearLaserColorError();
+                                        unawaited(
+                                          widget.settingsState.setLaserColor(
+                                            color,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _LaserSizeRow(
+                                      size: widget.settingsState.laserSize,
+                                      onSizeChanged: (value) {
+                                        widget.settingsState
+                                            .clearLaserSizeError();
+                                        unawaited(
+                                          widget.settingsState.setLaserSize(
+                                            value,
+                                          ),
+                                        );
+                                      },
+                                    ),
+                                    const _GroupDivider(),
+                                    _LaserFadeRow(
+                                      seconds:
+                                          widget.settingsState.laserFadeSeconds,
+                                      onSecondsChanged: (value) {
+                                        widget.settingsState
+                                            .clearLaserFadeError();
+                                        unawaited(
+                                          widget.settingsState
+                                              .setLaserFadeSeconds(value),
+                                        );
+                                      },
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              const _SectionNote(
+                                text:
+                                    'Hold the laser shortcut to show a pointer.'
+                                    ' Release to let it fade out.',
+                              ),
+                              if (widget.settingsState.laserColorError !=
+                                      null ||
+                                  widget.settingsState.laserSizeError != null ||
+                                  widget.settingsState.laserFadeError !=
+                                      null) ...[
+                                const SizedBox(height: 10),
+                                _SectionNote(
+                                  text: [
+                                    if (widget.settingsState.laserColorError !=
+                                        null)
+                                      widget.settingsState.laserColorError!,
+                                    if (widget.settingsState.laserSizeError !=
+                                        null)
+                                      widget.settingsState.laserSizeError!,
+                                    if (widget.settingsState.laserFadeError !=
+                                        null)
+                                      widget.settingsState.laserFadeError!,
                                   ].join(' '),
                                   color: _dangerColor,
                                 ),
@@ -1055,6 +1141,164 @@ class _InkEraserSizeRow extends StatelessWidget {
               max: kInkMaxEraserSize,
               divisions: divisions > 0 ? divisions : null,
               onChanged: onSizeChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LaserColorRow extends StatelessWidget {
+  const _LaserColorRow({required this.color, required this.onColorPicked});
+
+  final Color color;
+  final ValueChanged<Color> onColorPicked;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: _laserColorRowHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        child: Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Color',
+                style: TextStyle(color: _inkColor, fontWeight: FontWeight.w600),
+              ),
+            ),
+            for (final preset in _laserPresetColors) ...[
+              _InkColorSwatch(
+                color: preset,
+                isSelected: color == preset,
+                onTap: () => onColorPicked(preset),
+              ),
+              const SizedBox(width: 6),
+            ],
+            _InkCustomColorButton(
+              currentColor: color,
+              onColorPicked: onColorPicked,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _LaserSizeRow extends StatelessWidget {
+  const _LaserSizeRow({required this.size, required this.onSizeChanged});
+
+  final double size;
+  final ValueChanged<double> onSizeChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = size.clamp(kLaserMinSize, kLaserMaxSize);
+    final divisions = (kLaserMaxSize - kLaserMinSize).round();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Size',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                '${clamped.round()}px',
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: clamped,
+              min: kLaserMinSize,
+              max: kLaserMaxSize,
+              divisions: divisions > 0 ? divisions : null,
+              onChanged: onSizeChanged,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LaserFadeRow extends StatelessWidget {
+  const _LaserFadeRow({required this.seconds, required this.onSecondsChanged});
+
+  final double seconds;
+  final ValueChanged<double> onSecondsChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = seconds.clamp(kLaserMinFadeSeconds, kLaserMaxFadeSeconds);
+    final divisions = ((kLaserMaxFadeSeconds - kLaserMinFadeSeconds) / 0.1)
+        .round();
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Fade',
+                  style: TextStyle(
+                    color: _inkColor,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                '${clamped.toStringAsFixed(1)}s',
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: clamped,
+              min: kLaserMinFadeSeconds,
+              max: kLaserMaxFadeSeconds,
+              divisions: divisions > 0 ? divisions : null,
+              onChanged: onSecondsChanged,
             ),
           ),
         ],

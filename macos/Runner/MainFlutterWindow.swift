@@ -44,9 +44,25 @@ class MainFlutterWindow: NSWindow {
   private var inkKeyDownMonitor: Any?
   private var inkKeyUpMonitor: Any?
   private var inkFlagsMonitor: Any?
+  private var inkKeyDownLocalMonitor: Any?
+  private var inkKeyUpLocalMonitor: Any?
+  private var inkFlagsLocalMonitor: Any?
   private var inkShortcutKeyCode: UInt16?
   private var inkShortcutFlags: NSEvent.ModifierFlags = []
   private var inkShortcutActive = false
+  private var laserShortcutKeyCode: UInt16?
+  private var laserShortcutFlags: NSEvent.ModifierFlags = []
+  private var laserShortcutActive = false
+  private lazy var invisibleCursor: NSCursor = {
+    let image = NSImage(size: NSSize(width: 16, height: 16))
+    image.lockFocus()
+    NSColor.clear.setFill()
+    NSBezierPath(rect: NSRect(x: 0, y: 0, width: 16, height: 16)).fill()
+    image.unlockFocus()
+    return NSCursor(image: image, hotSpot: .zero)
+  }()
+  private var overlayCursorHidden = false
+  private var overlayCursorCGHidden = false
 
   // Shortcut mapping for patching tray_manager NSMenu items with keyEquivalent.
   // Keys are menu item titles, values are (keyEquivalent, modifierMask).
@@ -658,8 +674,19 @@ class MainFlutterWindow: NSWindow {
         self.configureOverlay(call.arguments as? [String: Double])
         result(nil)
       case "enterInkOverlayMode":
-        // Configure + position a transparent overlay for ink drawing.
+        // Configure + position a transparent overlay for ink drawing at
+        // alpha=0. Dart reveals it after Flutter renders the first frame.
         self.configureInkOverlay(call.arguments as? [String: Double])
+        result(nil)
+      case "revealInkOverlay":
+        self.backgroundColor = .clear
+        self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        self.setFlutterSurfaceOpaque(false)
+        self.alphaValue = 1
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.refreshOverlayCursorIfNeeded()
+        MainFlutterWindow.log("revealInkOverlay: alpha=1")
         result(nil)
       case "cleanupOverlayMode":
         // Overlay cleanup that also restores styleMask (needed so
@@ -759,8 +786,23 @@ class MainFlutterWindow: NSWindow {
         self.ignoresMouseEvents = passthrough
         self.acceptsMouseMovedEvents = !passthrough
         if !passthrough {
-          self.orderFrontRegardless()
+          self.makeKeyAndOrderFront(nil)
+          NSApp.activate(ignoringOtherApps: true)
+          self.refreshOverlayCursorIfNeeded()
         }
+        result(nil)
+      case "setOverlayCursorHidden":
+        guard let args = call.arguments as? [String: Any],
+          let hidden = args["hidden"] as? Bool
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setOverlayCursorHidden requires hidden",
+              details: nil))
+          return
+        }
+        self.setOverlayCursorHidden(hidden)
         result(nil)
       case "resizeToRect":
         // Shrink the borderless overlay window to the selection rect for in-place preview.
@@ -876,6 +918,22 @@ class MainFlutterWindow: NSWindow {
         self.inkShortcutKeyCode = UInt16(truncating: keyCode)
         self.inkShortcutFlags = Self.inkModifierFlags(from: modifierNames)
         self.inkShortcutActive = false
+        result(nil)
+      case "setLaserShortcut":
+        guard let args = call.arguments as? [String: Any],
+          let keyCode = args["keyCode"] as? NSNumber
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setLaserShortcut requires keyCode",
+              details: nil))
+          return
+        }
+        let modifierNames = args["modifiers"] as? [String] ?? []
+        self.laserShortcutKeyCode = UInt16(truncating: keyCode)
+        self.laserShortcutFlags = Self.inkModifierFlags(from: modifierNames)
+        self.laserShortcutActive = false
         result(nil)
       case "startInkMonitor":
         self.startInkMonitorImpl()
@@ -1909,14 +1967,35 @@ class MainFlutterWindow: NSWindow {
     self.inkKeyDownMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) {
       [weak self] event in
       self?.handleInkKeyDown(event)
+      self?.handleLaserKeyDown(event)
     }
     self.inkKeyUpMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyUp) {
       [weak self] event in
       self?.handleInkKeyUp(event)
+      self?.handleLaserKeyUp(event)
     }
     self.inkFlagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) {
       [weak self] event in
       self?.handleInkFlagsChanged(event)
+      self?.handleLaserFlagsChanged(event)
+    }
+    self.inkKeyDownLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) {
+      [weak self] event in
+      self?.handleInkKeyDown(event)
+      self?.handleLaserKeyDown(event)
+      return event
+    }
+    self.inkKeyUpLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyUp) {
+      [weak self] event in
+      self?.handleInkKeyUp(event)
+      self?.handleLaserKeyUp(event)
+      return event
+    }
+    self.inkFlagsLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) {
+      [weak self] event in
+      self?.handleInkFlagsChanged(event)
+      self?.handleLaserFlagsChanged(event)
+      return event
     }
   }
 
@@ -1933,7 +2012,21 @@ class MainFlutterWindow: NSWindow {
       NSEvent.removeMonitor(monitor)
       self.inkFlagsMonitor = nil
     }
+    if let monitor = self.inkKeyDownLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyDownLocalMonitor = nil
+    }
+    if let monitor = self.inkKeyUpLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkKeyUpLocalMonitor = nil
+    }
+    if let monitor = self.inkFlagsLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.inkFlagsLocalMonitor = nil
+    }
     self.inkShortcutActive = false
+    self.laserShortcutActive = false
+    self.restoreOverlayCursor()
   }
 
   private func inkModifierFlags(for event: NSEvent) -> NSEvent.ModifierFlags {
@@ -1948,10 +2041,24 @@ class MainFlutterWindow: NSWindow {
       .subtracting([.capsLock, .function])
   }
 
+  private func normalizedLaserShortcutFlags() -> NSEvent.ModifierFlags {
+    return laserShortcutFlags
+      .intersection(.deviceIndependentFlagsMask)
+      .subtracting([.capsLock, .function])
+  }
+
   private func matchesInkShortcut(_ event: NSEvent) -> Bool {
     guard let keyCode = inkShortcutKeyCode else { return false }
     guard event.keyCode == keyCode else { return false }
     let requiredFlags = normalizedInkShortcutFlags()
+    let eventFlags = inkModifierFlags(for: event)
+    return eventFlags.isSuperset(of: requiredFlags)
+  }
+
+  private func matchesLaserShortcut(_ event: NSEvent) -> Bool {
+    guard let keyCode = laserShortcutKeyCode else { return false }
+    guard event.keyCode == keyCode else { return false }
+    let requiredFlags = normalizedLaserShortcutFlags()
     let eventFlags = inkModifierFlags(for: event)
     return eventFlags.isSuperset(of: requiredFlags)
   }
@@ -1985,6 +2092,107 @@ class MainFlutterWindow: NSWindow {
         self?.flutterChannel?.invokeMethod("onInkKeyUp", arguments: nil)
       }
     }
+  }
+
+  private func handleLaserKeyDown(_ event: NSEvent) {
+    guard matchesLaserShortcut(event) else { return }
+    if event.isARepeat { return }
+    if laserShortcutActive { return }
+    laserShortcutActive = true
+    DispatchQueue.main.async { [weak self] in
+      self?.flutterChannel?.invokeMethod("onLaserKeyDown", arguments: nil)
+    }
+  }
+
+  private func handleLaserKeyUp(_ event: NSEvent) {
+    guard let keyCode = laserShortcutKeyCode, event.keyCode == keyCode else { return }
+    guard laserShortcutActive else { return }
+    laserShortcutActive = false
+    DispatchQueue.main.async { [weak self] in
+      self?.flutterChannel?.invokeMethod("onLaserKeyUp", arguments: nil)
+    }
+  }
+
+  private func handleLaserFlagsChanged(_ event: NSEvent) {
+    guard laserShortcutActive else { return }
+    let flags = inkModifierFlags(for: event)
+    let requiredFlags = normalizedLaserShortcutFlags()
+    if !flags.isSuperset(of: requiredFlags) {
+      laserShortcutActive = false
+      DispatchQueue.main.async { [weak self] in
+        self?.flutterChannel?.invokeMethod("onLaserKeyUp", arguments: nil)
+      }
+    }
+  }
+
+  private func setOverlayCursorHidden(_ hidden: Bool) {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.setOverlayCursorHidden(hidden)
+      }
+      return
+    }
+    guard hidden != self.overlayCursorHidden else { return }
+    self.overlayCursorHidden = hidden
+    self.refreshOverlayCursorIfNeeded()
+  }
+
+  private func restoreOverlayCursor() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.restoreOverlayCursor()
+      }
+      return
+    }
+    if self.overlayCursorHidden {
+      self.overlayCursorHidden = false
+    }
+    self.refreshOverlayCursorIfNeeded()
+  }
+
+  private func refreshOverlayCursorIfNeeded() {
+    if !Thread.isMainThread {
+      DispatchQueue.main.async { [weak self] in
+        self?.refreshOverlayCursorIfNeeded()
+      }
+      return
+    }
+    if self.overlayCursorHidden {
+      self.invisibleCursor.set()
+      if NSApp.isActive && !self.overlayCursorCGHidden {
+        let error = CGDisplayHideCursor(CGMainDisplayID())
+        if error == .success {
+          self.overlayCursorCGHidden = true
+        } else {
+          MainFlutterWindow.log("CGDisplayHideCursor failed: \(error.rawValue)")
+        }
+      }
+      return
+    }
+
+    if self.overlayCursorCGHidden {
+      let error = CGDisplayShowCursor(CGMainDisplayID())
+      if error == .success {
+        self.overlayCursorCGHidden = false
+      } else {
+        MainFlutterWindow.log("CGDisplayShowCursor failed: \(error.rawValue)")
+      }
+    }
+    NSCursor.arrow.set()
+  }
+
+  override func sendEvent(_ event: NSEvent) {
+    if self.overlayCursorHidden {
+      switch event.type {
+      case .leftMouseDown, .leftMouseUp, .leftMouseDragged, .mouseMoved, .mouseEntered, .mouseExited,
+        .cursorUpdate, .otherMouseDown, .otherMouseUp, .otherMouseDragged, .rightMouseDown,
+        .rightMouseUp, .rightMouseDragged, .scrollWheel:
+        self.refreshOverlayCursorIfNeeded()
+      default:
+        break
+      }
+    }
+    super.sendEvent(event)
   }
 
   /// Remove overlay-only observers/panels/state.
@@ -2032,6 +2240,7 @@ class MainFlutterWindow: NSWindow {
     self.collectionBehavior = [.moveToActiveSpace]
     self.ignoresMouseEvents = false
     self.acceptsMouseMovedEvents = false
+    self.setOverlayCursorHidden(false)
   }
 
   // MARK: - OCR
@@ -2836,7 +3045,10 @@ class MainFlutterWindow: NSWindow {
       self.savedStyleMask = self.styleMask
     }
 
-    self.alphaValue = 1
+    // Keep the window in the compositor at alpha=0 so Flutter can render the
+    // transparent first frame before Dart reveals it. This avoids the initial
+    // visible flash when entering ink mode.
+    self.alphaValue = 0
     self.styleMask = [.borderless]
     self.backgroundColor = .clear
     self.contentView?.wantsLayer = true
@@ -2852,7 +3064,9 @@ class MainFlutterWindow: NSWindow {
     self.acceptsMouseMovedEvents = false
 
     self.setFrame(screenFrame, display: true, animate: false)
-    self.orderFrontRegardless()
+    self.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    self.setFrame(screenFrame, display: true, animate: false)
     self.setFlutterSurfaceOpaque(false)
 
     DispatchQueue.main.async { [weak self] in

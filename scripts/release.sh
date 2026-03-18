@@ -23,7 +23,6 @@ NO_TAG=false
 NO_NOTARIZE=false
 CLEAN=false
 BUILD_NAME=""
-BUILD_NUMBER=""
 IDENTITY="${DEVELOPER_ID_APPLICATION:-}"
 NOTARY_PROFILE="$APP_NAME"
 
@@ -39,13 +38,11 @@ Usage:
 Examples:
   ./scripts/release.sh
   ./scripts/release.sh 0.6.0
-  ./scripts/release.sh 0.6.1 --build-number 2
   ./scripts/release.sh --no-upload
   ./scripts/release.sh --no-notarize
   ./scripts/release.sh --dry-run
 
 Options:
-  --build-number N       Override the build number from pubspec.yaml
   --identity NAME        Use a specific Developer ID Application identity
   --no-upload            Build locally without creating a GitHub release
   --no-tag               Skip local tag creation and let GitHub create the tag
@@ -125,11 +122,6 @@ split_pubspec_version() {
     local version_line="$1"
 
     CURRENT_BUILD_NAME="${version_line%%+*}"
-    if [[ "$version_line" == *"+"* ]]; then
-        CURRENT_BUILD_NUMBER="${version_line##*+}"
-    else
-        CURRENT_BUILD_NUMBER="1"
-    fi
 }
 
 update_pubspec_version() {
@@ -341,14 +333,6 @@ notarize_and_staple() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --build-number)
-            if [[ $# -lt 2 ]]; then
-                log_error "--build-number requires a value"
-                exit 1
-            fi
-            BUILD_NUMBER="$2"
-            shift 2
-            ;;
         --identity)
             if [[ $# -lt 2 ]]; then
                 log_error "--identity requires a value"
@@ -402,20 +386,14 @@ split_pubspec_version "$PUBSPEC_VERSION"
 
 if [[ -z "$BUILD_NAME" ]]; then
     BUILD_NAME="$CURRENT_BUILD_NAME"
+    TARGET_PUBSPEC_VERSION="$PUBSPEC_VERSION"
+else
+    TARGET_PUBSPEC_VERSION="$BUILD_NAME"
 fi
 
-if [[ -z "$BUILD_NUMBER" ]]; then
-    if [[ "$BUILD_NAME" == "$CURRENT_BUILD_NAME" ]]; then
-        BUILD_NUMBER="$CURRENT_BUILD_NUMBER"
-    else
-        BUILD_NUMBER=$((CURRENT_BUILD_NUMBER + 1))
-    fi
-fi
-
-ARTIFACT_BASENAME="$APP_NAME-$BUILD_NAME-$BUILD_NUMBER"
+ARTIFACT_BASENAME="$APP_NAME-$BUILD_NAME"
 SIGNED_APP_PATH="$RELEASES_DIR/$ARTIFACT_BASENAME.app"
 DMG_PATH="$RELEASES_DIR/$ARTIFACT_BASENAME.dmg"
-TARGET_PUBSPEC_VERSION="$BUILD_NAME+$BUILD_NUMBER"
 TAG_NAME="v$BUILD_NAME"
 RELEASE_URL="https://github.com/$GITHUB_REPO/releases/tag/$TAG_NAME"
 
@@ -423,11 +401,6 @@ log_step "1. Validating prerequisites"
 
 if ! [[ "$BUILD_NAME" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
     log_error "Invalid VERSION format: $BUILD_NAME"
-    exit 1
-fi
-
-if ! [[ "$BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
-    log_error "Invalid build number: $BUILD_NUMBER"
     exit 1
 fi
 
@@ -468,8 +441,8 @@ fi
 
 log_success "Developer ID identity selected"
 log_info "$IDENTITY"
-log_info "Current: $CURRENT_BUILD_NAME (build $CURRENT_BUILD_NUMBER)"
-log_info "Release: $BUILD_NAME (build $BUILD_NUMBER)"
+log_info "Current: $CURRENT_BUILD_NAME"
+log_info "Release: $BUILD_NAME"
 log_info "Artifact prefix: $ARTIFACT_BASENAME"
 
 RELEASE_NOTES=$(generate_release_notes)
@@ -494,7 +467,7 @@ if [[ "$PUBSPEC_VERSION" != "$TARGET_PUBSPEC_VERSION" ]]; then
     update_pubspec_version "$TARGET_PUBSPEC_VERSION"
     git add "$PUBSPEC_FILE"
     if ! git diff --cached --quiet -- "$PUBSPEC_FILE"; then
-        git commit -m "Bump version to $BUILD_NAME (build $BUILD_NUMBER)" -- "$PUBSPEC_FILE"
+        git commit -m "Bump version to $BUILD_NAME" -- "$PUBSPEC_FILE"
         log_success "Updated pubspec.yaml to $TARGET_PUBSPEC_VERSION"
     else
         log_info "No version changes were staged"
@@ -510,7 +483,7 @@ if [[ "$CLEAN" == "true" ]]; then
     flutter clean >&2
 fi
 
-flutter build macos --release --build-name "$BUILD_NAME" --build-number "$BUILD_NUMBER" >&2
+flutter build macos --release --build-name "$BUILD_NAME" >&2
 
 if [[ ! -d "$BUILD_OUTPUT_APP" ]]; then
     log_error "Build completed but app bundle was not found at $BUILD_OUTPUT_APP"

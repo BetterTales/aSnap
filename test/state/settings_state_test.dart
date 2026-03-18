@@ -8,6 +8,7 @@ import 'package:a_snap/services/settings_service.dart';
 import 'package:a_snap/services/tray_service.dart';
 import 'package:a_snap/services/window_service.dart';
 import 'package:a_snap/state/settings_state.dart';
+import 'package:a_snap/utils/laser_defaults.dart';
 
 class _FakeSettingsService extends SettingsService {
   _FakeSettingsService() : super();
@@ -20,6 +21,9 @@ class _FakeSettingsService extends SettingsService {
   bool failInkSmoothingSave = false;
   bool failInkAutoFadeSave = false;
   bool failInkEraserSizeSave = false;
+  bool failLaserColorSave = false;
+  bool failLaserSizeSave = false;
+  bool failLaserFadeSave = false;
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
@@ -28,6 +32,9 @@ class _FakeSettingsService extends SettingsService {
   double? savedInkSmoothingTolerance;
   double? savedInkAutoFadeSeconds;
   double? savedInkEraserSize;
+  Color? savedLaserColor;
+  double? savedLaserSize;
+  double? savedLaserFadeSeconds;
 
   @override
   Future<void> saveShortcutBindings(ShortcutBindings bindings) async {
@@ -93,6 +100,30 @@ class _FakeSettingsService extends SettingsService {
     savedInkEraserSize = size;
   }
 
+  @override
+  Future<void> saveLaserColor(Color color) async {
+    if (failLaserColorSave) {
+      throw Exception('laser color save failed');
+    }
+    savedLaserColor = color;
+  }
+
+  @override
+  Future<void> saveLaserSize(double size) async {
+    if (failLaserSizeSave) {
+      throw Exception('laser size save failed');
+    }
+    savedLaserSize = size;
+  }
+
+  @override
+  Future<void> saveLaserFadeSeconds(double seconds) async {
+    if (failLaserFadeSave) {
+      throw Exception('laser fade save failed');
+    }
+    savedLaserFadeSeconds = seconds;
+  }
+
 }
 
 class _FakeWindowService extends WindowService {
@@ -105,6 +136,9 @@ class _FakeWindowService extends WindowService {
   bool failInkShortcut = false;
   int inkShortcutUpdates = 0;
   HotKey? lastInkShortcut;
+  bool failLaserShortcut = false;
+  int laserShortcutUpdates = 0;
+  HotKey? lastLaserShortcut;
 
   @override
   Future<LaunchAtLoginState> getLaunchAtLoginState() async {
@@ -118,6 +152,15 @@ class _FakeWindowService extends WindowService {
     }
     inkShortcutUpdates += 1;
     lastInkShortcut = hotKey;
+  }
+
+  @override
+  Future<void> setLaserShortcut(HotKey hotKey) async {
+    if (failLaserShortcut) {
+      throw Exception('laser shortcut update failed');
+    }
+    laserShortcutUpdates += 1;
+    lastLaserShortcut = hotKey;
   }
 }
 
@@ -190,6 +233,9 @@ void main() {
       initialInkSmoothingTolerance: 1.5,
       initialInkAutoFadeSeconds: 0,
       initialInkEraserSize: 16,
+      initialLaserColor: kLaserDefaultColor,
+      initialLaserSize: kLaserDefaultSize,
+      initialLaserFadeSeconds: kLaserDefaultFadeSeconds,
       settingsService: settingsService,
       windowService: windowService,
       hotkeyService: hotkeyService,
@@ -211,9 +257,14 @@ void main() {
     expect(hotkeyService.updates.single.encodeJson(), updated.encodeJson());
     expect(trayService.updates.single.encodeJson(), updated.encodeJson());
     expect(windowService.inkShortcutUpdates, 1);
+    expect(windowService.laserShortcutUpdates, 1);
     expect(
       shortcutSignature(windowService.lastInkShortcut!),
       shortcutSignature(updated.forAction(ShortcutAction.ink)),
+    );
+    expect(
+      shortcutSignature(windowService.lastLaserShortcut!),
+      shortcutSignature(updated.forAction(ShortcutAction.laser)),
     );
   });
 
@@ -228,9 +279,14 @@ void main() {
     expect(hotkeyService.updates.single.encodeJson(), updated.encodeJson());
     expect(trayService.updates.single.encodeJson(), updated.encodeJson());
     expect(windowService.inkShortcutUpdates, 1);
+    expect(windowService.laserShortcutUpdates, 1);
     expect(
       shortcutSignature(windowService.lastInkShortcut!),
       shortcutSignature(updated.forAction(ShortcutAction.ink)),
+    );
+    expect(
+      shortcutSignature(windowService.lastLaserShortcut!),
+      shortcutSignature(updated.forAction(ShortcutAction.laser)),
     );
   });
 
@@ -252,9 +308,14 @@ void main() {
     expect(trayService.updates.first.encodeJson(), updated.encodeJson());
     expect(trayService.updates.last.encodeJson(), initial.encodeJson());
     expect(windowService.inkShortcutUpdates, 2);
+    expect(windowService.laserShortcutUpdates, 2);
     expect(
       shortcutSignature(windowService.lastInkShortcut!),
       shortcutSignature(initial.forAction(ShortcutAction.ink)),
+    );
+    expect(
+      shortcutSignature(windowService.lastLaserShortcut!),
+      shortcutSignature(initial.forAction(ShortcutAction.laser)),
     );
   });
 
@@ -274,6 +335,7 @@ void main() {
     expect(hotkeyService.updates, isEmpty);
     expect(trayService.updates, isEmpty);
     expect(windowService.inkShortcutUpdates, 0);
+    expect(windowService.laserShortcutUpdates, 0);
   },
   );
 
@@ -396,6 +458,60 @@ void main() {
 
     expect(state.inkEraserSize, 16);
     expect(state.inkEraserSizeError, contains('ink eraser size save failed'));
+  });
+
+  test('setLaserColor persists the setting', () async {
+    const nextColor = Color(0xFF00C853);
+
+    await state.setLaserColor(nextColor);
+
+    expect(state.laserColor, nextColor);
+    expect(settingsService.savedLaserColor, nextColor);
+    expect(state.laserColorError, isNull);
+  });
+
+  test('setLaserColor rolls back on save failure', () async {
+    settingsService.failLaserColorSave = true;
+    const nextColor = Color(0xFF2979FF);
+
+    await state.setLaserColor(nextColor);
+
+    expect(state.laserColor, kLaserDefaultColor);
+    expect(state.laserColorError, contains('laser color save failed'));
+  });
+
+  test('setLaserSize persists the setting', () async {
+    await state.setLaserSize(20);
+
+    expect(state.laserSize, 20);
+    expect(settingsService.savedLaserSize, 20);
+    expect(state.laserSizeError, isNull);
+  });
+
+  test('setLaserSize rolls back on save failure', () async {
+    settingsService.failLaserSizeSave = true;
+
+    await state.setLaserSize(20);
+
+    expect(state.laserSize, kLaserDefaultSize);
+    expect(state.laserSizeError, contains('laser size save failed'));
+  });
+
+  test('setLaserFadeSeconds persists the setting', () async {
+    await state.setLaserFadeSeconds(1.2);
+
+    expect(state.laserFadeSeconds, 1.2);
+    expect(settingsService.savedLaserFadeSeconds, 1.2);
+    expect(state.laserFadeError, isNull);
+  });
+
+  test('setLaserFadeSeconds rolls back on save failure', () async {
+    settingsService.failLaserFadeSave = true;
+
+    await state.setLaserFadeSeconds(1.2);
+
+    expect(state.laserFadeSeconds, kLaserDefaultFadeSeconds);
+    expect(state.laserFadeError, contains('laser fade save failed'));
   });
 
 

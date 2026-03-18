@@ -125,13 +125,17 @@ final class SettingsWorkflow extends WorkflowState {
   const SettingsWorkflow();
 }
 
+enum InkTool { ink, laser }
+
 final class InkOverlayWorkflow extends WorkflowState {
+  final InkTool tool;
   final bool drawingEnabled;
 
-  const InkOverlayWorkflow({required this.drawingEnabled});
+  const InkOverlayWorkflow({required this.tool, required this.drawingEnabled});
 
-  InkOverlayWorkflow copyWith({bool? drawingEnabled}) {
+  InkOverlayWorkflow copyWith({InkTool? tool, bool? drawingEnabled}) {
     return InkOverlayWorkflow(
+      tool: tool ?? this.tool,
       drawingEnabled: drawingEnabled ?? this.drawingEnabled,
     );
   }
@@ -323,14 +327,21 @@ class AppState extends ChangeNotifier {
     _transitionTo(const SettingsWorkflow());
   }
 
-  void setInkOverlay({required bool drawingEnabled}) {
-    _transitionTo(InkOverlayWorkflow(drawingEnabled: drawingEnabled));
+  void setInkOverlay({required InkTool tool, required bool drawingEnabled}) {
+    _transitionTo(
+      InkOverlayWorkflow(tool: tool, drawingEnabled: drawingEnabled),
+    );
   }
 
-  void updateInkDrawing(bool drawingEnabled) {
+  void updateInkOverlay({InkTool? tool, bool? drawingEnabled}) {
     final ink = inkOverlayWorkflow;
     if (ink == null) return;
-    _transitionTo(ink.copyWith(drawingEnabled: drawingEnabled));
+    _transitionTo(
+      ink.copyWith(
+        tool: tool,
+        drawingEnabled: drawingEnabled ?? ink.drawingEnabled,
+      ),
+    );
   }
 
   /// Transition to scroll result displayed in the fullscreen overlay.
