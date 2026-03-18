@@ -170,24 +170,30 @@ class _InkOverlayScreenState extends State<InkOverlayScreen> {
         child: Stack(
           children: [
             Positioned.fill(
-              child: InkOverlay(
-                inkState: widget.inkState,
-                drawingEnabled: inkActive,
-                strokeColor: widget.strokeColor,
-                strokeWidth: widget.strokeWidth,
-                smoothingTolerance: widget.smoothingTolerance,
-                autoFadeSeconds: widget.autoFadeSeconds,
-                eraserSize: widget.eraserSize,
-                onEraserSizeChanged: widget.onEraserSizeChanged,
+              child: IgnorePointer(
+                ignoring: !inkActive,
+                child: InkOverlay(
+                  inkState: widget.inkState,
+                  drawingEnabled: inkActive,
+                  strokeColor: widget.strokeColor,
+                  strokeWidth: widget.strokeWidth,
+                  smoothingTolerance: widget.smoothingTolerance,
+                  autoFadeSeconds: widget.autoFadeSeconds,
+                  eraserSize: widget.eraserSize,
+                  onEraserSizeChanged: widget.onEraserSizeChanged,
+                ),
               ),
             ),
             Positioned.fill(
-              child: LaserOverlay(
-                laserState: widget.laserState,
-                drawingEnabled: laserActive,
-                color: widget.laserColor,
-                size: widget.laserSize,
-                fadeSeconds: widget.laserFadeSeconds,
+              child: IgnorePointer(
+                ignoring: !laserActive,
+                child: LaserOverlay(
+                  laserState: widget.laserState,
+                  drawingEnabled: laserActive,
+                  color: widget.laserColor,
+                  size: widget.laserSize,
+                  fadeSeconds: widget.laserFadeSeconds,
+                ),
               ),
             ),
           ],

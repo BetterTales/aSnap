@@ -355,18 +355,12 @@ Future<void> _handleInkKeyDown() async {
     _appState.updateInkOverlay(tool: InkTool.ink, drawingEnabled: true);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
-      await _windowService.setOverlayCursorHidden(hidden: false);
+      await _windowService.setOverlayCursorHidden(hidden: true);
     } catch (_) {}
     return;
   }
 
-  await _windowService.enterInkOverlay();
-  _appState.setInkOverlay(tool: InkTool.ink, drawingEnabled: true);
-  await _windowService.setOverlayMousePassthrough(passthrough: false);
-  try {
-    await _windowService.setOverlayCursorHidden(hidden: false);
-  } catch (_) {}
-  await _windowService.startEscMonitor();
+  await _showInkOverlay(tool: InkTool.ink, hideCursor: true);
 }
 
 Future<void> _handleInkKeyUp() async {
@@ -406,13 +400,7 @@ Future<void> _handleLaserKeyDown() async {
     return;
   }
 
-  await _windowService.enterInkOverlay();
-  _appState.setInkOverlay(tool: InkTool.laser, drawingEnabled: true);
-  await _windowService.setOverlayMousePassthrough(passthrough: false);
-  try {
-    await _windowService.setOverlayCursorHidden(hidden: true);
-  } catch (_) {}
-  await _windowService.startEscMonitor();
+  await _showInkOverlay(tool: InkTool.laser, hideCursor: true);
 }
 
 Future<void> _handleLaserKeyUp() async {
@@ -436,6 +424,22 @@ Future<void> _exitInkOverlay() async {
   await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.exitOverlay();
   await _windowService.hidePreview();
+}
+
+Future<void> _showInkOverlay({
+  required InkTool tool,
+  required bool hideCursor,
+}) async {
+  await _windowService.enterInkOverlay();
+  _appState.setInkOverlay(tool: tool, drawingEnabled: true);
+  await WidgetsBinding.instance.endOfFrame;
+  await WidgetsBinding.instance.endOfFrame;
+  await _windowService.setOverlayMousePassthrough(passthrough: false);
+  try {
+    await _windowService.setOverlayCursorHidden(hidden: hideCursor);
+  } catch (_) {}
+  await _windowService.revealInkOverlay();
+  await _windowService.startEscMonitor();
 }
 
 Future<void> _ensureInkOverlayClosed() async {

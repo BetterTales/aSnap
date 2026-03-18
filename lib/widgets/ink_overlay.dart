@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
@@ -33,8 +34,8 @@ class InkOverlay extends StatefulWidget {
 class _InkOverlayState extends State<InkOverlay>
     with SingleTickerProviderStateMixin {
   late final AnimationController _fadeController;
-  Offset? _cursorPosition;
-  bool _cursorIsEraser = false;
+  final ValueNotifier<Offset?> _cursorPosition = ValueNotifier(null);
+  final ValueNotifier<bool> _cursorIsEraser = ValueNotifier(false);
   bool _rightButtonDown = false;
 
   @override
@@ -61,6 +62,8 @@ class _InkOverlayState extends State<InkOverlay>
 
   @override
   void dispose() {
+    _cursorPosition.dispose();
+    _cursorIsEraser.dispose();
     _fadeController.dispose();
     super.dispose();
   }
@@ -91,26 +94,22 @@ class _InkOverlayState extends State<InkOverlay>
 
   void _updateCursorPosition(Offset position) {
     if (!widget.drawingEnabled) return;
-    if (_cursorPosition == position) return;
-    setState(() {
-      _cursorPosition = position;
-    });
+    if (_cursorPosition.value == position) return;
+    _cursorPosition.value = position;
   }
 
   void _clearCursorPosition() {
-    if (_cursorPosition == null) return;
-    setState(() {
-      _cursorPosition = null;
-      _cursorIsEraser = false;
-      _rightButtonDown = false;
-    });
+    final hadCursor = _cursorPosition.value != null;
+    final hadEraser = _cursorIsEraser.value;
+    if (!hadCursor && !hadEraser && !_rightButtonDown) return;
+    _cursorPosition.value = null;
+    _cursorIsEraser.value = false;
+    _rightButtonDown = false;
   }
 
   void _setCursorIsEraser(bool isEraser) {
-    if (_cursorIsEraser == isEraser) return;
-    setState(() {
-      _cursorIsEraser = isEraser;
-    });
+    if (_cursorIsEraser.value == isEraser) return;
+    _cursorIsEraser.value = isEraser;
   }
 
   void _onPointerDown(PointerDownEvent event) {
@@ -174,7 +173,7 @@ class _InkOverlayState extends State<InkOverlay>
       kInkMaxEraserSize,
     );
     if (next == widget.eraserSize) return;
-    if (_cursorIsEraser) {
+    if (_cursorIsEraser.value) {
       widget.inkState.updateActiveStrokeWidth(next);
     }
     widget.onEraserSizeChanged(next);
@@ -182,33 +181,24 @@ class _InkOverlayState extends State<InkOverlay>
 
   @override
   Widget build(BuildContext context) {
+    final repaint = Listenable.merge([
+      widget.inkState,
+      _cursorPosition,
+      _cursorIsEraser,
+    ]);
     final content = RepaintBoundary(
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: CustomPaint(
-              painter: _InkPainter(widget.inkState),
-              size: Size.infinite,
-            ),
-          ),
-          if (widget.drawingEnabled && _cursorPosition != null)
-            Positioned.fill(
-              child: IgnorePointer(
-                child: CustomPaint(
-                  painter: _InkCursorPainter(
-                    position: _cursorPosition!,
-                    radius:
-                        (_cursorIsEraser
-                            ? widget.eraserSize
-                            : widget.strokeWidth) /
-                        2,
-                    isEraser: _cursorIsEraser,
-                    color: widget.strokeColor,
-                  ),
-                ),
-              ),
-            ),
-        ],
+      child: CustomPaint(
+        painter: _InkPainter(
+          inkState: widget.inkState,
+          strokeColor: widget.strokeColor,
+          strokeWidth: widget.strokeWidth,
+          eraserSize: widget.eraserSize,
+          cursorActive: widget.drawingEnabled,
+          cursorPositionListenable: _cursorPosition,
+          cursorIsEraserListenable: _cursorIsEraser,
+          repaint: repaint,
+        ),
+        size: Size.infinite,
       ),
     );
 
@@ -235,16 +225,31 @@ class _InkOverlayState extends State<InkOverlay>
       onPointerUp: _onPointerUp,
       onPointerCancel: _onPointerCancel,
       onPointerSignal: _onPointerSignal,
-      behavior: HitTestBehavior.translucent,
+      behavior: HitTestBehavior.opaque,
       child: decorated,
     );
   }
 }
 
 class _InkPainter extends CustomPainter {
-  _InkPainter(this.inkState) : super(repaint: inkState);
+  _InkPainter({
+    required this.inkState,
+    required this.strokeColor,
+    required this.strokeWidth,
+    required this.eraserSize,
+    required this.cursorActive,
+    required this.cursorPositionListenable,
+    required this.cursorIsEraserListenable,
+    super.repaint,
+  });
 
   final InkState inkState;
+  final Color strokeColor;
+  final double strokeWidth;
+  final double eraserSize;
+  final bool cursorActive;
+  final ValueListenable<Offset?> cursorPositionListenable;
+  final ValueListenable<bool> cursorIsEraserListenable;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -271,6 +276,18 @@ class _InkPainter extends CustomPainter {
     if (needsLayer) {
       canvas.restore();
     }
+
+    final cursorPosition = cursorActive ? cursorPositionListenable.value : null;
+    if (cursorPosition == null) {
+      return;
+    }
+
+    _paintCursor(
+      canvas,
+      position: cursorPosition,
+      radius: (cursorIsEraserListenable.value ? eraserSize : strokeWidth) / 2,
+      isEraser: cursorIsEraserListenable.value,
+    );
   }
 
   void _paintStroke(Canvas canvas, InkStroke stroke) {
@@ -290,25 +307,12 @@ class _InkPainter extends CustomPainter {
     canvas.drawPath(path, paint);
   }
 
-  @override
-  bool shouldRepaint(covariant _InkPainter oldDelegate) => false;
-}
-
-class _InkCursorPainter extends CustomPainter {
-  _InkCursorPainter({
-    required this.position,
-    required this.radius,
-    required this.isEraser,
-    required this.color,
-  });
-
-  final Offset position;
-  final double radius;
-  final bool isEraser;
-  final Color color;
-
-  @override
-  void paint(Canvas canvas, Size size) {
+  void _paintCursor(
+    Canvas canvas, {
+    required Offset position,
+    required double radius,
+    required bool isEraser,
+  }) {
     final outerPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 2
@@ -316,16 +320,15 @@ class _InkCursorPainter extends CustomPainter {
     final innerPaint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.2
-      ..color = isEraser ? Colors.white : color.withValues(alpha: 0.9);
+      ..color = isEraser ? Colors.white : strokeColor.withValues(alpha: 0.9);
     canvas.drawCircle(position, radius, outerPaint);
     canvas.drawCircle(position, radius, innerPaint);
   }
 
   @override
-  bool shouldRepaint(covariant _InkCursorPainter oldDelegate) {
-    return oldDelegate.position != position ||
-        oldDelegate.radius != radius ||
-        oldDelegate.isEraser != isEraser ||
-        oldDelegate.color != color;
-  }
+  bool shouldRepaint(covariant _InkPainter oldDelegate) =>
+      oldDelegate.strokeColor != strokeColor ||
+      oldDelegate.strokeWidth != strokeWidth ||
+      oldDelegate.eraserSize != eraserSize ||
+      oldDelegate.cursorActive != cursorActive;
 }

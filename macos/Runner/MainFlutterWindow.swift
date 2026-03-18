@@ -674,8 +674,19 @@ class MainFlutterWindow: NSWindow {
         self.configureOverlay(call.arguments as? [String: Double])
         result(nil)
       case "enterInkOverlayMode":
-        // Configure + position a transparent overlay for ink drawing.
+        // Configure + position a transparent overlay for ink drawing at
+        // alpha=0. Dart reveals it after Flutter renders the first frame.
         self.configureInkOverlay(call.arguments as? [String: Double])
+        result(nil)
+      case "revealInkOverlay":
+        self.backgroundColor = .clear
+        self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        self.setFlutterSurfaceOpaque(false)
+        self.alphaValue = 1
+        self.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        self.refreshOverlayCursorIfNeeded()
+        MainFlutterWindow.log("revealInkOverlay: alpha=1")
         result(nil)
       case "cleanupOverlayMode":
         // Overlay cleanup that also restores styleMask (needed so
@@ -3034,7 +3045,10 @@ class MainFlutterWindow: NSWindow {
       self.savedStyleMask = self.styleMask
     }
 
-    self.alphaValue = 1
+    // Keep the window in the compositor at alpha=0 so Flutter can render the
+    // transparent first frame before Dart reveals it. This avoids the initial
+    // visible flash when entering ink mode.
+    self.alphaValue = 0
     self.styleMask = [.borderless]
     self.backgroundColor = .clear
     self.contentView?.wantsLayer = true
@@ -3050,7 +3064,9 @@ class MainFlutterWindow: NSWindow {
     self.acceptsMouseMovedEvents = false
 
     self.setFrame(screenFrame, display: true, animate: false)
-    self.orderFrontRegardless()
+    self.makeKeyAndOrderFront(nil)
+    NSApp.activate(ignoringOtherApps: true)
+    self.setFrame(screenFrame, display: true, animate: false)
     self.setFlutterSurfaceOpaque(false)
 
     DispatchQueue.main.async { [weak self] in

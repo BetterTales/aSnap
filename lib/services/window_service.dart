@@ -452,6 +452,12 @@ class WindowService {
     await _channel.invokeMethod('enterInkOverlayMode', args);
   }
 
+  /// Reveal the prepared ink overlay after Flutter has rendered its first frame.
+  Future<void> revealInkOverlay() async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('revealInkOverlay');
+  }
+
   /// Fully exit overlay mode: restore window style, level, observers.
   Future<void> exitOverlay() async {
     await _channel.invokeMethod('exitOverlayMode');

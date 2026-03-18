@@ -107,6 +107,19 @@ void main() {
     },
   );
 
+  test('revealInkOverlay forwards to the native window channel', () async {
+    MethodCall? capturedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          capturedCall = call;
+          return null;
+        });
+
+    await windowService.revealInkOverlay();
+
+    expect(capturedCall?.method, 'revealInkOverlay');
+  });
+
   test('showToolbarPanel forwards placement intent and anchor rect', () async {
     MethodCall? capturedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
