@@ -354,12 +354,18 @@ Future<void> _handleInkKeyDown() async {
     }
     _appState.updateInkOverlay(tool: InkTool.ink, drawingEnabled: true);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
+    try {
+      await _windowService.setOverlayCursorHidden(hidden: false);
+    } catch (_) {}
     return;
   }
 
   await _windowService.enterInkOverlay();
   _appState.setInkOverlay(tool: InkTool.ink, drawingEnabled: true);
   await _windowService.setOverlayMousePassthrough(passthrough: false);
+  try {
+    await _windowService.setOverlayCursorHidden(hidden: false);
+  } catch (_) {}
   await _windowService.startEscMonitor();
 }
 
@@ -372,6 +378,7 @@ Future<void> _handleInkKeyUp() async {
     _appState.updateInkOverlay(drawingEnabled: false);
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
+  await _windowService.setOverlayCursorHidden(hidden: false);
 }
 
 Future<void> _handleLaserKeyDown() async {
@@ -393,12 +400,18 @@ Future<void> _handleLaserKeyDown() async {
     }
     _appState.updateInkOverlay(tool: InkTool.laser, drawingEnabled: true);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
+    try {
+      await _windowService.setOverlayCursorHidden(hidden: true);
+    } catch (_) {}
     return;
   }
 
   await _windowService.enterInkOverlay();
   _appState.setInkOverlay(tool: InkTool.laser, drawingEnabled: true);
   await _windowService.setOverlayMousePassthrough(passthrough: false);
+  try {
+    await _windowService.setOverlayCursorHidden(hidden: true);
+  } catch (_) {}
   await _windowService.startEscMonitor();
 }
 
@@ -410,6 +423,7 @@ Future<void> _handleLaserKeyUp() async {
     _appState.updateInkOverlay(drawingEnabled: false);
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
+  await _windowService.setOverlayCursorHidden(hidden: false);
 }
 
 Future<void> _exitInkOverlay() async {
@@ -419,6 +433,7 @@ Future<void> _exitInkOverlay() async {
   _laserState.clear();
   _appState.clear();
   await _windowService.stopEscMonitor();
+  await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.exitOverlay();
   await _windowService.hidePreview();
 }

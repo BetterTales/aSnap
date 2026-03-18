@@ -464,6 +464,11 @@ class WindowService {
     });
   }
 
+  Future<void> setOverlayCursorHidden({required bool hidden}) async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('setOverlayCursorHidden', {'hidden': hidden});
+  }
+
   /// Clean overlay-only state without restoring styleMask.
   /// Use this for fast transitions where restoring style can flash.
   Future<void> cleanupOverlay() async {
