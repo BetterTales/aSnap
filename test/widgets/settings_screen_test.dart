@@ -60,7 +60,6 @@ class _FakeSettingsService extends SettingsService {
 
   @override
   Future<void> saveLaserFadeSeconds(double seconds) async {}
-
 }
 
 class _FakeWindowService extends WindowService {
@@ -166,6 +165,8 @@ Future<_SettingsHarness> _pumpSettingsScreen(
   );
 }
 
+Finder _tabLabel(String label) => find.widgetWithText(Tab, label);
+
 void main() {
   const shortcutRecorderChannel = MethodChannel('com.asnap/shortcutRecorder');
 
@@ -181,36 +182,53 @@ void main() {
         .setMockMethodCallHandler(shortcutRecorderChannel, null);
   });
 
-  testWidgets('settings screen renders as a simple list', (tester) async {
+  testWidgets('settings screen renders in tabs', (tester) async {
     await _pumpSettingsScreen(tester);
 
     expect(find.text('Settings'), findsOneWidget);
-    expect(find.text('General'), findsOneWidget);
-    expect(find.text('Shortcuts'), findsOneWidget);
-    expect(find.text('Ink Drawing'), findsOneWidget);
-    expect(find.text('Laser Pointer'), findsOneWidget);
-    expect(find.text('Smoothing'), findsOneWidget);
-    expect(find.text('Auto-fade'), findsOneWidget);
-    expect(find.text('Eraser size'), findsOneWidget);
-    expect(find.text('Fade'), findsOneWidget);
+    expect(_tabLabel('General'), findsOneWidget);
+    expect(_tabLabel('Shortcuts'), findsOneWidget);
+    expect(_tabLabel('Ink'), findsOneWidget);
+    expect(_tabLabel('Laser'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
     expect(find.text('Launch at login'), findsOneWidget);
     expect(find.text('Show OCR preview'), findsOneWidget);
     expect(find.text('Prompt to open URL after OCR'), findsOneWidget);
+    expect(find.text('Region'), findsNothing);
+    expect(find.text('Smoothing'), findsNothing);
+    expect(find.text('Fade'), findsNothing);
+
+    await tester.tap(_tabLabel('Shortcuts'));
+    await tester.pumpAndSettle();
+
     expect(find.text('Region'), findsOneWidget);
     expect(find.text('Scroll'), findsOneWidget);
     expect(find.text('Full Screen'), findsOneWidget);
     expect(find.text('Pin'), findsOneWidget);
     expect(find.text('OCR'), findsOneWidget);
-    expect(find.text('Ink'), findsOneWidget);
-    expect(find.text('Laser'), findsOneWidget);
+    expect(find.text('Ink'), findsAtLeastNWidgets(1));
+    expect(find.text('Laser'), findsAtLeastNWidgets(1));
+
+    await tester.tap(_tabLabel('Ink'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Smoothing'), findsOneWidget);
+    expect(find.text('Auto-fade'), findsOneWidget);
+    expect(find.text('Eraser size'), findsOneWidget);
+
+    await tester.tap(_tabLabel('Laser'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Fade'), findsOneWidget);
     expect(find.text('Save changes'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('shortcut rows render directly without extra navigation', (
-    tester,
-  ) async {
+  testWidgets('shortcut rows render in shortcuts tab', (tester) async {
     await _pumpSettingsScreen(tester);
+
+    await tester.tap(_tabLabel('Shortcuts'));
+    await tester.pumpAndSettle();
 
     expect(find.byType(OutlinedButton), findsNWidgets(7));
     expect(tester.takeException(), isNull);
@@ -221,6 +239,9 @@ void main() {
       tester,
       initialShortcuts: _customShortcuts(),
     );
+
+    await tester.tap(_tabLabel('Shortcuts'));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byTooltip('Reset'));
     await tester.pumpAndSettle();
@@ -241,6 +262,9 @@ void main() {
     tester,
   ) async {
     final harness = await _pumpSettingsScreen(tester);
+
+    await tester.tap(_tabLabel('Shortcuts'));
+    await tester.pumpAndSettle();
 
     final changeButton = find.byType(OutlinedButton).first;
     await tester.ensureVisible(changeButton);
