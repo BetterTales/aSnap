@@ -941,6 +941,11 @@ class MainFlutterWindow: NSWindow {
       case "stopInkMonitor":
         self.stopInkMonitorImpl()
         result(nil)
+      case "resetInkMonitorState":
+        self.inkShortcutActive = false
+        self.laserShortcutActive = false
+        self.restoreOverlayCursor()
+        result(nil)
       case "startRectPolling":
         let includeAxChildren =
           (call.arguments as? [String: Any])?["includeAxChildren"] as? Bool ?? false

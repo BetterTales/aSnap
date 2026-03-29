@@ -120,6 +120,19 @@ void main() {
     expect(capturedCall?.method, 'revealInkOverlay');
   });
 
+  test('resetInkMonitorState forwards to the native window channel', () async {
+    MethodCall? capturedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          capturedCall = call;
+          return null;
+        });
+
+    await windowService.resetInkMonitorState();
+
+    expect(capturedCall?.method, 'resetInkMonitorState');
+  });
+
   test('showToolbarPanel forwards placement intent and anchor rect', () async {
     MethodCall? capturedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

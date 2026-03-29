@@ -160,6 +160,47 @@ void main() {
   );
 
   test(
+    'includes Ink and Laser in native macOS hotkey registration',
+    () async {
+      final service = HotkeyService();
+
+      await service.initialize(
+        bindings: ShortcutBindings.defaults(),
+        onFullScreen: () {},
+        onRegion: () {},
+        onScrollCapture: () {},
+        onPin: () {},
+        onOcr: () {},
+        onInk: () {},
+        onLaser: () {},
+      );
+
+      addTearDown(service.unregisterAll);
+
+      final setHotkeysCall = nativeCalls.singleWhere(
+        (call) => call.method == 'setHotkeys',
+      );
+      final actions = registeredDescriptors(
+        setHotkeysCall,
+      ).map((item) => item['action'] as String).toSet();
+
+      expect(actions, contains(ShortcutAction.ink.name));
+      expect(actions, contains(ShortcutAction.laser.name));
+      expect(
+        actions,
+        containsAll(<String>[
+          ShortcutAction.region.name,
+          ShortcutAction.scrollCapture.name,
+          ShortcutAction.fullScreen.name,
+          ShortcutAction.pin.name,
+          ShortcutAction.ocr.name,
+        ]),
+      );
+    },
+    skip: !Platform.isMacOS,
+  );
+
+  test(
     'fails when native macOS registration rejects a Ctrl shortcut',
     () async {
       final service = HotkeyService();

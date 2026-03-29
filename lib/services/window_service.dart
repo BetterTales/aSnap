@@ -663,6 +663,11 @@ class WindowService {
     await _channel.invokeMethod('stopInkMonitor');
   }
 
+  Future<void> resetInkMonitorState() async {
+    if (!Platform.isMacOS) return;
+    await _channel.invokeMethod('resetInkMonitorState');
+  }
+
   /// Start background polling for window rects on a native background thread.
   /// Results are delivered periodically via [onRectsUpdated]. By default,
   /// this only gathers top-level window frames to avoid constant AX tree walks

@@ -23,9 +23,7 @@ const _accentColor = Color(0xFF7A6854);
 const _inactiveControlColor = Color(0xFFE5DED2);
 const _shortcutButtonWidth = 220.0;
 const _shortcutActionSlotWidth = 32.0;
-const _inkSectionTitle = 'Ink Drawing';
 const _inkColorRowHeight = 44.0;
-const _laserSectionTitle = 'Laser Pointer';
 const _laserColorRowHeight = 44.0;
 
 const _inkPresetColors = [
@@ -38,6 +36,17 @@ const _inkPresetColors = [
 ];
 
 const _laserPresetColors = _inkPresetColors;
+
+enum _SettingsTab {
+  general('General'),
+  shortcuts('Shortcuts'),
+  ink('Ink'),
+  laser('Laser');
+
+  const _SettingsTab(this.label);
+
+  final String label;
+}
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -57,11 +66,36 @@ class SettingsScreen extends StatefulWidget {
   State<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends State<SettingsScreen> {
+class _SettingsScreenState extends State<SettingsScreen>
+    with SingleTickerProviderStateMixin {
   Map<ShortcutAction, String> _shortcutValidationErrors = const {};
   ShortcutAction? _busyShortcutAction;
+  late final TabController _tabController;
+  late final List<ScrollController> _tabScrollControllers;
 
   ShortcutBindings get _defaultShortcuts => ShortcutBindings.defaults();
+
+  @override
+  void initState() {
+    super.initState();
+    _tabController = TabController(
+      length: _SettingsTab.values.length,
+      vsync: this,
+    );
+    _tabScrollControllers = List.generate(
+      _SettingsTab.values.length,
+      (_) => ScrollController(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    for (final controller in _tabScrollControllers) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
 
   Future<void> _closeWindow() async {
     widget.settingsState.clearShortcutError();
@@ -131,6 +165,250 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Widget _buildTabPanel({
+    required _SettingsTab tab,
+    required List<Widget> children,
+  }) {
+    final controller = _tabScrollControllers[tab.index];
+    return Scrollbar(
+      controller: controller,
+      child: SingleChildScrollView(
+        key: PageStorageKey<String>('settings-tab-${tab.name}'),
+        controller: controller,
+        padding: const EdgeInsets.only(bottom: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: children,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildGeneralTab() {
+    return _buildTabPanel(
+      tab: _SettingsTab.general,
+      children: [
+        _SurfaceGroup(
+          child: Column(
+            children: [
+              _LaunchAtLoginRow(settingsState: widget.settingsState),
+              const _GroupDivider(),
+              _OcrPreviewRow(settingsState: widget.settingsState),
+              const _GroupDivider(),
+              _OcrOpenUrlPromptRow(settingsState: widget.settingsState),
+            ],
+          ),
+        ),
+        if (widget.settingsState.launchAtLoginBusy) ...[
+          const SizedBox(height: 10),
+          const _SectionNote(text: 'Saving launch at login preference...'),
+        ],
+        if (widget.settingsState.launchAtLoginRequiresApproval) ...[
+          const SizedBox(height: 10),
+          const _SectionNote(
+            text:
+                'macOS still requires approval in System Settings before launch at login will work.',
+            color: _warningColor,
+          ),
+        ],
+        if (widget.settingsState.launchAtLoginError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.launchAtLoginError!,
+            color: _dangerColor,
+          ),
+        ],
+        if (widget.settingsState.ocrPreviewError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.ocrPreviewError!,
+            color: _dangerColor,
+          ),
+        ],
+        if (widget.settingsState.ocrOpenUrlPromptError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.ocrOpenUrlPromptError!,
+            color: _dangerColor,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildShortcutsTab(List<MapEntry<ShortcutAction, HotKey>> entries) {
+    return _buildTabPanel(
+      tab: _SettingsTab.shortcuts,
+      children: [
+        _SurfaceGroup(
+          child: Column(
+            children: [
+              for (var i = 0; i < entries.length; i++) ...[
+                if (i > 0) const _GroupDivider(),
+                _ShortcutRow(
+                  action: entries[i].key,
+                  hotKey: entries[i].value,
+                  defaultHotKey: _defaultShortcuts.forAction(entries[i].key),
+                  error: _shortcutValidationErrors[entries[i].key],
+                  isBusy: _busyShortcutAction == entries[i].key,
+                  onRecord: () => _recordShortcut(entries[i].key),
+                  onReset: () => _resetShortcut(entries[i].key),
+                ),
+              ],
+            ],
+          ),
+        ),
+        if (widget.settingsState.shortcutError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.shortcutError!,
+            color: _dangerColor,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildInkTab() {
+    return _buildTabPanel(
+      tab: _SettingsTab.ink,
+      children: [
+        _SurfaceGroup(
+          child: Column(
+            children: [
+              _InkColorRow(
+                color: widget.settingsState.inkColor,
+                onColorPicked: (color) {
+                  widget.settingsState.clearInkColorError();
+                  unawaited(widget.settingsState.setInkColor(color));
+                },
+              ),
+              const _GroupDivider(),
+              _InkStrokeRow(
+                strokeWidth: widget.settingsState.inkStrokeWidth,
+                onStrokeWidthChanged: (value) {
+                  widget.settingsState.clearInkStrokeWidthError();
+                  unawaited(widget.settingsState.setInkStrokeWidth(value));
+                },
+              ),
+              const _GroupDivider(),
+              _InkSmoothingRow(
+                tolerance: widget.settingsState.inkSmoothingTolerance,
+                onToleranceChanged: (value) {
+                  widget.settingsState.clearInkSmoothingError();
+                  unawaited(
+                    widget.settingsState.setInkSmoothingTolerance(value),
+                  );
+                },
+              ),
+              const _GroupDivider(),
+              _InkAutoFadeRow(
+                seconds: widget.settingsState.inkAutoFadeSeconds,
+                onSecondsChanged: (value) {
+                  widget.settingsState.clearInkAutoFadeError();
+                  unawaited(widget.settingsState.setInkAutoFadeSeconds(value));
+                },
+              ),
+              const _GroupDivider(),
+              _InkEraserSizeRow(
+                size: widget.settingsState.inkEraserSize,
+                onSizeChanged: (value) {
+                  widget.settingsState.clearInkEraserSizeError();
+                  unawaited(widget.settingsState.setInkEraserSize(value));
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        const _SectionNote(
+          text:
+              'Right-click to erase while drawing. Hold right-click and scroll to resize the eraser.',
+        ),
+        if (widget.settingsState.inkColorError != null ||
+            widget.settingsState.inkStrokeWidthError != null ||
+            widget.settingsState.inkSmoothingError != null ||
+            widget.settingsState.inkAutoFadeError != null ||
+            widget.settingsState.inkEraserSizeError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: [
+              if (widget.settingsState.inkColorError != null)
+                widget.settingsState.inkColorError!,
+              if (widget.settingsState.inkStrokeWidthError != null)
+                widget.settingsState.inkStrokeWidthError!,
+              if (widget.settingsState.inkSmoothingError != null)
+                widget.settingsState.inkSmoothingError!,
+              if (widget.settingsState.inkAutoFadeError != null)
+                widget.settingsState.inkAutoFadeError!,
+              if (widget.settingsState.inkEraserSizeError != null)
+                widget.settingsState.inkEraserSizeError!,
+            ].join(' '),
+            color: _dangerColor,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildLaserTab() {
+    return _buildTabPanel(
+      tab: _SettingsTab.laser,
+      children: [
+        _SurfaceGroup(
+          child: Column(
+            children: [
+              _LaserColorRow(
+                color: widget.settingsState.laserColor,
+                onColorPicked: (color) {
+                  widget.settingsState.clearLaserColorError();
+                  unawaited(widget.settingsState.setLaserColor(color));
+                },
+              ),
+              const _GroupDivider(),
+              _LaserSizeRow(
+                size: widget.settingsState.laserSize,
+                onSizeChanged: (value) {
+                  widget.settingsState.clearLaserSizeError();
+                  unawaited(widget.settingsState.setLaserSize(value));
+                },
+              ),
+              const _GroupDivider(),
+              _LaserFadeRow(
+                seconds: widget.settingsState.laserFadeSeconds,
+                onSecondsChanged: (value) {
+                  widget.settingsState.clearLaserFadeError();
+                  unawaited(widget.settingsState.setLaserFadeSeconds(value));
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        const _SectionNote(
+          text:
+              'Hold the laser shortcut to show a pointer. Release to let it fade out.',
+        ),
+        if (widget.settingsState.laserColorError != null ||
+            widget.settingsState.laserSizeError != null ||
+            widget.settingsState.laserFadeError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: [
+              if (widget.settingsState.laserColorError != null)
+                widget.settingsState.laserColorError!,
+              if (widget.settingsState.laserSizeError != null)
+                widget.settingsState.laserSizeError!,
+              if (widget.settingsState.laserFadeError != null)
+                widget.settingsState.laserFadeError!,
+            ].join(' '),
+            color: _dangerColor,
+          ),
+        ],
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final baseTheme = Theme.of(context);
@@ -170,340 +448,55 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   children: [
                     _Header(onClose: _closeWindow),
                     const SizedBox(height: 20),
-                    Expanded(
-                      child: Scrollbar(
-                        child: SingleChildScrollView(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'General',
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 12),
-                              _SurfaceGroup(
-                                child: Column(
-                                  children: [
-                                    _LaunchAtLoginRow(
-                                      settingsState: widget.settingsState,
-                                    ),
-                                    const _GroupDivider(),
-                                    _OcrPreviewRow(
-                                      settingsState: widget.settingsState,
-                                    ),
-                                    const _GroupDivider(),
-                                    _OcrOpenUrlPromptRow(
-                                      settingsState: widget.settingsState,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (widget.settingsState.launchAtLoginBusy) ...[
-                                const SizedBox(height: 10),
-                                const _SectionNote(
-                                  text: 'Saving launch at login preference...',
-                                ),
-                              ],
-                              if (widget
-                                  .settingsState
-                                  .launchAtLoginRequiresApproval) ...[
-                                const SizedBox(height: 10),
-                                const _SectionNote(
-                                  text:
-                                      'macOS still requires approval in System Settings before launch at login will work.',
-                                  color: _warningColor,
-                                ),
-                              ],
-                              if (widget.settingsState.launchAtLoginError !=
-                                  null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text:
-                                      widget.settingsState.launchAtLoginError!,
-                                  color: _dangerColor,
-                                ),
-                              ],
-                              if (widget.settingsState.ocrPreviewError !=
-                                  null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text: widget.settingsState.ocrPreviewError!,
-                                  color: _dangerColor,
-                                ),
-                              ],
-                              if (widget.settingsState.ocrOpenUrlPromptError !=
-                                  null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text: widget
-                                      .settingsState
-                                      .ocrOpenUrlPromptError!,
-                                  color: _dangerColor,
-                                ),
-                              ],
-                              const SizedBox(height: 28),
-                              Text(
-                                'Shortcuts',
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 12),
-                              _SurfaceGroup(
-                                child: Column(
-                                  children: [
-                                    for (
-                                      var i = 0;
-                                      i < shortcutEntries.length;
-                                      i++
-                                    ) ...[
-                                      if (i > 0) const _GroupDivider(),
-                                      _ShortcutRow(
-                                        action: shortcutEntries[i].key,
-                                        hotKey: shortcutEntries[i].value,
-                                        defaultHotKey: _defaultShortcuts
-                                            .forAction(shortcutEntries[i].key),
-                                        error:
-                                            _shortcutValidationErrors[shortcutEntries[i]
-                                                .key],
-                                        isBusy:
-                                            _busyShortcutAction ==
-                                            shortcutEntries[i].key,
-                                        onRecord: () => _recordShortcut(
-                                          shortcutEntries[i].key,
-                                        ),
-                                        onReset: () => _resetShortcut(
-                                          shortcutEntries[i].key,
-                                        ),
-                                      ),
-                                    ],
-                                  ],
-                                ),
-                              ),
-                              if (widget.settingsState.shortcutError !=
-                                  null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text: widget.settingsState.shortcutError!,
-                                  color: _dangerColor,
-                                ),
-                              ],
-                              const SizedBox(height: 28),
-                              Text(
-                                _inkSectionTitle,
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 12),
-                              _SurfaceGroup(
-                                child: Column(
-                                  children: [
-                                    _InkColorRow(
-                                      color: widget.settingsState.inkColor,
-                                      onColorPicked: (color) {
-                                        widget.settingsState
-                                            .clearInkColorError();
-                                        unawaited(
-                                          widget.settingsState.setInkColor(
-                                            color,
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _InkStrokeRow(
-                                      strokeWidth:
-                                          widget.settingsState.inkStrokeWidth,
-                                      onStrokeWidthChanged: (value) {
-                                        widget.settingsState
-                                            .clearInkStrokeWidthError();
-                                        unawaited(
-                                          widget.settingsState
-                                              .setInkStrokeWidth(value),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _InkSmoothingRow(
-                                      tolerance: widget
-                                          .settingsState
-                                          .inkSmoothingTolerance,
-                                      onToleranceChanged: (value) {
-                                        widget.settingsState
-                                            .clearInkSmoothingError();
-                                        unawaited(
-                                          widget.settingsState
-                                              .setInkSmoothingTolerance(value),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _InkAutoFadeRow(
-                                      seconds: widget
-                                          .settingsState
-                                          .inkAutoFadeSeconds,
-                                      onSecondsChanged: (value) {
-                                        widget.settingsState
-                                            .clearInkAutoFadeError();
-                                        unawaited(
-                                          widget.settingsState
-                                              .setInkAutoFadeSeconds(value),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _InkEraserSizeRow(
-                                      size: widget.settingsState.inkEraserSize,
-                                      onSizeChanged: (value) {
-                                        widget.settingsState
-                                            .clearInkEraserSizeError();
-                                        unawaited(
-                                          widget.settingsState.setInkEraserSize(
-                                            value,
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              const _SectionNote(
-                                text:
-                                    'Right-click to erase while drawing. Hold'
-                                    ' right-click and scroll to resize the'
-                                    ' eraser.',
-                              ),
-                              if (widget.settingsState.inkColorError != null ||
-                                  widget.settingsState.inkStrokeWidthError !=
-                                      null ||
-                                  widget.settingsState.inkSmoothingError !=
-                                      null ||
-                                  widget.settingsState.inkAutoFadeError !=
-                                      null ||
-                                  widget.settingsState.inkEraserSizeError !=
-                                      null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text: [
-                                    if (widget.settingsState.inkColorError !=
-                                        null)
-                                      widget.settingsState.inkColorError!,
-                                    if (widget
-                                            .settingsState
-                                            .inkStrokeWidthError !=
-                                        null)
-                                      widget.settingsState.inkStrokeWidthError!,
-                                    if (widget
-                                            .settingsState
-                                            .inkSmoothingError !=
-                                        null)
-                                      widget.settingsState.inkSmoothingError!,
-                                    if (widget.settingsState.inkAutoFadeError !=
-                                        null)
-                                      widget.settingsState.inkAutoFadeError!,
-                                    if (widget
-                                            .settingsState
-                                            .inkEraserSizeError !=
-                                        null)
-                                      widget.settingsState.inkEraserSizeError!,
-                                  ].join(' '),
-                                  color: _dangerColor,
-                                ),
-                              ],
-                              const SizedBox(height: 28),
-                              Text(
-                                _laserSectionTitle,
-                                style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                              ),
-                              const SizedBox(height: 12),
-                              _SurfaceGroup(
-                                child: Column(
-                                  children: [
-                                    _LaserColorRow(
-                                      color: widget.settingsState.laserColor,
-                                      onColorPicked: (color) {
-                                        widget.settingsState
-                                            .clearLaserColorError();
-                                        unawaited(
-                                          widget.settingsState.setLaserColor(
-                                            color,
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _LaserSizeRow(
-                                      size: widget.settingsState.laserSize,
-                                      onSizeChanged: (value) {
-                                        widget.settingsState
-                                            .clearLaserSizeError();
-                                        unawaited(
-                                          widget.settingsState.setLaserSize(
-                                            value,
-                                          ),
-                                        );
-                                      },
-                                    ),
-                                    const _GroupDivider(),
-                                    _LaserFadeRow(
-                                      seconds:
-                                          widget.settingsState.laserFadeSeconds,
-                                      onSecondsChanged: (value) {
-                                        widget.settingsState
-                                            .clearLaserFadeError();
-                                        unawaited(
-                                          widget.settingsState
-                                              .setLaserFadeSeconds(value),
-                                        );
-                                      },
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 8),
-                              const _SectionNote(
-                                text:
-                                    'Hold the laser shortcut to show a pointer.'
-                                    ' Release to let it fade out.',
-                              ),
-                              if (widget.settingsState.laserColorError !=
-                                      null ||
-                                  widget.settingsState.laserSizeError != null ||
-                                  widget.settingsState.laserFadeError !=
-                                      null) ...[
-                                const SizedBox(height: 10),
-                                _SectionNote(
-                                  text: [
-                                    if (widget.settingsState.laserColorError !=
-                                        null)
-                                      widget.settingsState.laserColorError!,
-                                    if (widget.settingsState.laserSizeError !=
-                                        null)
-                                      widget.settingsState.laserSizeError!,
-                                    if (widget.settingsState.laserFadeError !=
-                                        null)
-                                      widget.settingsState.laserFadeError!,
-                                  ].join(' '),
-                                  color: _dangerColor,
-                                ),
-                              ],
-                            ],
+                    Container(
+                      decoration: BoxDecoration(
+                        color: _surfaceColor,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: _surfaceBorderColor),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: TabBar(
+                          controller: _tabController,
+                          isScrollable: true,
+                          dividerColor: Colors.transparent,
+                          indicatorSize: TabBarIndicatorSize.tab,
+                          indicator: BoxDecoration(
+                            color: _accentColor,
+                            borderRadius: BorderRadius.circular(12),
                           ),
+                          overlayColor: const WidgetStatePropertyAll(
+                            Colors.transparent,
+                          ),
+                          labelPadding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                          ),
+                          labelColor: _controlFillColor,
+                          unselectedLabelColor: _mutedInkColor,
+                          labelStyle: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                          unselectedLabelStyle: Theme.of(context)
+                              .textTheme
+                              .labelLarge
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                          tabs: [
+                            for (final tab in _SettingsTab.values)
+                              Tab(text: tab.label),
+                          ],
                         ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: TabBarView(
+                        controller: _tabController,
+                        physics: const NeverScrollableScrollPhysics(),
+                        children: [
+                          _buildGeneralTab(),
+                          _buildShortcutsTab(shortcutEntries),
+                          _buildInkTab(),
+                          _buildLaserTab(),
+                        ],
                       ),
                     ),
                   ],

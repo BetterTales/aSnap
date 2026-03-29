@@ -373,6 +373,7 @@ Future<void> _handleInkKeyUp() async {
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
   await _windowService.setOverlayCursorHidden(hidden: false);
+  await _windowService.resetInkMonitorState();
 }
 
 Future<void> _handleLaserKeyDown() async {
@@ -412,6 +413,7 @@ Future<void> _handleLaserKeyUp() async {
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
   await _windowService.setOverlayCursorHidden(hidden: false);
+  await _windowService.resetInkMonitorState();
 }
 
 Future<void> _exitInkOverlay() async {
@@ -422,6 +424,7 @@ Future<void> _exitInkOverlay() async {
   _appState.clear();
   await _windowService.stopEscMonitor();
   await _windowService.setOverlayCursorHidden(hidden: false);
+  await _windowService.resetInkMonitorState();
   await _windowService.exitOverlay();
   await _windowService.hidePreview();
 }
