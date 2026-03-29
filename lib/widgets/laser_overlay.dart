@@ -34,6 +34,7 @@ class _LaserOverlayState extends State<LaserOverlay>
   Offset? _lastSamplePosition;
   double _lastSampleTime = 0;
   bool _isPrimaryDown = false;
+  int _activeStrokeId = 0;
 
   @override
   void initState() {
@@ -124,12 +125,19 @@ class _LaserOverlayState extends State<LaserOverlay>
             LaserSample(
               position: previous + delta * t,
               timestampSeconds: previousTime + (now - previousTime) * t,
+              strokeId: _activeStrokeId,
             ),
           );
         }
       }
     }
-    pending.add(LaserSample(position: position, timestampSeconds: now));
+    pending.add(
+      LaserSample(
+        position: position,
+        timestampSeconds: now,
+        strokeId: _activeStrokeId,
+      ),
+    );
     widget.laserState.addSamples(pending);
     _lastSampleTime = now;
     _lastSamplePosition = position;
@@ -164,6 +172,7 @@ class _LaserOverlayState extends State<LaserOverlay>
   void _onPointerDown(PointerDownEvent event) {
     if (event.buttons != kPrimaryButton) return;
     _isPrimaryDown = true;
+    _activeStrokeId += 1;
     _lastSamplePosition = null;
     _lastSampleTime = 0;
     _updateCursor(event.localPosition);
@@ -272,6 +281,7 @@ class _LaserPainter extends CustomPainter {
       for (var i = 1; i < samples.length; i++) {
         final current = samples[i];
         final prev = samples[i - 1];
+        if (current.strokeId != prev.strokeId) continue;
         final age = now - current.timestampSeconds;
         if (age > fade) continue;
         final t = (1 - age / fade).clamp(0.0, 1.0);

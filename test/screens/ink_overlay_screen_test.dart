@@ -15,11 +15,7 @@ void main() {
     required String identifier,
     required PhysicalKeyboardKey key,
   }) {
-    return HotKey(
-      identifier: identifier,
-      key: key,
-      scope: HotKeyScope.inapp,
-    );
+    return HotKey(identifier: identifier, key: key, scope: HotKeyScope.inapp);
   }
 
   testWidgets(
@@ -75,4 +71,67 @@ void main() {
       expect(laserState.samples, isEmpty);
     },
   );
+
+  testWidgets('laser overlay separates samples across distinct drags', (
+    tester,
+  ) async {
+    final inkState = InkState();
+    final laserState = LaserState();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox.expand(
+          child: InkOverlayScreen(
+            inkState: inkState,
+            laserState: laserState,
+            drawingEnabled: true,
+            tool: InkTool.laser,
+            inkHotKey: testHotKey(
+              identifier: 'ink',
+              key: PhysicalKeyboardKey.keyI,
+            ),
+            laserHotKey: testHotKey(
+              identifier: 'laser',
+              key: PhysicalKeyboardKey.keyL,
+            ),
+            onInkKeyDown: () {},
+            onInkKeyUp: () {},
+            onLaserKeyDown: () {},
+            onLaserKeyUp: () {},
+            strokeColor: Colors.red,
+            strokeWidth: 6,
+            smoothingTolerance: 0,
+            autoFadeSeconds: 0,
+            eraserSize: 12,
+            laserColor: Colors.green,
+            laserSize: 20,
+            laserFadeSeconds: 1,
+            onEraserSizeChanged: (_) {},
+            onExitRequested: () async {},
+          ),
+        ),
+      ),
+    );
+
+    final firstDrag = await tester.startGesture(const Offset(100, 100));
+    await tester.pump();
+    await firstDrag.moveTo(const Offset(160, 140));
+    await tester.pump();
+    await firstDrag.up();
+    await tester.pump();
+
+    final secondDrag = await tester.startGesture(const Offset(240, 220));
+    await tester.pump();
+    await secondDrag.moveTo(const Offset(300, 260));
+    await tester.pump();
+    await secondDrag.up();
+    await tester.pump();
+
+    expect(inkState.strokes, isEmpty);
+    expect(laserState.samples.length, greaterThan(2));
+    expect(
+      laserState.samples.map((sample) => sample.strokeId).toSet(),
+      hasLength(2),
+    );
+  });
 }
