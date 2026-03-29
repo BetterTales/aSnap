@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
 
 class LaserSample {
-  const LaserSample({required this.position, required this.timestampSeconds});
+  const LaserSample({
+    required this.position,
+    required this.timestampSeconds,
+    this.strokeId = 0,
+  });
 
   final Offset position;
   final double timestampSeconds;
+  final int strokeId;
 }
 
 class LaserState extends ChangeNotifier {
@@ -24,11 +29,16 @@ class LaserState extends ChangeNotifier {
 
   LaserSample? get latestSample => _samples.isEmpty ? null : _samples.last;
 
-  void addSample(Offset position, {double? timestampSeconds}) {
+  void addSample(
+    Offset position, {
+    double? timestampSeconds,
+    int strokeId = 0,
+  }) {
     addSamples([
       LaserSample(
         position: position,
         timestampSeconds: timestampSeconds ?? nowSeconds(),
+        strokeId: strokeId,
       ),
     ]);
   }
