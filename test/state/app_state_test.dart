@@ -73,7 +73,7 @@ void main() {
   group('setCapturedImage', () {
     testWidgets('stores image and transitions to captured', (tester) async {
       final image = await _createTestImage();
-      state.setCapturedImage(image);
+      state.setCapturedImage(image, captureScale: 1.0);
 
       expect(state.status, CaptureStatus.captured);
       expect(state.workflow, isA<PreviewWorkflow>());
@@ -90,7 +90,7 @@ void main() {
       tester,
     ) async {
       final image = await _createTestImage();
-      state.setCapturedImage(image);
+      state.setCapturedImage(image, captureScale: 1.0);
 
       final detached = state.detachCapturedImage();
       expect(detached, same(image));
@@ -106,11 +106,11 @@ void main() {
       'detachCapturedImage keeps old image alive across replacement',
       (tester) async {
         final image = await _createTestImage();
-        state.setCapturedImage(image);
+        state.setCapturedImage(image, captureScale: 1.0);
 
         final detached = state.detachCapturedImage();
         final replacement = await _createTestImage();
-        state.setCapturedImage(replacement);
+        state.setCapturedImage(replacement, captureScale: 1.0);
 
         expect(state.capturedImage, same(replacement));
         await _expectImageUsable(tester, detached!);
@@ -197,7 +197,7 @@ void main() {
       (tester) async {
         final image = await _createTestImage();
 
-        state.setScrollResult(image);
+        state.setScrollResult(image, captureScale: 1.0);
 
         expect(state.workflow, isA<PreviewWorkflow>());
         expect(state.status, CaptureStatus.captured);
@@ -250,7 +250,7 @@ void main() {
   group('clear', () {
     testWidgets('resets all fields to initial state', (tester) async {
       final image = await _createTestImage();
-      state.setCapturedImage(image);
+      state.setCapturedImage(image, captureScale: 1.0);
       expect(state.status, CaptureStatus.captured);
 
       state.clear();
@@ -268,7 +268,7 @@ void main() {
   group('capturedImageAsPng', () {
     testWidgets('returns PNG bytes from captured image', (tester) async {
       final image = await _createTestImage();
-      state.setCapturedImage(image);
+      state.setCapturedImage(image, captureScale: 1.0);
 
       // toByteData(format: png) is a real engine call — needs runAsync.
       final png = await tester.runAsync(() => state.capturedImageAsPng());
@@ -292,7 +292,7 @@ void main() {
       expect(state.status, CaptureStatus.capturing);
 
       final image = await _createTestImage();
-      state.setCapturedImage(image);
+      state.setCapturedImage(image, captureScale: 1.0);
       expect(state.status, CaptureStatus.captured);
 
       state.clear();
@@ -321,7 +321,7 @@ void main() {
       expect(state.screenOrigin, const Offset(20, 30));
 
       final result = await _createTestImage();
-      state.setScrollResult(result);
+      state.setScrollResult(result, captureScale: 1.0);
 
       expect(state.workflow, isA<ScrollResultWorkflow>());
       expect(state.status, CaptureStatus.scrollResult);

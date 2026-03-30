@@ -5,10 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../models/capture_style_settings.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../state/app_state.dart';
+import '../utils/capture_style_renderer.dart';
 import '../widgets/annotation_overlay.dart';
+import '../widgets/capture_style_frame.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
 import '../widgets/tool_popover_mixin.dart';
@@ -27,6 +30,9 @@ class PreviewScreen extends StatefulWidget {
   final VoidCallback onDiscard;
   final VoidCallback onOcr;
   final ValueChanged<String> onCopyText;
+  final CaptureStyleSettings captureStyle;
+  final double captureScale;
+  final bool showCaptureStyleChrome;
 
   const PreviewScreen({
     super.key,
@@ -39,6 +45,9 @@ class PreviewScreen extends StatefulWidget {
     required this.onDiscard,
     required this.onOcr,
     required this.onCopyText,
+    required this.captureStyle,
+    required this.captureScale,
+    required this.showCaptureStyleChrome,
   });
 
   @override
@@ -248,16 +257,29 @@ class _PreviewScreenState extends State<PreviewScreen>
                 image.width.toDouble(),
                 image.height.toDouble(),
               );
+              final style = widget.showCaptureStyleChrome
+                  ? widget.captureStyle.scaled(widget.captureScale)
+                  : const CaptureStyleSettings.defaults();
+              final captureLayout = computeCaptureStyleLayout(imageSize, style);
               final imageViewport = constraints.biggest;
               final fitted = applyBoxFit(
                 BoxFit.scaleDown,
-                imageSize,
+                captureLayout.outerSize,
                 imageViewport,
               );
-              final imageDisplayRect = Alignment.center.inscribe(
+              final outerDisplayRect = Alignment.center.inscribe(
                 fitted.destination,
                 Offset.zero & imageViewport,
               );
+              final imageDisplayRect = projectCaptureStyleRect(
+                captureLayout.contentRect,
+                sourceBounds: captureLayout.outerSize,
+                destinationBounds: outerDisplayRect,
+              );
+              final displayScale =
+                  outerDisplayRect.width / captureLayout.outerSize.width;
+              final displayBorderRadius =
+                  captureLayout.borderRadius * displayScale;
               final popoverAnchor = nativeToolbarAnchorPoint(
                 viewportSize: imageViewport,
                 fallbackAnchor: Offset(
@@ -275,9 +297,10 @@ class _PreviewScreenState extends State<PreviewScreen>
               return Stack(
                 fit: StackFit.expand,
                 children: [
-                  // Screenshot image.
-                  Positioned.fromRect(
-                    rect: imageDisplayRect,
+                  CaptureStyleFrame(
+                    contentRect: imageDisplayRect,
+                    borderRadius: displayBorderRadius,
+                    shadowEnabled: captureLayout.shadowEnabled,
                     child: RawImage(image: image, fit: BoxFit.fill),
                   ),
 

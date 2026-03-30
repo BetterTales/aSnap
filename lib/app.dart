@@ -175,6 +175,9 @@ class ASnapApp extends StatelessWidget {
                 onDiscard: onDiscard,
                 onOcr: onOcr,
                 onCopyText: onCopyText,
+                captureStyle: settingsState.captureStyle,
+                captureScale: appState.captureScale,
+                showCaptureStyleChrome: appState.applyCurrentCaptureStyle,
               );
             case SettingsWorkflow():
               return SettingsScreen(
@@ -225,6 +228,9 @@ class ASnapApp extends StatelessWidget {
             onDiscard: onDiscard,
             onOcr: onOcr,
             onCopyText: onCopyText,
+            captureStyle: settingsState.captureStyle,
+            captureScale: appState.captureScale,
+            showCaptureStyleChrome: appState.applyCurrentCaptureStyle,
           );
         },
       ),

@@ -8,6 +8,7 @@ import 'package:window_manager/window_manager.dart';
 
 import 'app.dart';
 import 'models/annotation.dart';
+import 'models/capture_style_settings.dart';
 import 'models/shortcut_bindings.dart';
 import 'services/capture_service.dart';
 import 'services/clipboard_service.dart';
@@ -23,6 +24,7 @@ import 'state/ink_state.dart';
 import 'state/laser_state.dart';
 import 'state/settings_state.dart';
 import 'utils/annotation_compositor.dart';
+import 'utils/capture_style_renderer.dart';
 import 'utils/url_detection.dart';
 
 bool _displayChangeInProgress = false;
@@ -32,7 +34,7 @@ bool _escActionInProgress = false;
 
 /// Keeps one cloned `ui.Image` per pinned native panel for fast re-edit via
 /// Space (avoids round-tripping image bytes through the platform channel).
-final Map<int, ui.Image> _pinnedFlutterImages = {};
+final Map<int, _PinnedPanelImage> _pinnedFlutterImages = {};
 
 /// Last captured/copied image kept alive for deferred pinning.
 /// Allows "capture → copy → pin" workflow: copy clears the preview but this
@@ -44,6 +46,9 @@ Rect? _lastCopiedCgFrame;
 
 /// Exact PNG bytes written to the clipboard for deferred idle pin validation.
 Uint8List? _lastCopiedClipboardPngBytes;
+
+/// Whether the last copied image already includes capture styling.
+bool _lastCopiedHasEmbeddedCaptureStyle = false;
 
 /// Pre-cached window rects from background polling.
 /// Updated every ~2 seconds by the native background thread.
@@ -57,6 +62,28 @@ class _DisplayCache {
   const _DisplayCache({required this.localRects});
 }
 
+class _PinnedPanelImage {
+  const _PinnedPanelImage({
+    required this.image,
+    required this.hasEmbeddedCaptureStyle,
+  });
+
+  final ui.Image image;
+  final bool hasEmbeddedCaptureStyle;
+}
+
+class _PreparedCaptureImage {
+  const _PreparedCaptureImage({
+    required this.image,
+    required this.ownsImage,
+    required this.hasEmbeddedCaptureStyle,
+  });
+
+  final ui.Image image;
+  final bool ownsImage;
+  final bool hasEmbeddedCaptureStyle;
+}
+
 final Map<String, _DisplayCache> _displayCaches = {};
 
 String _displayKey(Offset origin) => '${origin.dx},${origin.dy}';
@@ -66,12 +93,12 @@ void _clearDisplayCaches() {
 }
 
 void _disposePinnedPanelImage(int panelId) {
-  _pinnedFlutterImages.remove(panelId)?.dispose();
+  _pinnedFlutterImages.remove(panelId)?.image.dispose();
 }
 
 void _disposeAllPinnedPanelImages() {
-  for (final image in _pinnedFlutterImages.values) {
-    image.dispose();
+  for (final panelImage in _pinnedFlutterImages.values) {
+    panelImage.image.dispose();
   }
   _pinnedFlutterImages.clear();
 }
@@ -81,6 +108,7 @@ void _clearLastCopiedPinCache() {
   _lastCopiedImage = null;
   _lastCopiedCgFrame = null;
   _lastCopiedClipboardPngBytes = null;
+  _lastCopiedHasEmbeddedCaptureStyle = false;
 }
 
 /// Convert globally-cached window rects to local coordinates for a display.
@@ -131,6 +159,7 @@ void main() async {
       .loadOcrPreviewEnabled();
   final initialOcrOpenUrlPromptEnabled = await _settingsService
       .loadOcrOpenUrlPromptEnabled();
+  final initialCaptureStyle = await _settingsService.loadCaptureStyle();
   final initialInkColor = await _settingsService.loadInkColor();
   final initialInkStrokeWidth = await _settingsService.loadInkStrokeWidth();
   final initialInkSmoothingTolerance = await _settingsService
@@ -145,6 +174,7 @@ void main() async {
     initialShortcuts: initialShortcuts,
     initialOcrPreviewEnabled: initialOcrPreviewEnabled,
     initialOcrOpenUrlPromptEnabled: initialOcrOpenUrlPromptEnabled,
+    initialCaptureStyle: initialCaptureStyle,
     initialInkColor: initialInkColor,
     initialInkStrokeWidth: initialInkStrokeWidth,
     initialInkSmoothingTolerance: initialInkSmoothingTolerance,
@@ -543,17 +573,107 @@ Future<ui.Image> _decodeStraightRgbaImage(
   return completer.future;
 }
 
+CaptureStyleSettings _effectivePhysicalCaptureStyle({
+  required double captureScale,
+  required bool applyCurrentCaptureStyle,
+}) {
+  if (!applyCurrentCaptureStyle) {
+    return const CaptureStyleSettings.defaults();
+  }
+  return _settingsState.captureStyle.scaled(captureScale);
+}
+
+bool _useNativeShadowForImage({
+  required bool applyCurrentCaptureStyle,
+  required bool embeddedCaptureStyle,
+}) {
+  if (applyCurrentCaptureStyle) {
+    return !_settingsState.captureStyle.hasVisibleEffect;
+  }
+  return !embeddedCaptureStyle;
+}
+
+Rect _expandRectForCaptureStyle(
+  Rect contentRect, {
+  required CaptureStyleSettings style,
+}) {
+  final layout = computeCaptureStyleLayout(contentRect.size, style);
+  return Rect.fromLTWH(
+    contentRect.left - layout.outerInsets.left,
+    contentRect.top - layout.outerInsets.top,
+    layout.outerSize.width,
+    layout.outerSize.height,
+  );
+}
+
+Future<_PreparedCaptureImage> _prepareCaptureImage({
+  required ui.Image sourceImage,
+  required List<Annotation> annotations,
+  required double captureScale,
+  required bool applyCurrentCaptureStyle,
+  required bool embeddedCaptureStyle,
+}) async {
+  var currentImage = sourceImage;
+  var ownsImage = false;
+  var hasEmbeddedCaptureStyle = embeddedCaptureStyle;
+
+  if (annotations.isNotEmpty) {
+    currentImage = await compositeAnnotations(currentImage, annotations);
+    ownsImage = true;
+  }
+
+  final style = _effectivePhysicalCaptureStyle(
+    captureScale: captureScale,
+    applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+  );
+  if (style.hasVisibleEffect) {
+    final styledImage = await renderCaptureStyle(currentImage, style);
+    if (ownsImage) {
+      currentImage.dispose();
+    }
+    currentImage = styledImage;
+    ownsImage = true;
+    hasEmbeddedCaptureStyle = true;
+  }
+
+  return _PreparedCaptureImage(
+    image: currentImage,
+    ownsImage: ownsImage,
+    hasEmbeddedCaptureStyle: hasEmbeddedCaptureStyle,
+  );
+}
+
 Future<void> _showPreviewWithImage(
   ui.Image image, {
   required Size targetScreenSize,
   required Offset targetScreenOrigin,
+  required double captureScale,
+  bool applyCurrentCaptureStyle = true,
+  bool embeddedCaptureStyle = false,
 }) async {
-  _appState.setCapturedImage(image);
+  final style = _effectivePhysicalCaptureStyle(
+    captureScale: captureScale,
+    applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+  );
+  final layout = computeCaptureStyleLayout(
+    Size(image.width.toDouble(), image.height.toDouble()),
+    style,
+  );
+  _appState.setCapturedImage(
+    image,
+    captureScale: captureScale,
+    applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+    embeddedCaptureStyle: embeddedCaptureStyle,
+  );
   await _windowService.showPreview(
-    imageWidth: image.width,
-    imageHeight: image.height,
+    imageWidth: layout.outerSize.width.ceil(),
+    imageHeight: layout.outerSize.height.ceil(),
     screenSize: targetScreenSize,
     screenOrigin: targetScreenOrigin,
+    useNativeShadow: _useNativeShadowForImage(
+      applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+      embeddedCaptureStyle: embeddedCaptureStyle,
+    ),
   );
   // setCapturedImage() happens before the window is visible. Rebuild once more
   // after show/focus so PreviewScreen can re-run focus sync reliably.
@@ -583,6 +703,7 @@ Future<int?> _pinNativeImageFromRgbaBytes({
   required int width,
   required int height,
   required Rect cgFrame,
+  required bool hasEmbeddedCaptureStyle,
 }) async {
   final pinnedImage = await _decodeStraightRgbaImage(rgbaBytes, width, height);
   try {
@@ -591,13 +712,17 @@ Future<int?> _pinNativeImageFromRgbaBytes({
       width: width,
       height: height,
       cgFrame: cgFrame,
+      useNativeShadow: !hasEmbeddedCaptureStyle,
     );
     if (panelId == null) {
       pinnedImage.dispose();
       return null;
     }
     _disposePinnedPanelImage(panelId);
-    _pinnedFlutterImages[panelId] = pinnedImage;
+    _pinnedFlutterImages[panelId] = _PinnedPanelImage(
+      image: pinnedImage,
+      hasEmbeddedCaptureStyle: hasEmbeddedCaptureStyle,
+    );
     return panelId;
   } catch (_) {
     pinnedImage.dispose();
@@ -642,6 +767,7 @@ Future<void> _handleFullScreenCapture() async {
       decodedImage,
       targetScreenSize: capture.screenSize,
       targetScreenOrigin: capture.screenOrigin,
+      captureScale: decodedImage.width / capture.screenSize.width,
     );
   } else {
     _appState.clear();
@@ -951,13 +1077,24 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
         cropped,
         targetScreenSize: screenSize,
         targetScreenOrigin: screenOrigin,
+        captureScale: scaleX,
       );
     } else {
-      _appState.setCapturedImage(cropped);
+      final styledPreviewRect = _expandRectForCaptureStyle(
+        logicalRect,
+        style: _settingsState.captureStyle,
+      );
+      _appState.setCapturedImage(
+        cropped,
+        captureScale: scaleX,
+        applyCurrentCaptureStyle: true,
+        embeddedCaptureStyle: false,
+      );
       await _windowService.showPreviewInPlace(
-        selectionRect: logicalRect,
+        selectionRect: styledPreviewRect,
         screenSize: screenSize,
         screenOrigin: screenOrigin,
+        useNativeShadow: !_settingsState.captureStyle.hasVisibleEffect,
       );
       // Window is resized/focused after setCapturedImage(); force another
       // rebuild so focus sync runs with the visible window.
@@ -996,13 +1133,17 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
     logicalRect.right * scaleX,
     logicalRect.bottom * scaleY,
   );
+  final styledLogicalRect = _expandRectForCaptureStyle(
+    logicalRect,
+    style: _settingsState.captureStyle,
+  );
 
   // CG frame for deferred pinning (preserve selection position/size).
   final cgPinFrame = Rect.fromLTWH(
-    logicalRect.left + screenOrigin.dx,
-    logicalRect.top + screenOrigin.dy,
-    logicalRect.width,
-    logicalRect.height,
+    styledLogicalRect.left + screenOrigin.dx,
+    styledLogicalRect.top + screenOrigin.dy,
+    styledLogicalRect.width,
+    styledLogicalRect.height,
   );
 
   // Capture annotation state before clearing.
@@ -1021,26 +1162,37 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Expensive work after the window is gone.
-  var cropped = await _captureService.cropImage(
+  final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
   );
   if (cropped != null) {
-    if (annotations.isNotEmpty) {
-      final composited = await compositeAnnotations(cropped, annotations);
-      cropped.dispose();
-      cropped = composited;
-    }
-    final byteData = await cropped.toByteData(format: ui.ImageByteFormat.png);
+    final prepared = await _prepareCaptureImage(
+      sourceImage: cropped,
+      annotations: annotations,
+      captureScale: scaleX,
+      applyCurrentCaptureStyle: true,
+      embeddedCaptureStyle: false,
+    );
+    final byteData = await prepared.image.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
     final pngBytes = byteData?.buffer.asUint8List();
     final copied =
         pngBytes != null && await _clipboardService.copyImage(pngBytes);
     _clearLastCopiedPinCache();
     if (copied) {
-      _lastCopiedImage = cropped;
+      _lastCopiedImage = prepared.image;
       _lastCopiedCgFrame = cgPinFrame;
       _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+      _lastCopiedHasEmbeddedCaptureStyle = prepared.hasEmbeddedCaptureStyle;
+      if (!identical(prepared.image, cropped)) {
+        cropped.dispose();
+      }
     } else {
+      if (!identical(prepared.image, cropped)) {
+        prepared.image.dispose();
+      }
       cropped.dispose();
     }
   }
@@ -1093,19 +1245,26 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Expensive crop + encode + write after the window is gone.
-  var cropped = await _captureService.cropImage(
+  final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
   );
   if (cropped != null) {
-    if (annotations.isNotEmpty) {
-      final composited = await compositeAnnotations(cropped, annotations);
-      cropped.dispose();
-      cropped = composited;
-    }
-    final byteData = await cropped.toByteData(format: ui.ImageByteFormat.png);
+    final prepared = await _prepareCaptureImage(
+      sourceImage: cropped,
+      annotations: annotations,
+      captureScale: scaleX,
+      applyCurrentCaptureStyle: true,
+      embeddedCaptureStyle: false,
+    );
+    final byteData = await prepared.image.toByteData(
+      format: ui.ImageByteFormat.png,
+    );
     if (byteData != null) {
       await _fileService.saveToPath(savePath, byteData.buffer.asUint8List());
+    }
+    if (!identical(prepared.image, cropped)) {
+      prepared.image.dispose();
     }
     cropped.dispose();
   }
@@ -1132,7 +1291,6 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
     logicalRect.right * scaleX,
     logicalRect.bottom * scaleY,
   );
-
   final showPreview =
       _settingsState.ocrPreviewEnabled && !selection.isOcrSelection;
   final keepWindowVisible =
@@ -1201,6 +1359,9 @@ Future<void> _handleRegionCancel() async {
 Future<void> _handleCopy() async {
   _escActionInProgress = false;
   final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
+  final captureScale = _appState.captureScale;
+  final applyCurrentCaptureStyle = _appState.applyCurrentCaptureStyle;
+  final embeddedCaptureStyle = _appState.capturedImageHasEmbeddedCaptureStyle;
   // Detach image so clear() won't dispose it.
   final image = _appState.detachCapturedImage();
   final annotations = _annotationState.annotations;
@@ -1221,10 +1382,14 @@ Future<void> _handleCopy() async {
   _annotationState.clear();
   // Encode + copy after window is gone — user perceives instant dismiss.
   if (image != null) {
-    final finalImage = annotations.isNotEmpty
-        ? await compositeAnnotations(image, annotations)
-        : image;
-    final byteData = await finalImage.toByteData(
+    final prepared = await _prepareCaptureImage(
+      sourceImage: image,
+      annotations: annotations,
+      captureScale: captureScale,
+      applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+      embeddedCaptureStyle: embeddedCaptureStyle,
+    );
+    final byteData = await prepared.image.toByteData(
       format: ui.ImageByteFormat.png,
     );
     final pngBytes = byteData?.buffer.asUint8List();
@@ -1233,16 +1398,17 @@ Future<void> _handleCopy() async {
 
     _clearLastCopiedPinCache();
     if (copied) {
-      if (!identical(finalImage, image)) {
+      if (!identical(prepared.image, image)) {
         image.dispose();
-        _lastCopiedImage = finalImage;
+        _lastCopiedImage = prepared.image;
       } else {
         _lastCopiedImage = image;
       }
       _lastCopiedCgFrame = copyCgFrame;
       _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
-    } else if (!identical(finalImage, image)) {
-      finalImage.dispose();
+      _lastCopiedHasEmbeddedCaptureStyle = prepared.hasEmbeddedCaptureStyle;
+    } else if (!identical(prepared.image, image)) {
+      prepared.image.dispose();
       image.dispose();
     } else {
       image.dispose();
@@ -1263,22 +1429,24 @@ Future<void> _handleCopyText(String text) async {
 Future<void> _handleSave() async {
   _escActionInProgress = false;
   final wasScrollResult = _appState.workflow is ScrollResultWorkflow;
-  // Composite annotations if any, then encode.
   final image = _appState.capturedImage;
   final annotations = _annotationState.annotations;
-  if (image != null && annotations.isNotEmpty) {
-    final composited = await compositeAnnotations(image, annotations);
-    final byteData = await composited.toByteData(
+  if (image != null) {
+    final prepared = await _prepareCaptureImage(
+      sourceImage: image,
+      annotations: annotations,
+      captureScale: _appState.captureScale,
+      applyCurrentCaptureStyle: _appState.applyCurrentCaptureStyle,
+      embeddedCaptureStyle: _appState.capturedImageHasEmbeddedCaptureStyle,
+    );
+    final byteData = await prepared.image.toByteData(
       format: ui.ImageByteFormat.png,
     );
     if (byteData != null) {
       await _fileService.saveScreenshot(byteData.buffer.asUint8List());
     }
-    composited.dispose();
-  } else {
-    final pngBytes = await _appState.capturedImageAsPng();
-    if (pngBytes != null) {
-      await _fileService.saveScreenshot(pngBytes);
+    if (!identical(prepared.image, image)) {
+      prepared.image.dispose();
     }
   }
   // Save dialog closed — now hide + clear.
@@ -1485,15 +1653,19 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
     logicalRect.right * scaleX,
     logicalRect.bottom * scaleY,
   );
+  final styledLogicalRect = _expandRectForCaptureStyle(
+    logicalRect,
+    style: _settingsState.captureStyle,
+  );
 
   // Compute the CG-coordinate frame for the pinned panel BEFORE clearing
   // state. logicalRect is in screen-local coordinates; add screenOrigin to
   // get absolute CG coordinates (top-left origin).
   final cgPinFrame = Rect.fromLTWH(
-    logicalRect.left + screenOrigin.dx,
-    logicalRect.top + screenOrigin.dy,
-    logicalRect.width,
-    logicalRect.height,
+    styledLogicalRect.left + screenOrigin.dx,
+    styledLogicalRect.top + screenOrigin.dy,
+    styledLogicalRect.width,
+    styledLogicalRect.height,
   );
 
   // Capture annotation state before clearing.
@@ -1512,29 +1684,35 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Crop + composite after the window is gone.
-  var cropped = await _captureService.cropImage(
+  final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
   );
   if (cropped != null) {
-    if (annotations.isNotEmpty) {
-      final composited = await compositeAnnotations(cropped, annotations);
-      cropped.dispose();
-      cropped = composited;
-    }
+    final prepared = await _prepareCaptureImage(
+      sourceImage: cropped,
+      annotations: annotations,
+      captureScale: scaleX,
+      applyCurrentCaptureStyle: true,
+      embeddedCaptureStyle: false,
+    );
 
     // Encode to raw RGBA for the native panel.
-    final byteData = await cropped.toByteData(
+    final byteData = await prepared.image.toByteData(
       format: ui.ImageByteFormat.rawStraightRgba,
     );
     if (byteData != null) {
       final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
       await _pinNativeImageFromRgbaBytes(
         rgbaBytes: rgbaBytes,
-        width: cropped.width,
-        height: cropped.height,
+        width: prepared.image.width,
+        height: prepared.image.height,
         cgFrame: cgPinFrame,
+        hasEmbeddedCaptureStyle: prepared.hasEmbeddedCaptureStyle,
       );
+    }
+    if (!identical(prepared.image, cropped)) {
+      prepared.image.dispose();
     }
     cropped.dispose();
   }
@@ -1550,14 +1728,23 @@ Future<void> _handlePin() async {
   final image = _appState.capturedImage;
   final bool fromPreview = image != null;
   final ui.Image sourceImage;
+  final double captureScale;
+  final bool applyCurrentCaptureStyle;
+  final bool embeddedCaptureStyle;
 
   if (fromPreview) {
     // Detach immediately so a concurrent capture can't dispose the image
     // while we're compositing / encoding below.
     _appState.detachCapturedImage();
     sourceImage = image;
+    captureScale = _appState.captureScale;
+    applyCurrentCaptureStyle = _appState.applyCurrentCaptureStyle;
+    embeddedCaptureStyle = _appState.capturedImageHasEmbeddedCaptureStyle;
   } else if (await _lastCopiedImageStillMatchesClipboard()) {
     sourceImage = _lastCopiedImage!;
+    captureScale = 1.0;
+    applyCurrentCaptureStyle = false;
+    embeddedCaptureStyle = _lastCopiedHasEmbeddedCaptureStyle;
   } else {
     return;
   }
@@ -1587,22 +1774,24 @@ Future<void> _handlePin() async {
     previewFrame = null;
   }
 
-  // Composite annotations when pinning from preview.
-  final ui.Image finalImage;
-  if (fromPreview && annotations.isNotEmpty) {
-    finalImage = await compositeAnnotations(sourceImage, annotations);
-  } else {
-    finalImage = sourceImage;
-  }
+  final prepared = await _prepareCaptureImage(
+    sourceImage: sourceImage,
+    annotations: annotations,
+    captureScale: captureScale,
+    applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+    embeddedCaptureStyle: embeddedCaptureStyle,
+  );
 
   // Encode to raw RGBA for the native panel.
-  final byteData = await finalImage.toByteData(
+  final byteData = await prepared.image.toByteData(
     format: ui.ImageByteFormat.rawStraightRgba,
   );
   if (byteData == null) {
     if (fromPreview) {
-      finalImage.dispose();
-      if (!identical(finalImage, sourceImage)) {
+      if (!identical(prepared.image, sourceImage)) {
+        prepared.image.dispose();
+        sourceImage.dispose();
+      } else {
         sourceImage.dispose();
       }
     } else {
@@ -1624,8 +1813,8 @@ Future<void> _handlePin() async {
       final screenInfo = await _windowService.getScreenInfo();
       final screenSize = screenInfo?.screenSize ?? const Size(1920, 1080);
       final screenOrigin = screenInfo?.screenOrigin ?? Offset.zero;
-      final w = finalImage.width.toDouble();
-      final h = finalImage.height.toDouble();
+      final w = prepared.image.width.toDouble();
+      final h = prepared.image.height.toDouble();
       cgFrame = Rect.fromLTWH(
         screenOrigin.dx + (screenSize.width - w) / 2,
         screenOrigin.dy + (screenSize.height - h) / 2,
@@ -1638,14 +1827,17 @@ Future<void> _handlePin() async {
   try {
     await _pinNativeImageFromRgbaBytes(
       rgbaBytes: rgbaBytes,
-      width: finalImage.width,
-      height: finalImage.height,
+      width: prepared.image.width,
+      height: prepared.image.height,
       cgFrame: cgFrame,
+      hasEmbeddedCaptureStyle: prepared.hasEmbeddedCaptureStyle,
     );
   } finally {
     if (fromPreview) {
-      finalImage.dispose();
-      if (!identical(finalImage, sourceImage)) {
+      if (!identical(prepared.image, sourceImage)) {
+        prepared.image.dispose();
+        sourceImage.dispose();
+      } else {
         sourceImage.dispose();
       }
     }
@@ -1661,8 +1853,9 @@ void _handleEditPinnedImage(int panelId) {
 
 Future<void> _handleEditPinnedImageAsync(
   int panelId,
-  ui.Image pinnedImage,
+  _PinnedPanelImage pinnedPanelImage,
 ) async {
+  final pinnedImage = pinnedPanelImage.image;
   // Get the pinned panel's CG frame BEFORE closing it so we can show the
   // Flutter preview at exactly the same position and size.
   final panelFrame = await _windowService.getPinnedPanelFrame(panelId: panelId);
@@ -1684,6 +1877,7 @@ Future<void> _handleEditPinnedImageAsync(
       rect: panelFrame,
       opacity: 0.0,
       focus: false,
+      useNativeShadow: !pinnedPanelImage.hasEmbeddedCaptureStyle,
     );
   } else {
     // Fallback: center on screen if we couldn't get the panel frame.
@@ -1697,13 +1891,19 @@ Future<void> _handleEditPinnedImageAsync(
       screenOrigin: screenOrigin,
       opacity: 0.0,
       focus: false,
+      useNativeShadow: !pinnedPanelImage.hasEmbeddedCaptureStyle,
     );
   }
 
   // Set image/state only after the native preview window has its final frame.
   // Otherwise PreviewScreen can compute toolbar geometry from stale window
   // constraints during the transition.
-  _appState.setCapturedImage(pinnedImage);
+  _appState.setCapturedImage(
+    pinnedImage,
+    captureScale: 1.0,
+    applyCurrentCaptureStyle: false,
+    embeddedCaptureStyle: pinnedPanelImage.hasEmbeddedCaptureStyle,
+  );
 
   await WidgetsBinding.instance.endOfFrame;
 
@@ -1816,7 +2016,16 @@ Future<void> _handleScrollFinish() async {
     }
 
     // Stay in fullscreen overlay — just re-enable mouse interaction.
-    _appState.setScrollResult(result);
+    final captureRegion = _appState.scrollCapturingWorkflow?.captureRegion;
+    final captureScale = captureRegion == null || captureRegion.width <= 0
+        ? 1.0
+        : result.width / captureRegion.width;
+    _appState.setScrollResult(
+      result,
+      captureScale: captureScale,
+      applyCurrentCaptureStyle: true,
+      embeddedCaptureStyle: false,
+    );
     await _windowService.exitScrollCaptureMode();
     _appState.nudge();
     // No native Esc monitor — ScrollResultScreen handles Escape via

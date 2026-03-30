@@ -227,6 +227,70 @@ void main() {
     );
   });
 
+  test('showPreview forwards native shadow preference', () async {
+    final windowManagerCalls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          return null;
+        });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowManagerChannel, (call) async {
+          windowManagerCalls.add(call);
+          switch (call.method) {
+            case 'isMinimized':
+              return false;
+            default:
+              return null;
+          }
+        });
+
+    await windowService.showPreview(
+      imageWidth: 100,
+      imageHeight: 50,
+      screenSize: const Size(1440, 900),
+      screenOrigin: Offset.zero,
+      focus: false,
+      useNativeShadow: false,
+    );
+
+    expect(
+      windowManagerCalls,
+      contains(
+        isA<MethodCall>()
+            .having((call) => call.method, 'method', 'setHasShadow')
+            .having((call) => call.arguments, 'arguments', <String, Object?>{
+              'hasShadow': false,
+            }),
+      ),
+    );
+  });
+
+  test('pinImage forwards native shadow preference', () async {
+    MethodCall? capturedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          capturedCall = call;
+          return 12;
+        });
+
+    final panelId = await windowService.pinImage(
+      bytes: Uint8List.fromList(List.filled(16, 255)),
+      width: 2,
+      height: 2,
+      cgFrame: const Rect.fromLTWH(10, 20, 30, 40),
+      useNativeShadow: false,
+    );
+
+    expect(panelId, 12);
+    expect(capturedCall?.method, 'pinImage');
+    final args = Map<String, dynamic>.from(capturedCall?.arguments as Map);
+    expect(args['useNativeShadow'], isFalse);
+    expect(args['frameX'], 10.0);
+    expect(args['frameY'], 20.0);
+    expect(args['frameWidth'], 30.0);
+    expect(args['frameHeight'], 40.0);
+  });
+
   test(
     'ensureInitialized forwards only current toolbar frame callbacks',
     () async {

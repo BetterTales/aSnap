@@ -4,10 +4,13 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../models/capture_style_settings.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
+import '../utils/capture_style_renderer.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
+import '../widgets/capture_style_frame.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
 import '../widgets/tool_popover_mixin.dart';
@@ -26,6 +29,9 @@ class ScrollResultScreen extends StatefulWidget {
   final VoidCallback onDiscard;
   final VoidCallback onOcr;
   final ValueChanged<String> onCopyText;
+  final CaptureStyleSettings captureStyle;
+  final double captureScale;
+  final bool showCaptureStyleChrome;
 
   const ScrollResultScreen({
     super.key,
@@ -37,6 +43,9 @@ class ScrollResultScreen extends StatefulWidget {
     required this.onDiscard,
     required this.onOcr,
     required this.onCopyText,
+    required this.captureStyle,
+    required this.captureScale,
+    required this.showCaptureStyleChrome,
   });
 
   @override
@@ -174,9 +183,11 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   ///
   /// Width and height are computed independently because the container scrolls
   /// vertically — capping the height must NOT shrink the width.
-  Rect _imageContainerRect(Size screenSize, {required double toolbarHeight}) {
-    final image = widget.stitchedImage;
-
+  Rect _imageContainerRect(
+    Size screenSize, {
+    required CaptureStyleLayout captureLayout,
+    required double toolbarHeight,
+  }) {
     final maxW = screenSize.width * 0.9;
     final availableHeight =
         (screenSize.height - toolbarHeight - kToolbarGap * 2).clamp(
@@ -187,15 +198,25 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
         ? availableHeight
         : screenSize.height * 0.85;
 
-    // Width: match image pixel width, capped at maxW.
-    // Do not force a larger minimum width: narrow captures should not be
-    // stretched.
-    final w = image.width.toDouble().clamp(1.0, maxW);
-
-    // Height: the scaled image height at this width, capped at maxH.
-    // The container scrolls, so height doesn't affect width.
-    final scaledH = w * (image.height / image.width);
-    final h = scaledH.clamp(1.0, maxH);
+    final rawOuterWidth = captureLayout.outerSize.width;
+    final rawContentWidth = captureLayout.contentSize.width;
+    final rawContentHeight = captureLayout.contentSize.height;
+    final scale = rawOuterWidth > maxW ? maxW / rawOuterWidth : 1.0;
+    final scaledInsets = EdgeInsets.fromLTRB(
+      captureLayout.outerInsets.left * scale,
+      captureLayout.outerInsets.top * scale,
+      captureLayout.outerInsets.right * scale,
+      captureLayout.outerInsets.bottom * scale,
+    );
+    final contentWidth = rawContentWidth * scale;
+    final fullContentHeight = rawContentHeight * scale;
+    final maxViewportHeight = (maxH - scaledInsets.vertical).clamp(1.0, maxH);
+    final viewportContentHeight = fullContentHeight.clamp(
+      1.0,
+      maxViewportHeight,
+    );
+    final w = (contentWidth + scaledInsets.horizontal).clamp(1.0, maxW);
+    final h = (viewportContentHeight + scaledInsets.vertical).clamp(1.0, maxH);
 
     final x = (screenSize.width - w) / 2;
     final y = ((availableHeight - h) / 2).clamp(0.0, availableHeight - h);
@@ -218,10 +239,38 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
           final toolbarHeight =
               resolvedNativeToolbarFrame?.height ??
               kNativeToolbarFallbackHeight;
+          final image = widget.stitchedImage;
+          final imagePixelSize = Size(
+            image.width.toDouble(),
+            image.height.toDouble(),
+          );
+          final style = widget.showCaptureStyleChrome
+              ? widget.captureStyle.scaled(widget.captureScale)
+              : const CaptureStyleSettings.defaults();
+          final captureLayout = computeCaptureStyleLayout(
+            imagePixelSize,
+            style,
+          );
           final containerRect = _imageContainerRect(
             screenSize,
+            captureLayout: captureLayout,
             toolbarHeight: toolbarHeight,
           );
+          final displayScale =
+              containerRect.width / captureLayout.outerSize.width;
+          final localContentRect = Rect.fromLTWH(
+            captureLayout.outerInsets.left * displayScale,
+            captureLayout.outerInsets.top * displayScale,
+            captureLayout.contentSize.width * displayScale,
+            containerRect.height -
+                ((captureLayout.outerInsets.top +
+                            captureLayout.outerInsets.bottom) *
+                        displayScale)
+                    .clamp(0.0, containerRect.height),
+          );
+          final fullContentHeight =
+              captureLayout.contentSize.height * displayScale;
+          final displayBorderRadius = captureLayout.borderRadius * displayScale;
           final toolbarAnchor = nativeToolbarAnchorPoint(
             viewportSize: screenSize,
             fallbackAnchor: computeFloatingToolbarAnchor(
@@ -229,13 +278,6 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
               screenSize: screenSize,
             ),
           );
-          final image = widget.stitchedImage;
-          final imagePixelSize = Size(
-            image.width.toDouble(),
-            image.height.toDouble(),
-          );
-          final scaledImageHeight =
-              containerRect.width * (image.height / image.width);
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
@@ -273,95 +315,33 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
                 top: containerRect.top,
                 width: containerRect.width,
                 height: containerRect.height,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.3),
-                      width: 1,
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.5),
-                        blurRadius: 24,
-                        offset: const Offset(0, 8),
+                child: CaptureStyleFrame(
+                  contentRect: localContentRect,
+                  borderRadius: displayBorderRadius,
+                  shadowEnabled: captureLayout.shadowEnabled,
+                  child: Stack(
+                    children: [
+                      // Scrollable image.
+                      Positioned.fill(
+                        child: SingleChildScrollView(
+                          controller: _scrollController,
+                          child: SizedBox(
+                            width: localContentRect.width,
+                            height: fullContentHeight,
+                            child: RawImage(image: image, fit: BoxFit.fitWidth),
+                          ),
+                        ),
                       ),
-                    ],
-                  ),
-                  child: ClipRect(
-                    child: Stack(
-                      children: [
-                        // Scrollable image.
-                        Positioned.fill(
-                          child: SingleChildScrollView(
-                            controller: _scrollController,
-                            child: SizedBox(
-                              width: containerRect.width,
-                              height: scaledImageHeight,
-                              child: RawImage(
-                                image: image,
-                                fit: BoxFit.fitWidth,
-                              ),
-                            ),
-                          ),
-                        ),
 
-                        // Annotation overlay — outside the scroll view.
-                        Positioned.fill(
-                          child: IgnorePointer(
-                            ignoring: activeShapeType == null,
-                            child: ListenableBuilder(
-                              listenable: Listenable.merge([
-                                _scrollController,
-                                widget.annotationState,
-                              ]),
-                              builder: (context, _) {
-                                final scrollOffset =
-                                    _scrollController.hasClients
-                                    ? _scrollController.offset
-                                    : 0.0;
-                                final imageDisplayRect = Rect.fromLTWH(
-                                  0,
-                                  -scrollOffset,
-                                  containerRect.width,
-                                  scaledImageHeight,
-                                );
-                                final toolActive = activeShapeType != null;
-                                return Listener(
-                                  behavior: toolActive
-                                      ? HitTestBehavior.opaque
-                                      : HitTestBehavior.translucent,
-                                  onPointerSignal: toolActive
-                                      ? (event) {
-                                          if (event is PointerScrollEvent &&
-                                              _scrollController.hasClients) {
-                                            final max = _scrollController
-                                                .position
-                                                .maxScrollExtent;
-                                            _scrollController.jumpTo(
-                                              (_scrollController.offset +
-                                                      event.scrollDelta.dy)
-                                                  .clamp(0.0, max),
-                                            );
-                                          }
-                                        }
-                                      : null,
-                                  child: AnnotationOverlay(
-                                    annotationState: widget.annotationState,
-                                    imageDisplayRect: imageDisplayRect,
-                                    imagePixelSize: imagePixelSize,
-                                    enabled: toolActive,
-                                    sourceImage: image,
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ),
-
-                        // QR code overlay — rendered above image, disabled while drawing.
-                        Positioned.fill(
+                      // Annotation overlay — outside the scroll view.
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          ignoring: activeShapeType == null,
                           child: ListenableBuilder(
-                            listenable: _scrollController,
+                            listenable: Listenable.merge([
+                              _scrollController,
+                              widget.annotationState,
+                            ]),
                             builder: (context, _) {
                               final scrollOffset = _scrollController.hasClients
                                   ? _scrollController.offset
@@ -369,24 +349,70 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
                               final imageDisplayRect = Rect.fromLTWH(
                                 0,
                                 -scrollOffset,
-                                containerRect.width,
-                                scaledImageHeight,
+                                localContentRect.width,
+                                fullContentHeight,
                               );
-                              return QrCodeOverlay(
-                                image: image,
-                                imageDisplayRect: imageDisplayRect,
-                                imagePixelSize: imagePixelSize,
-                                windowService: widget.windowService,
-                                onCopy: widget.onCopyText,
-                                enabled:
-                                    activeShapeType == null &&
-                                    !widget.annotationState.editingText,
+                              final toolActive = activeShapeType != null;
+                              return Listener(
+                                behavior: toolActive
+                                    ? HitTestBehavior.opaque
+                                    : HitTestBehavior.translucent,
+                                onPointerSignal: toolActive
+                                    ? (event) {
+                                        if (event is PointerScrollEvent &&
+                                            _scrollController.hasClients) {
+                                          final max = _scrollController
+                                              .position
+                                              .maxScrollExtent;
+                                          _scrollController.jumpTo(
+                                            (_scrollController.offset +
+                                                    event.scrollDelta.dy)
+                                                .clamp(0.0, max),
+                                          );
+                                        }
+                                      }
+                                    : null,
+                                child: AnnotationOverlay(
+                                  annotationState: widget.annotationState,
+                                  imageDisplayRect: imageDisplayRect,
+                                  imagePixelSize: imagePixelSize,
+                                  enabled: toolActive,
+                                  sourceImage: image,
+                                ),
                               );
                             },
                           ),
                         ),
-                      ],
-                    ),
+                      ),
+
+                      // QR code overlay — rendered above image, disabled while drawing.
+                      Positioned.fill(
+                        child: ListenableBuilder(
+                          listenable: _scrollController,
+                          builder: (context, _) {
+                            final scrollOffset = _scrollController.hasClients
+                                ? _scrollController.offset
+                                : 0.0;
+                            final imageDisplayRect = Rect.fromLTWH(
+                              0,
+                              -scrollOffset,
+                              localContentRect.width,
+                              fullContentHeight,
+                            );
+                            return QrCodeOverlay(
+                              image: image,
+                              imageDisplayRect: imageDisplayRect,
+                              imagePixelSize: imagePixelSize,
+                              windowService: widget.windowService,
+                              onCopy: widget.onCopyText,
+                              enabled:
+                                  activeShapeType == null &&
+                                  !widget.annotationState.editingText,
+                            );
+                          },
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),

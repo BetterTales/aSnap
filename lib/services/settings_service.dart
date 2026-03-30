@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:path_provider/path_provider.dart';
 
+import '../models/capture_style_settings.dart';
 import '../models/shortcut_bindings.dart';
 import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
@@ -67,6 +68,27 @@ class SettingsService {
     final map = await _readSettingsMap();
     final next = _normalizeSettingsMap(map);
     next['ocrOpenUrlPromptEnabled'] = enabled;
+    await _writeSettingsMap(next);
+  }
+
+  Future<CaptureStyleSettings> loadCaptureStyle() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['captureStyle'];
+      if (value is Map<String, dynamic>) {
+        return CaptureStyleSettings.fromJson(value);
+      }
+      if (value is Map) {
+        return CaptureStyleSettings.fromJson(Map<String, dynamic>.from(value));
+      }
+    } catch (_) {}
+    return const CaptureStyleSettings.defaults();
+  }
+
+  Future<void> saveCaptureStyle(CaptureStyleSettings style) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['captureStyle'] = style.clamped().toJson();
     await _writeSettingsMap(next);
   }
 
@@ -207,6 +229,7 @@ class SettingsService {
     if (map.containsKey('shortcuts') ||
         map.containsKey('ocrPreviewEnabled') ||
         map.containsKey('ocrOpenUrlPromptEnabled') ||
+        map.containsKey('captureStyle') ||
         map.containsKey('inkColor') ||
         map.containsKey('inkStrokeWidth') ||
         map.containsKey('inkSmoothingTolerance') ||

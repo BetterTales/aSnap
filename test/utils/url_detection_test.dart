@@ -9,10 +9,7 @@ void main() {
         extractFirstUrl('See https://example.com/path?q=1'),
         'https://example.com/path?q=1',
       );
-      expect(
-        extractFirstUrl('http://example.com'),
-        'http://example.com',
-      );
+      expect(extractFirstUrl('http://example.com'), 'http://example.com');
     });
 
     test('handles www-prefixed domains', () {
