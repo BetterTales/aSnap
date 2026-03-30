@@ -2,6 +2,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
+import 'package:a_snap/models/capture_style_settings.dart';
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/services/hotkey_service.dart';
 import 'package:a_snap/services/settings_service.dart';
@@ -16,6 +17,7 @@ class _FakeSettingsService extends SettingsService {
   bool failSave = false;
   bool failOcrSave = false;
   bool failOcrOpenUrlSave = false;
+  bool failCaptureStyleSave = false;
   bool failInkColorSave = false;
   bool failInkStrokeSave = false;
   bool failInkSmoothingSave = false;
@@ -27,6 +29,7 @@ class _FakeSettingsService extends SettingsService {
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
+  CaptureStyleSettings? savedCaptureStyle;
   Color? savedInkColor;
   double? savedInkStrokeWidth;
   double? savedInkSmoothingTolerance;
@@ -58,6 +61,14 @@ class _FakeSettingsService extends SettingsService {
       throw Exception('ocr open url save failed');
     }
     savedOcrOpenUrlPromptEnabled = enabled;
+  }
+
+  @override
+  Future<void> saveCaptureStyle(CaptureStyleSettings style) async {
+    if (failCaptureStyleSave) {
+      throw Exception('capture style save failed');
+    }
+    savedCaptureStyle = style;
   }
 
   @override
@@ -123,7 +134,6 @@ class _FakeSettingsService extends SettingsService {
     }
     savedLaserFadeSeconds = seconds;
   }
-
 }
 
 class _FakeWindowService extends WindowService {
@@ -228,6 +238,7 @@ void main() {
       initialShortcuts: ShortcutBindings.defaults(),
       initialOcrPreviewEnabled: false,
       initialOcrOpenUrlPromptEnabled: true,
+      initialCaptureStyle: const CaptureStyleSettings.defaults(),
       initialInkColor: const Color(0xFFFF0000),
       initialInkStrokeWidth: 6.0,
       initialInkSmoothingTolerance: 1.5,
@@ -331,13 +342,38 @@ void main() {
       expect(saved, isFalse);
       expect(state.shortcuts.encodeJson(), initial.encodeJson());
       expect(state.shortcutError, contains('hotkey update failed'));
-    expect(settingsService.savedShortcuts, isNull);
-    expect(hotkeyService.updates, isEmpty);
-    expect(trayService.updates, isEmpty);
-    expect(windowService.inkShortcutUpdates, 0);
-    expect(windowService.laserShortcutUpdates, 0);
-  },
+      expect(settingsService.savedShortcuts, isNull);
+      expect(hotkeyService.updates, isEmpty);
+      expect(trayService.updates, isEmpty);
+      expect(windowService.inkShortcutUpdates, 0);
+      expect(windowService.laserShortcutUpdates, 0);
+    },
   );
+
+  test('setCaptureBorderRadius persists capture style changes', () async {
+    await state.setCaptureBorderRadius(18);
+
+    expect(state.captureStyle.borderRadius, 18);
+    expect(settingsService.savedCaptureStyle?.borderRadius, 18);
+    expect(state.captureStyleError, isNull);
+  });
+
+  test('setCapturePadding persists capture style changes', () async {
+    await state.setCapturePadding(24);
+
+    expect(state.captureStyle.padding, 24);
+    expect(settingsService.savedCaptureStyle?.padding, 24);
+    expect(state.captureStyleError, isNull);
+  });
+
+  test('setCaptureShadowEnabled rolls back on save failure', () async {
+    settingsService.failCaptureStyleSave = true;
+
+    await state.setCaptureShadowEnabled(true);
+
+    expect(state.captureStyle.shadowEnabled, isFalse);
+    expect(state.captureStyleError, contains('capture style save failed'));
+  });
 
   test('refreshLaunchAtLogin loads the native state', () async {
     windowService.state = const LaunchAtLoginState(
@@ -513,7 +549,6 @@ void main() {
     expect(state.laserFadeSeconds, kLaserDefaultFadeSeconds);
     expect(state.laserFadeError, contains('laser fade save failed'));
   });
-
 
   test('setOcrOpenUrlPromptEnabled persists the setting', () async {
     await state.setOcrOpenUrlPromptEnabled(false);

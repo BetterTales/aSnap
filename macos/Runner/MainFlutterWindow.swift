@@ -807,11 +807,11 @@ class MainFlutterWindow: NSWindow {
       case "resizeToRect":
         // Shrink the borderless overlay window to the selection rect for in-place preview.
         // Stays borderless (no corner radius) and floating above other windows.
-        guard let args = call.arguments as? [String: Double],
-          let x = args["x"],
-          let y = args["y"],
-          let w = args["width"],
-          let h = args["height"]
+        guard let args = call.arguments as? [String: Any],
+          let x = args["x"] as? Double,
+          let y = args["y"] as? Double,
+          let w = args["width"] as? Double,
+          let h = args["height"] as? Double
         else {
           result(
             FlutterError(
@@ -820,6 +820,7 @@ class MainFlutterWindow: NSWindow {
               details: nil))
           return
         }
+        let useNativeShadow = args["useNativeShadow"] as? Bool ?? false
         // Convert from Flutter top-left origin (relative to overlay) to macOS
         // bottom-left absolute coordinates. x/y are relative to the overlay
         // screen, so offset by the screen's NS origin.
@@ -839,7 +840,7 @@ class MainFlutterWindow: NSWindow {
         }
         self.overlayScreenFrame = nil
         self.level = .floating
-        self.hasShadow = false
+        self.hasShadow = useNativeShadow
         self.collectionBehavior = [.moveToActiveSpace]
         self.acceptsMouseMovedEvents = false
         // Keep non-image margins transparent so toolbar can float outside
@@ -1429,6 +1430,7 @@ class MainFlutterWindow: NSWindow {
           return
         }
         let bytes = typedData.data
+        let useNativeShadow = args["useNativeShadow"] as? Bool ?? true
         MainFlutterWindow.log("pinImage: \(width)x\(height), bytes=\(bytes.count)")
         guard width > 0, height > 0, bytes.count >= width * height * 4 else {
           MainFlutterWindow.log("pinImage: INVALID size or bytes too short")
@@ -1487,7 +1489,7 @@ class MainFlutterWindow: NSWindow {
         panel.level = NSWindow.Level(rawValue: NSWindow.Level.floating.rawValue + 1)
         panel.backgroundColor = .clear
         panel.isOpaque = false
-        panel.hasShadow = true
+        panel.hasShadow = useNativeShadow
         panel.isMovableByWindowBackground = true
         panel.collectionBehavior = [.moveToActiveSpace]
 

@@ -6,10 +6,13 @@ import 'package:flutter/services.dart';
 import 'package:flutter_colorpicker/flutter_colorpicker.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
+import '../models/capture_style_settings.dart';
 import '../models/shortcut_bindings.dart';
 import '../state/settings_state.dart';
+import '../utils/capture_style_renderer.dart';
 import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
+import '../widgets/capture_style_frame.dart';
 
 const _canvasColor = Color(0xFFF4EEE4);
 const _surfaceColor = Color(0xFFF7F4EF);
@@ -39,6 +42,7 @@ const _laserPresetColors = _inkPresetColors;
 
 enum _SettingsTab {
   general('General'),
+  capture('Capture'),
   shortcuts('Shortcuts'),
   ink('Ink'),
   laser('Laser');
@@ -262,6 +266,61 @@ class _SettingsScreenState extends State<SettingsScreen>
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.shortcutError!,
+            color: _dangerColor,
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildCaptureTab() {
+    return _buildTabPanel(
+      tab: _SettingsTab.capture,
+      children: [
+        _SurfaceGroup(
+          child: Column(
+            children: [
+              _CaptureStylePreviewRow(
+                captureStyle: widget.settingsState.captureStyle,
+              ),
+              const _GroupDivider(),
+              _CaptureBorderRadiusRow(
+                borderRadius: widget.settingsState.captureStyle.borderRadius,
+                onChanged: (value) {
+                  widget.settingsState.clearCaptureStyleError();
+                  unawaited(widget.settingsState.setCaptureBorderRadius(value));
+                },
+              ),
+              const _GroupDivider(),
+              _CapturePaddingRow(
+                padding: widget.settingsState.captureStyle.padding,
+                onChanged: (value) {
+                  widget.settingsState.clearCaptureStyleError();
+                  unawaited(widget.settingsState.setCapturePadding(value));
+                },
+              ),
+              const _GroupDivider(),
+              _CaptureShadowRow(
+                shadowEnabled: widget.settingsState.captureStyle.shadowEnabled,
+                onChanged: (value) {
+                  widget.settingsState.clearCaptureStyleError();
+                  unawaited(
+                    widget.settingsState.setCaptureShadowEnabled(value),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        const _SectionNote(
+          text:
+              'Border radius, padding, and shadow are persistent defaults for copied, saved, and pinned captures.',
+        ),
+        if (widget.settingsState.captureStyleError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.captureStyleError!,
             color: _dangerColor,
           ),
         ],
@@ -493,6 +552,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                         physics: const NeverScrollableScrollPhysics(),
                         children: [
                           _buildGeneralTab(),
+                          _buildCaptureTab(),
                           _buildShortcutsTab(shortcutEntries),
                           _buildInkTab(),
                           _buildLaserTab(),
@@ -698,6 +758,410 @@ class _OcrOpenUrlPromptRow extends StatelessWidget {
               settingsState.clearOcrOpenUrlPromptError();
               settingsState.setOcrOpenUrlPromptEnabled(value);
             },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaptureStylePreviewRow extends StatelessWidget {
+  const _CaptureStylePreviewRow({required this.captureStyle});
+
+  final CaptureStyleSettings captureStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Preview',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            height: 188,
+            child: _CaptureStylePreviewCard(captureStyle: captureStyle),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaptureStylePreviewCard extends StatelessWidget {
+  const _CaptureStylePreviewCard({required this.captureStyle});
+
+  final CaptureStyleSettings captureStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const Key('capture-style-preview'),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: _surfaceBorderColor),
+        color: _controlFillColor,
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFBF7EF), Color(0xFFF1E8DB)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            const sampleSize = Size(260, 150);
+            final layout = computeCaptureStyleLayout(sampleSize, captureStyle);
+            final fitted = applyBoxFit(
+              BoxFit.contain,
+              layout.outerSize,
+              constraints.biggest,
+            );
+            final outerRect = Alignment.center.inscribe(
+              fitted.destination,
+              Offset.zero & constraints.biggest,
+            );
+            final contentRect = projectCaptureStyleRect(
+              layout.contentRect,
+              sourceBounds: layout.outerSize,
+              destinationBounds: outerRect,
+            );
+            final displayScale = outerRect.width / layout.outerSize.width;
+
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                Positioned(
+                  left: 10,
+                  top: 12,
+                  child: Container(
+                    width: 42,
+                    height: 42,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  right: 18,
+                  bottom: 10,
+                  child: Container(
+                    width: 74,
+                    height: 74,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE4D7C5).withValues(alpha: 0.7),
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                  ),
+                ),
+                Positioned.fromRect(
+                  rect: outerRect,
+                  child: const IgnorePointer(
+                    child: _CaptureStylePreviewMatte(
+                      key: Key('capture-style-preview-matte'),
+                    ),
+                  ),
+                ),
+                CaptureStyleFrame(
+                  contentRect: contentRect,
+                  borderRadius: layout.borderRadius * displayScale,
+                  shadowEnabled: layout.shadowEnabled,
+                  child: DecoratedBox(
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [Color(0xFF355C7D), Color(0xFFF67280)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                    ),
+                    child: Stack(
+                      children: [
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          top: 0,
+                          child: Container(
+                            height: 26,
+                            color: Colors.black.withValues(alpha: 0.15),
+                          ),
+                        ),
+                        Positioned(
+                          left: 12,
+                          top: 8,
+                          child: Container(
+                            width: 52,
+                            height: 10,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.6),
+                              borderRadius: BorderRadius.circular(999),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: 14,
+                          right: 14,
+                          bottom: 18,
+                          child: Container(
+                            height: 42,
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.28),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                Positioned.fromRect(
+                  rect: contentRect,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(
+                          displayScale == 0
+                              ? 0
+                              : layout.borderRadius * displayScale,
+                        ),
+                        border: Border.all(
+                          color: Colors.white.withValues(alpha: 0.72),
+                          width: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _CaptureStylePreviewMatte extends StatelessWidget {
+  const _CaptureStylePreviewMatte({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      painter: const _CaptureStylePreviewMattePainter(),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(22),
+          border: Border.all(
+            color: const Color(0xFFB9A78E).withValues(alpha: 0.42),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CaptureStylePreviewMattePainter extends CustomPainter {
+  const _CaptureStylePreviewMattePainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Offset.zero & size;
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(22));
+    final basePaint = Paint()..color = const Color(0xFFF8F3EA);
+    const tileSize = 12.0;
+    final tilePaint = Paint()..color = const Color(0xFFEADFCF);
+
+    canvas.save();
+    canvas.clipRRect(rrect);
+    canvas.drawRect(rect, basePaint);
+    for (var row = 0, top = 0.0; top < size.height; row++, top += tileSize) {
+      for (
+        var column = 0, left = 0.0;
+        left < size.width;
+        column++, left += tileSize
+      ) {
+        if ((row + column).isEven) continue;
+        canvas.drawRect(
+          Rect.fromLTWH(left, top, tileSize, tileSize),
+          tilePaint,
+        );
+      }
+    }
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _CaptureStylePreviewMattePainter oldDelegate) {
+    return false;
+  }
+}
+
+class _CaptureBorderRadiusRow extends StatelessWidget {
+  const _CaptureBorderRadiusRow({
+    required this.borderRadius,
+    required this.onChanged,
+  });
+
+  final double borderRadius;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = borderRadius.clamp(
+      kCaptureStyleMinBorderRadius,
+      kCaptureStyleMaxBorderRadius,
+    );
+    return _SettingsSliderRow(
+      label: 'Border radius',
+      valueLabel: '${clamped.round()}px',
+      value: clamped,
+      min: kCaptureStyleMinBorderRadius,
+      max: kCaptureStyleMaxBorderRadius,
+      divisions: (kCaptureStyleMaxBorderRadius - kCaptureStyleMinBorderRadius)
+          .round(),
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _CapturePaddingRow extends StatelessWidget {
+  const _CapturePaddingRow({required this.padding, required this.onChanged});
+
+  final double padding;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final clamped = padding.clamp(
+      kCaptureStyleMinPadding,
+      kCaptureStyleMaxPadding,
+    );
+    return _SettingsSliderRow(
+      label: 'Padding',
+      valueLabel: '${clamped.round()}px',
+      value: clamped,
+      min: kCaptureStyleMinPadding,
+      max: kCaptureStyleMaxPadding,
+      divisions: (kCaptureStyleMaxPadding - kCaptureStyleMinPadding).round(),
+      onChanged: onChanged,
+    );
+  }
+}
+
+class _CaptureShadowRow extends StatelessWidget {
+  const _CaptureShadowRow({
+    required this.shadowEnabled,
+    required this.onChanged,
+  });
+
+  final bool shadowEnabled;
+  final ValueChanged<bool> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              'Shadow',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+          Switch.adaptive(
+            value: shadowEnabled,
+            activeTrackColor: _accentColor,
+            activeThumbColor: _controlFillColor,
+            inactiveTrackColor: _inactiveControlColor,
+            inactiveThumbColor: _controlFillColor,
+            trackOutlineColor: const WidgetStatePropertyAll(
+              _surfaceBorderColor,
+            ),
+            onChanged: onChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsSliderRow extends StatelessWidget {
+  const _SettingsSliderRow({
+    required this.label,
+    required this.valueLabel,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    this.divisions,
+  });
+
+  final String label;
+  final String valueLabel;
+  final double value;
+  final double min;
+  final double max;
+  final int? divisions;
+  final ValueChanged<double> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontSize: 17,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                valueLabel,
+                style: const TextStyle(
+                  color: _mutedInkColor,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              activeTrackColor: _accentColor,
+              inactiveTrackColor: _inactiveControlColor,
+              thumbColor: _accentColor,
+              overlayColor: _accentColor.withValues(alpha: 0.15),
+              trackHeight: 3,
+            ),
+            child: Slider(
+              value: value,
+              min: min,
+              max: max,
+              divisions: divisions,
+              onChanged: onChanged,
+            ),
           ),
         ],
       ),

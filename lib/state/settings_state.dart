@@ -2,6 +2,7 @@ import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/capture_style_settings.dart';
 import '../models/shortcut_bindings.dart';
 import '../services/hotkey_service.dart';
 import '../services/settings_service.dart';
@@ -15,6 +16,7 @@ class SettingsState extends ChangeNotifier {
     required ShortcutBindings initialShortcuts,
     required bool initialOcrPreviewEnabled,
     required bool initialOcrOpenUrlPromptEnabled,
+    required CaptureStyleSettings initialCaptureStyle,
     required Color initialInkColor,
     required double initialInkStrokeWidth,
     required double initialInkSmoothingTolerance,
@@ -30,6 +32,7 @@ class SettingsState extends ChangeNotifier {
   }) : _shortcuts = initialShortcuts,
        _ocrPreviewEnabled = initialOcrPreviewEnabled,
        _ocrOpenUrlPromptEnabled = initialOcrOpenUrlPromptEnabled,
+       _captureStyle = initialCaptureStyle,
        _inkColor = initialInkColor,
        _inkStrokeWidth = initialInkStrokeWidth,
        _inkSmoothingTolerance = initialInkSmoothingTolerance,
@@ -62,6 +65,12 @@ class SettingsState extends ChangeNotifier {
 
   String? _ocrOpenUrlPromptError;
   String? get ocrOpenUrlPromptError => _ocrOpenUrlPromptError;
+
+  CaptureStyleSettings _captureStyle = const CaptureStyleSettings.defaults();
+  CaptureStyleSettings get captureStyle => _captureStyle;
+
+  String? _captureStyleError;
+  String? get captureStyleError => _captureStyleError;
 
   Color _inkColor = kInkDefaultColor;
   Color get inkColor => _inkColor;
@@ -272,6 +281,26 @@ class SettingsState extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> setCaptureBorderRadius(double borderRadius) async {
+    await _saveCaptureStyle(
+      _captureStyle.copyWith(borderRadius: borderRadius).clamped(),
+    );
+  }
+
+  Future<void> setCapturePadding(double padding) async {
+    await _saveCaptureStyle(_captureStyle.copyWith(padding: padding).clamped());
+  }
+
+  Future<void> setCaptureShadowEnabled(bool enabled) async {
+    await _saveCaptureStyle(_captureStyle.copyWith(shadowEnabled: enabled));
+  }
+
+  void clearCaptureStyleError() {
+    if (_captureStyleError == null) return;
+    _captureStyleError = null;
+    notifyListeners();
+  }
+
   Future<void> setInkColor(Color color) async {
     if (_inkColor == color) return;
     final previous = _inkColor;
@@ -446,6 +475,23 @@ class SettingsState extends ChangeNotifier {
     if (_laserFadeError == null) return;
     _laserFadeError = null;
     notifyListeners();
+  }
+
+  Future<void> _saveCaptureStyle(CaptureStyleSettings nextStyle) async {
+    final normalized = nextStyle.clamped();
+    if (_captureStyle == normalized) return;
+    final previous = _captureStyle;
+    _captureStyle = normalized;
+    _captureStyleError = null;
+    notifyListeners();
+
+    try {
+      await _settingsService.saveCaptureStyle(normalized);
+    } catch (error) {
+      _captureStyle = previous;
+      _captureStyleError = error.toString();
+      notifyListeners();
+    }
   }
 
   void _applyLaunchAtLoginState(LaunchAtLoginState state) {

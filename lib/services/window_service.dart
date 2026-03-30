@@ -346,6 +346,7 @@ class WindowService {
     required Offset screenOrigin,
     double opacity = 1.0,
     bool focus = true,
+    bool useNativeShadow = true,
   }) async {
     if (imageWidth <= 0 || imageHeight <= 0) return null;
 
@@ -391,7 +392,7 @@ class WindowService {
     await windowManager.setMaximumSize(previewSize);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
-    await windowManager.setHasShadow(true);
+    await windowManager.setHasShadow(useNativeShadow);
 
     // Center on the cursor's display
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
@@ -514,6 +515,7 @@ class WindowService {
     required Rect rect,
     double opacity = 1.0,
     bool focus = true,
+    bool useNativeShadow = true,
   }) async {
     await windowManager.hide();
     await _channel.invokeMethod('cleanupOverlayMode');
@@ -532,7 +534,7 @@ class WindowService {
     await windowManager.setMaximumSize(size);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
-    await windowManager.setHasShadow(true);
+    await windowManager.setHasShadow(useNativeShadow);
     await windowManager.setPosition(Offset(rect.left, rect.top));
     _currentPreviewWindowRect = rect;
     _currentPreviewScreenRect = await _screenRectForPoint(rect.center);
@@ -560,12 +562,14 @@ class WindowService {
     required Rect selectionRect,
     required Size screenSize,
     required Offset screenOrigin,
+    bool useNativeShadow = false,
   }) async {
     await _channel.invokeMethod('resizeToRect', {
       'x': selectionRect.left,
       'y': selectionRect.top,
       'width': selectionRect.width,
       'height': selectionRect.height,
+      'useNativeShadow': useNativeShadow,
     });
     _currentPreviewWindowRect = Rect.fromLTWH(
       selectionRect.left + screenOrigin.dx,
@@ -1061,11 +1065,13 @@ class WindowService {
     required int width,
     required int height,
     Rect? cgFrame,
+    bool useNativeShadow = true,
   }) async {
     final args = <String, dynamic>{
       'bytes': bytes,
       'width': width,
       'height': height,
+      'useNativeShadow': useNativeShadow,
     };
     if (cgFrame != null) {
       args['frameX'] = cgFrame.left;

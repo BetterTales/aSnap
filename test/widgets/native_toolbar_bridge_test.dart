@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:a_snap/models/annotation.dart';
+import 'package:a_snap/models/capture_style_settings.dart';
 import 'package:a_snap/screens/preview_screen.dart';
 import 'package:a_snap/screens/region_selection_screen.dart';
 import 'package:a_snap/screens/scroll_result_screen.dart';
@@ -163,7 +164,7 @@ void main() {
       (tester) async {
         _setTestSurface(tester);
         final image = await _createTestImage();
-        final appState = AppState()..setCapturedImage(image);
+        final appState = AppState()..setCapturedImage(image, captureScale: 1.0);
         final annotationState = AnnotationState();
         final windowService = _FakeWindowService();
         var copied = 0;
@@ -189,6 +190,9 @@ void main() {
             onDiscard: () => discarded++,
             onOcr: () => ocr++,
             onCopyText: (_) {},
+            captureStyle: const CaptureStyleSettings.defaults(),
+            captureScale: 1.0,
+            showCaptureStyleChrome: true,
           ),
         );
 
@@ -335,6 +339,9 @@ void main() {
           onDiscard: () {},
           onOcr: () {},
           onCopyText: (_) {},
+          captureStyle: const CaptureStyleSettings.defaults(),
+          captureScale: 1.0,
+          showCaptureStyleChrome: true,
         ),
       );
 

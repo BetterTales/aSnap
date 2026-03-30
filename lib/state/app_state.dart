@@ -105,19 +105,34 @@ final class ScrollCapturingWorkflow extends WorkflowState {
 final class PreviewWorkflow extends WorkflowState {
   final Image image;
   final bool isScrollCapture;
+  final double captureScale;
+  final bool applyCurrentCaptureStyle;
+  final bool embeddedCaptureStyle;
 
-  const PreviewWorkflow({required this.image, required this.isScrollCapture});
+  const PreviewWorkflow({
+    required this.image,
+    required this.isScrollCapture,
+    required this.captureScale,
+    required this.applyCurrentCaptureStyle,
+    required this.embeddedCaptureStyle,
+  });
 }
 
 final class ScrollResultWorkflow extends WorkflowState {
   final Image image;
   final Size screenSize;
   final Offset screenOrigin;
+  final double captureScale;
+  final bool applyCurrentCaptureStyle;
+  final bool embeddedCaptureStyle;
 
   const ScrollResultWorkflow({
     required this.image,
     required this.screenSize,
     required this.screenOrigin,
+    required this.captureScale,
+    required this.applyCurrentCaptureStyle,
+    required this.embeddedCaptureStyle,
   });
 }
 
@@ -200,6 +215,26 @@ class AppState extends ChangeNotifier {
   bool get isScrollCapture => switch (_workflow) {
     PreviewWorkflow(:final isScrollCapture) => isScrollCapture,
     ScrollResultWorkflow() => true,
+    _ => false,
+  };
+
+  double get captureScale => switch (_workflow) {
+    PreviewWorkflow(:final captureScale) => captureScale,
+    ScrollResultWorkflow(:final captureScale) => captureScale,
+    _ => 1.0,
+  };
+
+  bool get applyCurrentCaptureStyle => switch (_workflow) {
+    PreviewWorkflow(:final applyCurrentCaptureStyle) =>
+      applyCurrentCaptureStyle,
+    ScrollResultWorkflow(:final applyCurrentCaptureStyle) =>
+      applyCurrentCaptureStyle,
+    _ => false,
+  };
+
+  bool get capturedImageHasEmbeddedCaptureStyle => switch (_workflow) {
+    PreviewWorkflow(:final embeddedCaptureStyle) => embeddedCaptureStyle,
+    ScrollResultWorkflow(:final embeddedCaptureStyle) => embeddedCaptureStyle,
     _ => false,
   };
 
@@ -315,12 +350,38 @@ class AppState extends ChangeNotifier {
     _transitionTo(selection.copyWith(windowRects: rects));
   }
 
-  void setCapturedImage(Image image) {
-    _transitionTo(PreviewWorkflow(image: image, isScrollCapture: false));
+  void setCapturedImage(
+    Image image, {
+    required double captureScale,
+    bool applyCurrentCaptureStyle = true,
+    bool embeddedCaptureStyle = false,
+  }) {
+    _transitionTo(
+      PreviewWorkflow(
+        image: image,
+        isScrollCapture: false,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+        embeddedCaptureStyle: embeddedCaptureStyle,
+      ),
+    );
   }
 
-  void setCapturedScrollImage(Image image) {
-    _transitionTo(PreviewWorkflow(image: image, isScrollCapture: true));
+  void setCapturedScrollImage(
+    Image image, {
+    required double captureScale,
+    bool applyCurrentCaptureStyle = true,
+    bool embeddedCaptureStyle = false,
+  }) {
+    _transitionTo(
+      PreviewWorkflow(
+        image: image,
+        isScrollCapture: true,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+        embeddedCaptureStyle: embeddedCaptureStyle,
+      ),
+    );
   }
 
   void setSettings() {
@@ -345,12 +406,23 @@ class AppState extends ChangeNotifier {
   }
 
   /// Transition to scroll result displayed in the fullscreen overlay.
-  void setScrollResult(Image stitchedImage) {
+  void setScrollResult(
+    Image stitchedImage, {
+    required double captureScale,
+    bool applyCurrentCaptureStyle = true,
+    bool embeddedCaptureStyle = false,
+  }) {
     final currentScreenSize = screenSize;
     final currentScreenOrigin = screenOrigin;
     if (currentScreenSize == null || currentScreenOrigin == null) {
       _transitionTo(
-        PreviewWorkflow(image: stitchedImage, isScrollCapture: true),
+        PreviewWorkflow(
+          image: stitchedImage,
+          isScrollCapture: true,
+          captureScale: captureScale,
+          applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+          embeddedCaptureStyle: embeddedCaptureStyle,
+        ),
       );
       return;
     }
@@ -359,6 +431,9 @@ class AppState extends ChangeNotifier {
         image: stitchedImage,
         screenSize: currentScreenSize,
         screenOrigin: currentScreenOrigin,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+        embeddedCaptureStyle: embeddedCaptureStyle,
       ),
     );
   }

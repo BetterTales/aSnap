@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
+import 'package:a_snap/models/capture_style_settings.dart';
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/screens/settings_screen.dart';
 import 'package:a_snap/services/hotkey_service.dart';
@@ -21,6 +22,7 @@ class _FakeSettingsService extends SettingsService {
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
+  CaptureStyleSettings? savedCaptureStyle;
 
   @override
   Future<void> saveShortcutBindings(ShortcutBindings bindings) async {
@@ -35,6 +37,11 @@ class _FakeSettingsService extends SettingsService {
   @override
   Future<void> saveOcrOpenUrlPromptEnabled(bool enabled) async {
     savedOcrOpenUrlPromptEnabled = enabled;
+  }
+
+  @override
+  Future<void> saveCaptureStyle(CaptureStyleSettings style) async {
+    savedCaptureStyle = style;
   }
 
   @override
@@ -128,6 +135,7 @@ Future<_SettingsHarness> _pumpSettingsScreen(
     initialShortcuts: initialShortcuts ?? ShortcutBindings.defaults(),
     initialOcrPreviewEnabled: false,
     initialOcrOpenUrlPromptEnabled: true,
+    initialCaptureStyle: const CaptureStyleSettings.defaults(),
     initialInkColor: kInkDefaultColor,
     initialInkStrokeWidth: kInkDefaultStrokeWidth,
     initialInkSmoothingTolerance: kInkDefaultSmoothingTolerance,
@@ -187,6 +195,7 @@ void main() {
 
     expect(find.text('Settings'), findsOneWidget);
     expect(_tabLabel('General'), findsOneWidget);
+    expect(_tabLabel('Capture'), findsOneWidget);
     expect(_tabLabel('Shortcuts'), findsOneWidget);
     expect(_tabLabel('Ink'), findsOneWidget);
     expect(_tabLabel('Laser'), findsOneWidget);
@@ -195,8 +204,22 @@ void main() {
     expect(find.text('Show OCR preview'), findsOneWidget);
     expect(find.text('Prompt to open URL after OCR'), findsOneWidget);
     expect(find.text('Region'), findsNothing);
+    expect(find.text('Border radius'), findsNothing);
     expect(find.text('Smoothing'), findsNothing);
     expect(find.text('Fade'), findsNothing);
+
+    await tester.tap(_tabLabel('Capture'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Preview'), findsOneWidget);
+    expect(find.text('Border radius'), findsOneWidget);
+    expect(find.text('Padding'), findsOneWidget);
+    expect(find.text('Shadow'), findsOneWidget);
+    expect(find.byKey(const Key('capture-style-preview')), findsOneWidget);
+    expect(
+      find.byKey(const Key('capture-style-preview-matte')),
+      findsOneWidget,
+    );
 
     await tester.tap(_tabLabel('Shortcuts'));
     await tester.pumpAndSettle();
@@ -256,6 +279,36 @@ void main() {
     );
     expect(harness.hotkeyService.updates, hasLength(1));
     expect(harness.trayService.updates, hasLength(1));
+  });
+
+  testWidgets('capture style controls persist immediately', (tester) async {
+    final harness = await _pumpSettingsScreen(tester);
+
+    await tester.tap(_tabLabel('Capture'));
+    await tester.pumpAndSettle();
+
+    final shadowSwitch = tester.widget<Switch>(find.byType(Switch).last);
+    shadowSwitch.onChanged!(true);
+    await tester.pumpAndSettle();
+
+    final borderRadiusSlider = tester
+        .widgetList<Slider>(find.byType(Slider))
+        .first;
+    borderRadiusSlider.onChanged!(18);
+    await tester.pumpAndSettle();
+
+    final paddingSlider = tester.widgetList<Slider>(find.byType(Slider)).last;
+    paddingSlider.onChanged!(24);
+    await tester.pumpAndSettle();
+
+    expect(
+      harness.settingsService.savedCaptureStyle,
+      const CaptureStyleSettings(
+        borderRadius: 18,
+        padding: 24,
+        shadowEnabled: true,
+      ),
+    );
   });
 
   testWidgets('shortcut recorder previews Ctrl and mixed modifier chords', (

@@ -4,6 +4,7 @@ import 'dart:ui';
 
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:a_snap/models/capture_style_settings.dart';
 import 'package:a_snap/models/shortcut_bindings.dart';
 import 'package:a_snap/services/settings_service.dart';
 import 'package:a_snap/utils/ink_defaults.dart';
@@ -27,6 +28,7 @@ void main() {
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
     final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
+    final captureStyle = await service.loadCaptureStyle();
     final inkColor = await service.loadInkColor();
     final inkStrokeWidth = await service.loadInkStrokeWidth();
     final inkSmoothingTolerance = await service.loadInkSmoothingTolerance();
@@ -39,6 +41,7 @@ void main() {
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
     expect(ocrOpenUrlPrompt, isTrue);
+    expect(captureStyle, const CaptureStyleSettings.defaults());
     expect(inkColor, kInkDefaultColor);
     expect(inkStrokeWidth, kInkDefaultStrokeWidth);
     expect(inkSmoothingTolerance, kInkDefaultSmoothingTolerance);
@@ -73,6 +76,13 @@ void main() {
     await service.saveShortcutBindings(updated);
     await service.saveOcrPreviewEnabled(true);
     await service.saveOcrOpenUrlPromptEnabled(false);
+    await service.saveCaptureStyle(
+      const CaptureStyleSettings(
+        borderRadius: 18,
+        padding: 24,
+        shadowEnabled: true,
+      ),
+    );
     await service.saveInkColor(const Color(0xFF00C853));
     await service.saveInkStrokeWidth(12);
     await service.saveInkSmoothingTolerance(2.5);
@@ -85,6 +95,11 @@ void main() {
     var map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
+    expect(map['captureStyle'], {
+      'borderRadius': 18.0,
+      'padding': 24.0,
+      'shadowEnabled': true,
+    });
     expect(map['shortcuts'], isA<Map>());
     expect(map['inkColor'], 0xFF00C853);
     expect(map['inkStrokeWidth'], 12);
@@ -100,6 +115,11 @@ void main() {
     map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
+    expect(map['captureStyle'], {
+      'borderRadius': 18.0,
+      'padding': 24.0,
+      'shadowEnabled': true,
+    });
     expect(map['inkColor'], 0xFF00C853);
     expect(map['inkStrokeWidth'], 12);
     expect(map['inkSmoothingTolerance'], 2.5);

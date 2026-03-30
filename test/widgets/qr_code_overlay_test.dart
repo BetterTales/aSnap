@@ -57,14 +57,14 @@ Widget _buildOverlayHarness({
               Positioned.fill(
                 child: QrCodeOverlay(
                   image: image,
-                imageDisplayRect: imageDisplayRect,
-                imagePixelSize: imagePixelSize,
-                imagePixelOrigin: imagePixelOrigin,
-                windowService: windowService,
-                pngBytesLoader: pngBytesLoader,
-                onCopy: onCopy,
-                enabled: true,
-              ),
+                  imageDisplayRect: imageDisplayRect,
+                  imagePixelSize: imagePixelSize,
+                  imagePixelOrigin: imagePixelOrigin,
+                  windowService: windowService,
+                  pngBytesLoader: pngBytesLoader,
+                  onCopy: onCopy,
+                  enabled: true,
+                ),
               ),
             ],
           ),
@@ -84,7 +84,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   group('QrCodeOverlay', () {
-    testWidgets('maps QR bounds using origin and display scale', (tester) async {
+    testWidgets('maps QR bounds using origin and display scale', (
+      tester,
+    ) async {
       final image = await _createTestImage();
       final windowService = _FakeWindowService([
         const QrCodeResult(
