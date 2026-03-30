@@ -315,7 +315,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         const SizedBox(height: 8),
         const _SectionNote(
           text:
-              'Border radius and padding are persistent defaults for copied, saved, and pinned captures.',
+              'Border radius, padding, and shadow are persistent defaults for copied, saved, and pinned captures.',
         ),
         if (widget.settingsState.captureStyleError != null) ...[
           const SizedBox(height: 10),
