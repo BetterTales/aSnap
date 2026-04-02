@@ -92,13 +92,15 @@ class ASnapApp extends StatelessWidget {
       title: 'aSnap',
       debugShowCheckedModeBanner: false,
       navigatorKey: navigatorKey,
-      theme: ThemeData.dark(useMaterial3: true).copyWith(
-        // Transparent canvas so the rainbow border overlay renders correctly
-        // on the transparent NSWindow. Other screens (preview, region selection)
-        // have opaque NSWindow backgrounds that show through.
+      theme: ThemeData.light(useMaterial3: true).copyWith(
         canvasColor: Colors.transparent,
         scaffoldBackgroundColor: Colors.transparent,
       ),
+      darkTheme: ThemeData.dark(useMaterial3: true).copyWith(
+        canvasColor: Colors.transparent,
+        scaffoldBackgroundColor: Colors.transparent,
+      ),
+      themeMode: ThemeMode.system,
       home: ListenableBuilder(
         listenable: Listenable.merge([appState, settingsState]),
         builder: (context, _) {

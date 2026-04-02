@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -14,16 +15,30 @@ import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
 import '../widgets/capture_style_frame.dart';
 
-const _canvasColor = Color(0xFFF4EEE4);
-const _surfaceColor = Color(0xFFF7F4EF);
-const _surfaceBorderColor = Color(0xFFD8D0C2);
-const _controlFillColor = Color(0xFFFCFAF6);
-const _inkColor = Color(0xFF201A13);
-const _mutedInkColor = Color(0xFF6A5F52);
-const _dangerColor = Color(0xFF982C26);
-const _warningColor = Color(0xFF8A5A00);
-const _accentColor = Color(0xFF7A6854);
-const _inactiveControlColor = Color(0xFFE5DED2);
+extension SettingsThemeX on BuildContext {
+  bool get _isDark => Theme.of(this).brightness == Brightness.dark;
+  Color get canvasColor =>
+      _isDark ? const Color(0xFF1E1E1E) : const Color(0xFFF5F5F7);
+  Color get surfaceColor =>
+      _isDark ? const Color(0xFF2C2C2E) : const Color(0xFFFFFFFF);
+  Color get surfaceBorderColor =>
+      _isDark ? const Color(0xFF48484A) : const Color(0xFFE2E2E7);
+  Color get controlFillColor =>
+      _isDark ? const Color(0xFF3A3A3C) : const Color(0xFFF2F2F7);
+  Color get inkColor =>
+      _isDark ? const Color(0xFFFFFFFF) : const Color(0xFF1C1C1E);
+  Color get mutedInkColor =>
+      _isDark ? const Color(0xFFA0A0A5) : const Color(0xFF8E8E93);
+  Color get dangerColor =>
+      _isDark ? const Color(0xFFFF453A) : const Color(0xFFFF3B30);
+  Color get warningColor =>
+      _isDark ? const Color(0xFFFF9F0A) : const Color(0xFFFF9500);
+  Color get accentColor =>
+      _isDark ? const Color(0xFF0A84FF) : const Color(0xFF007AFF);
+  Color get inactiveControlColor =>
+      _isDark ? const Color(0xFF48484A) : const Color(0xFFC7C7CC);
+}
+
 const _shortcutButtonWidth = 220.0;
 const _shortcutActionSlotWidth = 32.0;
 const _inkColorRowHeight = 44.0;
@@ -209,31 +224,31 @@ class _SettingsScreenState extends State<SettingsScreen>
         ],
         if (widget.settingsState.launchAtLoginRequiresApproval) ...[
           const SizedBox(height: 10),
-          const _SectionNote(
+          _SectionNote(
             text:
                 'macOS still requires approval in System Settings before launch at login will work.',
-            color: _warningColor,
+            color: context.warningColor,
           ),
         ],
         if (widget.settingsState.launchAtLoginError != null) ...[
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.launchAtLoginError!,
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
         if (widget.settingsState.ocrPreviewError != null) ...[
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.ocrPreviewError!,
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
         if (widget.settingsState.ocrOpenUrlPromptError != null) ...[
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.ocrOpenUrlPromptError!,
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
       ],
@@ -266,7 +281,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.shortcutError!,
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
       ],
@@ -277,40 +292,68 @@ class _SettingsScreenState extends State<SettingsScreen>
     return _buildTabPanel(
       tab: _SettingsTab.capture,
       children: [
-        _SurfaceGroup(
-          child: Column(
-            children: [
-              _CaptureStylePreviewRow(
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const previewColumnWidth = 340.0;
+            const columnGap = 20.0;
+            final useTwoColumns =
+                constraints.maxWidth >= (previewColumnWidth * 2) + columnGap;
+            final controls = _SurfaceGroup(
+              child: Column(
+                children: [
+                  _CaptureBorderRadiusRow(
+                    borderRadius:
+                        widget.settingsState.captureStyle.borderRadius,
+                    onChanged: (value) {
+                      widget.settingsState.clearCaptureStyleError();
+                      unawaited(
+                        widget.settingsState.setCaptureBorderRadius(value),
+                      );
+                    },
+                  ),
+                  const _GroupDivider(),
+                  _CapturePaddingRow(
+                    padding: widget.settingsState.captureStyle.padding,
+                    onChanged: (value) {
+                      widget.settingsState.clearCaptureStyleError();
+                      unawaited(widget.settingsState.setCapturePadding(value));
+                    },
+                  ),
+                  const _GroupDivider(),
+                  _CaptureShadowRow(
+                    shadowEnabled:
+                        widget.settingsState.captureStyle.shadowEnabled,
+                    onChanged: (value) {
+                      widget.settingsState.clearCaptureStyleError();
+                      unawaited(
+                        widget.settingsState.setCaptureShadowEnabled(value),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            );
+            final preview = _SurfaceGroup(
+              child: _CaptureStylePreviewRow(
                 captureStyle: widget.settingsState.captureStyle,
               ),
-              const _GroupDivider(),
-              _CaptureBorderRadiusRow(
-                borderRadius: widget.settingsState.captureStyle.borderRadius,
-                onChanged: (value) {
-                  widget.settingsState.clearCaptureStyleError();
-                  unawaited(widget.settingsState.setCaptureBorderRadius(value));
-                },
-              ),
-              const _GroupDivider(),
-              _CapturePaddingRow(
-                padding: widget.settingsState.captureStyle.padding,
-                onChanged: (value) {
-                  widget.settingsState.clearCaptureStyleError();
-                  unawaited(widget.settingsState.setCapturePadding(value));
-                },
-              ),
-              const _GroupDivider(),
-              _CaptureShadowRow(
-                shadowEnabled: widget.settingsState.captureStyle.shadowEnabled,
-                onChanged: (value) {
-                  widget.settingsState.clearCaptureStyleError();
-                  unawaited(
-                    widget.settingsState.setCaptureShadowEnabled(value),
-                  );
-                },
-              ),
-            ],
-          ),
+            );
+
+            if (!useTwoColumns) {
+              return Column(
+                children: [preview, const SizedBox(height: 16), controls],
+              );
+            }
+
+            return Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(child: controls),
+                const SizedBox(width: columnGap),
+                SizedBox(width: previewColumnWidth, child: preview),
+              ],
+            );
+          },
         ),
         const SizedBox(height: 8),
         const _SectionNote(
@@ -321,7 +364,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           const SizedBox(height: 10),
           _SectionNote(
             text: widget.settingsState.captureStyleError!,
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
       ],
@@ -403,7 +446,7 @@ class _SettingsScreenState extends State<SettingsScreen>
               if (widget.settingsState.inkEraserSizeError != null)
                 widget.settingsState.inkEraserSizeError!,
             ].join(' '),
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
       ],
@@ -461,7 +504,7 @@ class _SettingsScreenState extends State<SettingsScreen>
               if (widget.settingsState.laserFadeError != null)
                 widget.settingsState.laserFadeError!,
             ].join(' '),
-            color: _dangerColor,
+            color: context.dangerColor,
           ),
         ],
       ],
@@ -472,12 +515,14 @@ class _SettingsScreenState extends State<SettingsScreen>
   Widget build(BuildContext context) {
     final baseTheme = Theme.of(context);
     final theme = baseTheme.copyWith(
-      colorScheme: const ColorScheme.light(surface: _surfaceColor),
-      scaffoldBackgroundColor: _canvasColor,
-      dividerColor: _surfaceBorderColor,
+      colorScheme: baseTheme.colorScheme.copyWith(
+        surface: context.surfaceColor,
+      ),
+      scaffoldBackgroundColor: context.canvasColor,
+      dividerColor: context.surfaceBorderColor,
       textTheme: baseTheme.textTheme.apply(
-        bodyColor: _inkColor,
-        displayColor: _inkColor,
+        bodyColor: context.inkColor,
+        displayColor: context.inkColor,
       ),
     );
 
@@ -494,7 +539,7 @@ class _SettingsScreenState extends State<SettingsScreen>
           return KeyEventResult.ignored;
         },
         child: Material(
-          color: _canvasColor,
+          color: context.canvasColor,
           child: ListenableBuilder(
             listenable: widget.settingsState,
             builder: (context, _) {
@@ -509,9 +554,25 @@ class _SettingsScreenState extends State<SettingsScreen>
                     const SizedBox(height: 20),
                     Container(
                       decoration: BoxDecoration(
-                        color: _surfaceColor,
+                        color: context.surfaceColor.withValues(
+                          alpha: context._isDark ? 0.8 : 0.9,
+                        ),
                         borderRadius: BorderRadius.circular(16),
-                        border: Border.all(color: _surfaceBorderColor),
+                        border: Border.all(
+                          color: context.surfaceBorderColor.withValues(
+                            alpha: context._isDark ? 0.4 : 0.6,
+                          ),
+                          width: 0.5,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(
+                              alpha: context._isDark ? 0.2 : 0.04,
+                            ),
+                            blurRadius: 12,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
                       ),
                       child: Padding(
                         padding: const EdgeInsets.all(4),
@@ -521,7 +582,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                           dividerColor: Colors.transparent,
                           indicatorSize: TabBarIndicatorSize.tab,
                           indicator: BoxDecoration(
-                            color: _accentColor,
+                            color: context.accentColor,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           overlayColor: const WidgetStatePropertyAll(
@@ -530,8 +591,8 @@ class _SettingsScreenState extends State<SettingsScreen>
                           labelPadding: const EdgeInsets.symmetric(
                             horizontal: 18,
                           ),
-                          labelColor: _controlFillColor,
-                          unselectedLabelColor: _mutedInkColor,
+                          labelColor: context.controlFillColor,
+                          unselectedLabelColor: context.mutedInkColor,
                           labelStyle: Theme.of(context).textTheme.labelLarge
                               ?.copyWith(fontWeight: FontWeight.w700),
                           unselectedLabelStyle: Theme.of(context)
@@ -593,7 +654,7 @@ class _Header extends StatelessWidget {
           onPressed: onClose,
           splashRadius: 18,
           visualDensity: VisualDensity.compact,
-          color: _mutedInkColor,
+          color: context.mutedInkColor,
           icon: const Icon(Icons.close_rounded, size: 20),
         ),
       ],
@@ -611,11 +672,31 @@ class _SurfaceGroup extends StatelessWidget {
     return Container(
       width: double.infinity,
       decoration: BoxDecoration(
-        color: _surfaceColor,
+        color: context.surfaceColor.withValues(
+          alpha: context._isDark ? 0.7 : 0.85,
+        ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _surfaceBorderColor),
+        border: Border.all(
+          color: context.surfaceBorderColor.withValues(
+            alpha: context._isDark ? 0.3 : 0.6,
+          ),
+          width: 0.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: context._isDark ? 0.2 : 0.04),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
-      child: child,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(16),
+        child: BackdropFilter(
+          filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+          child: child,
+        ),
+      ),
     );
   }
 }
@@ -625,7 +706,7 @@ class _GroupDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Divider(height: 1, color: _surfaceBorderColor);
+    return Divider(height: 1, color: context.surfaceBorderColor);
   }
 }
 
@@ -653,7 +734,7 @@ class _LaunchAtLoginRow extends StatelessWidget {
             Text(
               'Unavailable',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: _mutedInkColor,
+                color: context.mutedInkColor,
                 fontWeight: FontWeight.w600,
               ),
             )
@@ -666,12 +747,12 @@ class _LaunchAtLoginRow extends StatelessWidget {
           else
             Switch.adaptive(
               value: settingsState.launchAtLoginEnabled,
-              activeTrackColor: _accentColor,
-              activeThumbColor: _controlFillColor,
-              inactiveTrackColor: _inactiveControlColor,
-              inactiveThumbColor: _controlFillColor,
-              trackOutlineColor: const WidgetStatePropertyAll(
-                _surfaceBorderColor,
+              activeTrackColor: context.accentColor,
+              activeThumbColor: context.controlFillColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              inactiveThumbColor: context.controlFillColor,
+              trackOutlineColor: WidgetStatePropertyAll(
+                context.surfaceBorderColor,
               ),
               onChanged:
                   settingsState.launchAtLoginSupported &&
@@ -707,12 +788,12 @@ class _OcrPreviewRow extends StatelessWidget {
           ),
           Switch.adaptive(
             value: settingsState.ocrPreviewEnabled,
-            activeTrackColor: _accentColor,
-            activeThumbColor: _controlFillColor,
-            inactiveTrackColor: _inactiveControlColor,
-            inactiveThumbColor: _controlFillColor,
-            trackOutlineColor: const WidgetStatePropertyAll(
-              _surfaceBorderColor,
+            activeTrackColor: context.accentColor,
+            activeThumbColor: context.controlFillColor,
+            inactiveTrackColor: context.inactiveControlColor,
+            inactiveThumbColor: context.controlFillColor,
+            trackOutlineColor: WidgetStatePropertyAll(
+              context.surfaceBorderColor,
             ),
             onChanged: (value) {
               settingsState.clearOcrPreviewError();
@@ -747,12 +828,12 @@ class _OcrOpenUrlPromptRow extends StatelessWidget {
           ),
           Switch.adaptive(
             value: settingsState.ocrOpenUrlPromptEnabled,
-            activeTrackColor: _accentColor,
-            activeThumbColor: _controlFillColor,
-            inactiveTrackColor: _inactiveControlColor,
-            inactiveThumbColor: _controlFillColor,
-            trackOutlineColor: const WidgetStatePropertyAll(
-              _surfaceBorderColor,
+            activeTrackColor: context.accentColor,
+            activeThumbColor: context.controlFillColor,
+            inactiveTrackColor: context.inactiveControlColor,
+            inactiveThumbColor: context.controlFillColor,
+            trackOutlineColor: WidgetStatePropertyAll(
+              context.surfaceBorderColor,
             ),
             onChanged: (value) {
               settingsState.clearOcrOpenUrlPromptError();
@@ -806,8 +887,8 @@ class _CaptureStylePreviewCard extends StatelessWidget {
       key: const Key('capture-style-preview'),
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _surfaceBorderColor),
-        color: _controlFillColor,
+        border: Border.all(color: context.surfaceBorderColor),
+        color: context.controlFillColor,
         gradient: const LinearGradient(
           colors: [Color(0xFFFBF7EF), Color(0xFFF1E8DB)],
           begin: Alignment.topLeft,
@@ -1085,12 +1166,12 @@ class _CaptureShadowRow extends StatelessWidget {
           ),
           Switch.adaptive(
             value: shadowEnabled,
-            activeTrackColor: _accentColor,
-            activeThumbColor: _controlFillColor,
-            inactiveTrackColor: _inactiveControlColor,
-            inactiveThumbColor: _controlFillColor,
-            trackOutlineColor: const WidgetStatePropertyAll(
-              _surfaceBorderColor,
+            activeTrackColor: context.accentColor,
+            activeThumbColor: context.controlFillColor,
+            inactiveTrackColor: context.inactiveControlColor,
+            inactiveThumbColor: context.controlFillColor,
+            trackOutlineColor: WidgetStatePropertyAll(
+              context.surfaceBorderColor,
             ),
             onChanged: onChanged,
           ),
@@ -1139,8 +1220,8 @@ class _SettingsSliderRow extends StatelessWidget {
               ),
               Text(
                 valueLabel,
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1149,10 +1230,10 @@ class _SettingsSliderRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1234,7 +1315,7 @@ class _ShortcutRow extends StatelessWidget {
                               tooltip: 'Reset',
                               splashRadius: 18,
                               visualDensity: VisualDensity.compact,
-                              color: _mutedInkColor,
+                              color: context.mutedInkColor,
                               icon: const Icon(Icons.close_rounded, size: 18),
                             )
                           : null,
@@ -1249,7 +1330,7 @@ class _ShortcutRow extends StatelessWidget {
             Text(
               error!,
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: _dangerColor,
+                color: context.dangerColor,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1276,9 +1357,9 @@ class _ShortcutButton extends StatelessWidget {
     return OutlinedButton(
       onPressed: enabled ? onPressed : null,
       style: OutlinedButton.styleFrom(
-        backgroundColor: _controlFillColor,
-        foregroundColor: _inkColor,
-        side: const BorderSide(color: _surfaceBorderColor),
+        backgroundColor: context.controlFillColor,
+        foregroundColor: context.inkColor,
+        side: BorderSide(color: context.surfaceBorderColor),
         minimumSize: const Size(_shortcutButtonWidth, 40),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(999)),
@@ -1286,7 +1367,7 @@ class _ShortcutButton extends StatelessWidget {
       child: Text(
         label,
         style: Theme.of(context).textTheme.labelLarge?.copyWith(
-          color: _inkColor,
+          color: context.inkColor,
           fontWeight: FontWeight.w700,
         ),
       ),
@@ -1295,10 +1376,10 @@ class _ShortcutButton extends StatelessWidget {
 }
 
 class _SectionNote extends StatelessWidget {
-  const _SectionNote({required this.text, this.color = _mutedInkColor});
+  const _SectionNote({required this.text, this.color});
 
   final String text;
-  final Color color;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -1307,7 +1388,7 @@ class _SectionNote extends StatelessWidget {
       child: Text(
         text,
         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-          color: color,
+          color: color ?? context.mutedInkColor,
           height: 1.45,
           fontWeight: FontWeight.w600,
         ),
@@ -1330,10 +1411,13 @@ class _InkColorRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Text(
                 'Color',
-                style: TextStyle(color: _inkColor, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: context.inkColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             for (final preset in _inkPresetColors) ...[
@@ -1373,19 +1457,19 @@ class _InkStrokeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Stroke',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 '${strokeWidth.round()}px',
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1394,10 +1478,10 @@ class _InkStrokeRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1439,19 +1523,19 @@ class _InkSmoothingRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Smoothing',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 clamped.toStringAsFixed(1),
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1460,10 +1544,10 @@ class _InkSmoothingRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1506,19 +1590,19 @@ class _InkAutoFadeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Auto-fade',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 label,
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1527,10 +1611,10 @@ class _InkAutoFadeRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1565,19 +1649,19 @@ class _InkEraserSizeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Eraser size',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 '${clamped.round()}px',
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1586,10 +1670,10 @@ class _InkEraserSizeRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1620,10 +1704,13 @@ class _LaserColorRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 20),
         child: Row(
           children: [
-            const Expanded(
+            Expanded(
               child: Text(
                 'Color',
-                style: TextStyle(color: _inkColor, fontWeight: FontWeight.w600),
+                style: TextStyle(
+                  color: context.inkColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ),
             for (final preset in _laserPresetColors) ...[
@@ -1663,19 +1750,19 @@ class _LaserSizeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Size',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 '${clamped.round()}px',
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1684,10 +1771,10 @@ class _LaserSizeRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1723,19 +1810,19 @@ class _LaserFadeRow extends StatelessWidget {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Fade',
                   style: TextStyle(
-                    color: _inkColor,
+                    color: context.inkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
               ),
               Text(
                 '${clamped.toStringAsFixed(1)}s',
-                style: const TextStyle(
-                  color: _mutedInkColor,
+                style: TextStyle(
+                  color: context.mutedInkColor,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1744,10 +1831,10 @@ class _LaserFadeRow extends StatelessWidget {
           const SizedBox(height: 6),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              activeTrackColor: _accentColor,
-              inactiveTrackColor: _inactiveControlColor,
-              thumbColor: _accentColor,
-              overlayColor: _accentColor.withValues(alpha: 0.15),
+              activeTrackColor: context.accentColor,
+              inactiveTrackColor: context.inactiveControlColor,
+              thumbColor: context.accentColor,
+              overlayColor: context.accentColor.withValues(alpha: 0.15),
               trackHeight: 3,
             ),
             child: Slider(
@@ -1787,7 +1874,9 @@ class _InkColorSwatch extends StatelessWidget {
           color: color,
           shape: BoxShape.circle,
           border: Border.all(
-            color: isSelected ? _accentColor : _surfaceBorderColor,
+            color: isSelected
+                ? context.accentColor
+                : context.surfaceBorderColor,
             width: isSelected ? 2 : 1,
           ),
         ),
@@ -1811,10 +1900,10 @@ class _InkCustomColorButton extends StatelessWidget {
       tooltip: 'Custom color',
       visualDensity: VisualDensity.compact,
       splashRadius: 18,
-      icon: const Icon(
+      icon: Icon(
         Icons.color_lens_outlined,
         size: 18,
-        color: _mutedInkColor,
+        color: context.mutedInkColor,
       ),
       onPressed: () async {
         var nextColor = currentColor;
@@ -1822,7 +1911,7 @@ class _InkCustomColorButton extends StatelessWidget {
           context: context,
           builder: (context) {
             return AlertDialog(
-              backgroundColor: _surfaceColor,
+              backgroundColor: context.surfaceColor,
               title: const Text('Pick color'),
               content: SingleChildScrollView(
                 child: ColorPicker(
@@ -2051,7 +2140,7 @@ class _ShortcutCaptureDialogState extends State<_ShortcutCaptureDialog> {
   @override
   Widget build(BuildContext context) {
     final content = Dialog(
-      backgroundColor: _surfaceColor,
+      backgroundColor: context.surfaceColor,
       insetPadding: const EdgeInsets.all(32),
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 520),
@@ -2073,7 +2162,7 @@ class _ShortcutCaptureDialogState extends State<_ShortcutCaptureDialog> {
               Text(
                 'Press the full shortcut now. Ctrl, Cmd, Option, Shift, Fn, and Caps Lock can all be used as modifiers.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: _mutedInkColor,
+                  color: context.mutedInkColor,
                   height: 1.45,
                 ),
               ),
@@ -2084,7 +2173,7 @@ class _ShortcutCaptureDialogState extends State<_ShortcutCaptureDialog> {
                 Text(
                   'Press a non-modifier key to complete the shortcut.',
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: _mutedInkColor,
+                    color: context.mutedInkColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -2094,7 +2183,7 @@ class _ShortcutCaptureDialogState extends State<_ShortcutCaptureDialog> {
                 Text(
                   _captureError!,
                   style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: _dangerColor,
+                    color: context.dangerColor,
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -2148,16 +2237,16 @@ class _ShortcutVisual extends StatelessWidget {
         for (final part in parts)
           DecoratedBox(
             decoration: BoxDecoration(
-              color: _controlFillColor,
+              color: context.controlFillColor,
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: _surfaceBorderColor),
+              border: Border.all(color: context.surfaceBorderColor),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Text(
                 part,
                 style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                  color: _inkColor,
+                  color: context.inkColor,
                   fontWeight: FontWeight.w700,
                 ),
               ),

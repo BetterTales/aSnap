@@ -127,6 +127,7 @@ ShortcutBindings _customShortcuts() {
 Future<_SettingsHarness> _pumpSettingsScreen(
   WidgetTester tester, {
   ShortcutBindings? initialShortcuts,
+  ThemeMode themeMode = ThemeMode.light,
 }) async {
   final settingsService = _FakeSettingsService();
   final hotkeyService = _FakeHotkeyService();
@@ -155,6 +156,9 @@ Future<_SettingsHarness> _pumpSettingsScreen(
 
   await tester.pumpWidget(
     MaterialApp(
+      theme: ThemeData.light(useMaterial3: true),
+      darkTheme: ThemeData.dark(useMaterial3: true),
+      themeMode: themeMode,
       home: SettingsScreen(
         settingsState: state,
         onClose: () async {},
@@ -244,6 +248,30 @@ void main() {
 
     expect(find.text('Fade'), findsOneWidget);
     expect(find.text('Save changes'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('settings screen preserves dark theme colors', (tester) async {
+    await _pumpSettingsScreen(tester, themeMode: ThemeMode.dark);
+
+    final divider = tester.widgetList<Divider>(find.byType(Divider)).first;
+
+    expect(divider.color, const Color(0xFF48484A));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('capture tab places preview to the right on desktop widths', (
+    tester,
+  ) async {
+    await _pumpSettingsScreen(tester);
+
+    await tester.tap(_tabLabel('Capture'));
+    await tester.pumpAndSettle();
+
+    final previewPosition = tester.getTopLeft(find.text('Preview'));
+    final controlsPosition = tester.getTopLeft(find.text('Border radius'));
+
+    expect(previewPosition.dx, greaterThan(controlsPosition.dx));
     expect(tester.takeException(), isNull);
   });
 
