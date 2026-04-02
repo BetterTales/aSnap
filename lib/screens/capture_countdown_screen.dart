@@ -23,6 +23,15 @@ class _CaptureCountdownScreenState extends State<CaptureCountdownScreen> {
   final FocusNode _focusNode = FocusNode();
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _focusNode.requestFocus();
+    });
+  }
+
+  @override
   void dispose() {
     _focusNode.dispose();
     super.dispose();
@@ -48,11 +57,6 @@ class _CaptureCountdownScreenState extends State<CaptureCountdownScreen> {
 
   @override
   Widget build(BuildContext context) {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _focusNode.hasFocus) return;
-      _focusNode.requestFocus();
-    });
-
     final theme = Theme.of(context);
     return Scaffold(
       backgroundColor: Colors.transparent,

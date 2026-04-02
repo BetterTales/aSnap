@@ -266,9 +266,14 @@ void main() {
   testWidgets('settings screen preserves dark theme colors', (tester) async {
     await _pumpSettingsScreen(tester, themeMode: ThemeMode.dark);
 
-    final divider = tester.widgetList<Divider>(find.byType(Divider)).first;
+    final dividers = tester
+        .widgetList<Divider>(find.byType(Divider))
+        .toList();
 
-    expect(divider.color, const Color(0xFF48484A));
+    expect(dividers, isNotEmpty);
+    for (final divider in dividers) {
+      expect(divider.color, const Color(0xFF48484A));
+    }
     expect(tester.takeException(), isNull);
   });
 

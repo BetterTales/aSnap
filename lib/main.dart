@@ -338,6 +338,7 @@ void _handleEscPressed() {
       );
       return;
     case CaptureCountdownWorkflow():
+      _cancelPendingDelayedCapture();
       return;
     case PreviewWorkflow():
     case ScrollResultWorkflow():
@@ -383,9 +384,10 @@ void _handleEscPressed() {
 }
 
 void _cancelPendingDelayedCapture() {
-  if (_pendingCaptureDelayToken == null) return;
-  _pendingCaptureDelayToken = null;
+  final token = _pendingCaptureDelayToken;
   final onCancel = _pendingCaptureDelayCancel;
+  if (token == null && onCancel == null) return;
+  _pendingCaptureDelayToken = null;
   _pendingCaptureDelayCancel = null;
   unawaited(_windowService.stopEscMonitor());
   if (onCancel != null) {
@@ -410,6 +412,7 @@ Future<void> _scheduleCaptureStart(
   _pendingCaptureDelayToken = token;
   _pendingCaptureDelayCancel = onCancel;
   var escMonitorStarted = false;
+  var escMonitorStopped = false;
 
   try {
     await _windowService.startEscMonitor();
@@ -427,17 +430,20 @@ Future<void> _scheduleCaptureStart(
       }
     }
 
-    _pendingCaptureDelayToken = null;
-    _pendingCaptureDelayCancel = null;
+    if (_pendingCaptureDelayToken != token) return;
     if (escMonitorStarted) {
-      await _windowService.stopEscMonitor();
+      try {
+        await _windowService.stopEscMonitor();
+        escMonitorStopped = true;
+      } catch (_) {}
     }
+    if (_pendingCaptureDelayToken != token) return;
     await startCapture();
   } finally {
     if (_pendingCaptureDelayToken == token) {
       _pendingCaptureDelayToken = null;
       _pendingCaptureDelayCancel = null;
-      if (escMonitorStarted) {
+      if (escMonitorStarted && !escMonitorStopped) {
         try {
           await _windowService.stopEscMonitor();
         } catch (_) {}
