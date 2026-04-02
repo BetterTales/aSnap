@@ -393,6 +393,9 @@ class WindowService {
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(useNativeShadow);
+    await _channel.invokeMethod('preparePreviewWindow', {
+      'useNativeShadow': useNativeShadow,
+    });
 
     // Center on the cursor's display
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
@@ -535,6 +538,9 @@ class WindowService {
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(useNativeShadow);
+    await _channel.invokeMethod('preparePreviewWindow', {
+      'useNativeShadow': useNativeShadow,
+    });
     await windowManager.setPosition(Offset(rect.left, rect.top));
     _currentPreviewWindowRect = rect;
     _currentPreviewScreenRect = await _screenRectForPoint(rect.center);

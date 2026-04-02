@@ -1148,12 +1148,27 @@ class _CaptureDelayRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(
-            'Delay',
-            style: Theme.of(context).textTheme.titleLarge?.copyWith(
-              fontSize: 17,
-              fontWeight: FontWeight.w600,
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Delay',
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Region only',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: context.mutedInkColor,
+                  fontWeight: FontWeight.w500,
+                  height: 1.1,
+                ),
+              ),
+            ],
           ),
           const Spacer(),
           SegmentedButton<int>(

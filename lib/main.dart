@@ -1323,6 +1323,7 @@ Future<bool> _startDelayedRegionAction({
     ),
     opacity: 0.0,
     focus: false,
+    useNativeShadow: false,
   );
   await WidgetsBinding.instance.endOfFrame;
   await _windowService.revealPreviewWindow();
@@ -2292,6 +2293,8 @@ Future<void> _handleEditPinnedImageAsync(
   // Show the preview at the pin's exact position and size so the image
   // doesn't jump or resize when entering annotation mode.
   // Keep it transparent until Flutter has rendered to avoid a flash.
+  // Annotation mode already has its own visual chrome; carrying over the
+  // native panel shadow from pin mode reads as an unwanted black border.
   if (panelFrame != null) {
     // panelFrame is in CG coordinates (absolute). Use showPreviewAtRect
     // which performs full window cleanup (restores opacity from any prior
@@ -2300,7 +2303,7 @@ Future<void> _handleEditPinnedImageAsync(
       rect: panelFrame,
       opacity: 0.0,
       focus: false,
-      useNativeShadow: !pinnedPanelImage.hasEmbeddedCaptureStyle,
+      useNativeShadow: false,
     );
   } else {
     // Fallback: center on screen if we couldn't get the panel frame.
@@ -2314,7 +2317,7 @@ Future<void> _handleEditPinnedImageAsync(
       screenOrigin: screenOrigin,
       opacity: 0.0,
       focus: false,
-      useNativeShadow: !pinnedPanelImage.hasEmbeddedCaptureStyle,
+      useNativeShadow: false,
     );
   }
 

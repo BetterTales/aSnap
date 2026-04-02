@@ -68,13 +68,6 @@ class _CaptureCountdownScreenState extends State<CaptureCountdownScreen> {
                 color: const Color(0xE61B1C1E),
                 borderRadius: BorderRadius.circular(20),
                 border: Border.all(color: const Color(0x1FFFFFFF)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x40000000),
-                    blurRadius: 24,
-                    offset: Offset(0, 14),
-                  ),
-                ],
               ),
               child: Padding(
                 padding: const EdgeInsets.symmetric(
