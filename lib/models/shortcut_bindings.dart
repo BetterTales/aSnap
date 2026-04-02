@@ -315,9 +315,6 @@ List<Map<String, dynamic>> trayShortcutDescriptors(ShortcutBindings bindings) {
   final descriptors = <Map<String, dynamic>>[];
 
   for (final entry in bindings.entries) {
-    if (entry.key == ShortcutAction.ink || entry.key == ShortcutAction.laser) {
-      continue;
-    }
     final keyEquivalent = trayKeyEquivalent(entry.value);
     if (keyEquivalent == null) continue;
     descriptors.add({

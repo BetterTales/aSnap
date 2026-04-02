@@ -278,6 +278,9 @@ Future<void> _initAfterRunApp() async {
   _trayService.onCaptureFullScreen = _handleFullScreenCapture;
   _trayService.onCaptureRegion = _handleRegionCapture;
   _trayService.onCaptureScroll = _handleScrollCapture;
+  _trayService.onOcr = _handleOcrShortcut;
+  _trayService.onInk = _handleInkKeyDown;
+  _trayService.onLaser = _handleLaserKeyDown;
   _trayService.onPin = _handlePin;
   _trayService.onOpenSettings = _handleOpenSettings;
   _trayService.onQuit = _handleQuit;

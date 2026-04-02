@@ -12,6 +12,9 @@ class TrayService with TrayListener {
   VoidCallback? onCaptureFullScreen;
   VoidCallback? onCaptureRegion;
   VoidCallback? onCaptureScroll;
+  VoidCallback? onOcr;
+  VoidCallback? onInk;
+  VoidCallback? onLaser;
   VoidCallback? onPin;
   VoidCallback? onOpenSettings;
   VoidCallback? onQuit;
@@ -22,6 +25,10 @@ class TrayService with TrayListener {
         MenuItem(key: 'capture_region', label: 'Region'),
         MenuItem(key: 'capture_scroll', label: 'Scroll'),
         MenuItem(key: 'capture_full_screen', label: 'Full Screen'),
+        MenuItem(key: 'ocr', label: 'OCR'),
+        MenuItem.separator(),
+        MenuItem(key: 'ink', label: 'Ink'),
+        MenuItem(key: 'laser', label: 'Laser'),
         MenuItem.separator(),
         MenuItem(key: 'pin', label: 'Pin'),
         MenuItem.separator(),
@@ -70,6 +77,15 @@ class TrayService with TrayListener {
         return;
       case 'capture_scroll':
         onCaptureScroll?.call();
+        return;
+      case 'ocr':
+        onOcr?.call();
+        return;
+      case 'ink':
+        onInk?.call();
+        return;
+      case 'laser':
+        onLaser?.call();
         return;
       case 'pin':
         onPin?.call();
