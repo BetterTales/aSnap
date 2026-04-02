@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import 'screens/capture_countdown_screen.dart';
 import 'screens/ink_overlay_screen.dart';
 import 'screens/preview_screen.dart';
 import 'screens/region_selection_screen.dart';
@@ -40,6 +41,7 @@ class ASnapApp extends StatelessWidget {
 
   final void Function(Rect selectionRect)? onScrollRegionSelected;
   final VoidCallback onRegionCancel;
+  final VoidCallback onCaptureCountdownCancel;
   final Future<Rect?> Function(Offset localPoint)? onHitTest;
   final VoidCallback? onScrollCaptureDone;
   final void Function(Rect cgRect)? onScrollStopButtonRect;
@@ -73,6 +75,7 @@ class ASnapApp extends StatelessWidget {
     this.onRegionPin,
     this.onScrollRegionSelected,
     required this.onRegionCancel,
+    required this.onCaptureCountdownCancel,
     this.onHitTest,
     this.onScrollCaptureDone,
     this.onScrollStopButtonRect,
@@ -180,6 +183,12 @@ class ASnapApp extends StatelessWidget {
                 captureStyle: settingsState.captureStyle,
                 captureScale: appState.captureScale,
                 showCaptureStyleChrome: appState.applyCurrentCaptureStyle,
+              );
+            case CaptureCountdownWorkflow(:final kind, :final secondsRemaining):
+              return CaptureCountdownScreen(
+                kind: kind,
+                secondsRemaining: secondsRemaining,
+                onCancel: onCaptureCountdownCancel,
               );
             case SettingsWorkflow():
               return SettingsScreen(

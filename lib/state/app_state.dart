@@ -136,6 +136,26 @@ final class ScrollResultWorkflow extends WorkflowState {
   });
 }
 
+final class CaptureCountdownWorkflow extends WorkflowState {
+  final CaptureKind kind;
+  final int secondsRemaining;
+
+  const CaptureCountdownWorkflow({
+    required this.kind,
+    required this.secondsRemaining,
+  });
+
+  CaptureCountdownWorkflow copyWith({
+    CaptureKind? kind,
+    int? secondsRemaining,
+  }) {
+    return CaptureCountdownWorkflow(
+      kind: kind ?? this.kind,
+      secondsRemaining: secondsRemaining ?? this.secondsRemaining,
+    );
+  }
+}
+
 final class SettingsWorkflow extends WorkflowState {
   const SettingsWorkflow();
 }
@@ -180,6 +200,11 @@ class AppState extends ChangeNotifier {
 
   ScrollResultWorkflow? get scrollResultWorkflow => switch (_workflow) {
     ScrollResultWorkflow state => state,
+    _ => null,
+  };
+
+  CaptureCountdownWorkflow? get captureCountdownWorkflow => switch (_workflow) {
+    CaptureCountdownWorkflow state => state,
     _ => null,
   };
 
@@ -244,10 +269,14 @@ class AppState extends ChangeNotifier {
 
   Image? get scrollPreviewImage => scrollCapturingWorkflow?.previewImage;
 
+  int? get captureCountdownSecondsRemaining =>
+      captureCountdownWorkflow?.secondsRemaining;
+
   CaptureStatus get status => switch (_workflow) {
     IdleWorkflow() => CaptureStatus.idle,
     SettingsWorkflow() => CaptureStatus.idle,
     PreparingCaptureWorkflow() => CaptureStatus.capturing,
+    CaptureCountdownWorkflow() => CaptureStatus.capturing,
     RegionSelectionWorkflow(selectionMode: SelectionMode.scroll) =>
       CaptureStatus.scrollSelecting,
     RegionSelectionWorkflow() => CaptureStatus.selecting,
@@ -382,6 +411,21 @@ class AppState extends ChangeNotifier {
         embeddedCaptureStyle: embeddedCaptureStyle,
       ),
     );
+  }
+
+  void setCaptureCountdown({
+    required CaptureKind kind,
+    required int secondsRemaining,
+  }) {
+    _transitionTo(
+      CaptureCountdownWorkflow(kind: kind, secondsRemaining: secondsRemaining),
+    );
+  }
+
+  void updateCaptureCountdown(int secondsRemaining) {
+    final countdown = captureCountdownWorkflow;
+    if (countdown == null) return;
+    _transitionTo(countdown.copyWith(secondsRemaining: secondsRemaining));
   }
 
   void setSettings() {

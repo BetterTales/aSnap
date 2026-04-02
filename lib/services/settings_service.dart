@@ -6,6 +6,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/capture_style_settings.dart';
 import '../models/shortcut_bindings.dart';
+import '../utils/capture_delay.dart';
 import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
 
@@ -68,6 +69,24 @@ class SettingsService {
     final map = await _readSettingsMap();
     final next = _normalizeSettingsMap(map);
     next['ocrOpenUrlPromptEnabled'] = enabled;
+    await _writeSettingsMap(next);
+  }
+
+  Future<int> loadCaptureDelaySeconds() async {
+    try {
+      final map = await _readSettingsMap();
+      final value = map['captureDelaySeconds'];
+      if (value is num) {
+        return normalizeCaptureDelaySeconds(value.toInt());
+      }
+    } catch (_) {}
+    return kDefaultCaptureDelaySeconds;
+  }
+
+  Future<void> saveCaptureDelaySeconds(int seconds) async {
+    final map = await _readSettingsMap();
+    final next = _normalizeSettingsMap(map);
+    next['captureDelaySeconds'] = normalizeCaptureDelaySeconds(seconds);
     await _writeSettingsMap(next);
   }
 
@@ -229,6 +248,7 @@ class SettingsService {
     if (map.containsKey('shortcuts') ||
         map.containsKey('ocrPreviewEnabled') ||
         map.containsKey('ocrOpenUrlPromptEnabled') ||
+        map.containsKey('captureDelaySeconds') ||
         map.containsKey('captureStyle') ||
         map.containsKey('inkColor') ||
         map.containsKey('inkStrokeWidth') ||

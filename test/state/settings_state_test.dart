@@ -17,6 +17,7 @@ class _FakeSettingsService extends SettingsService {
   bool failSave = false;
   bool failOcrSave = false;
   bool failOcrOpenUrlSave = false;
+  bool failCaptureDelaySave = false;
   bool failCaptureStyleSave = false;
   bool failInkColorSave = false;
   bool failInkStrokeSave = false;
@@ -29,6 +30,7 @@ class _FakeSettingsService extends SettingsService {
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
+  int? savedCaptureDelaySeconds;
   CaptureStyleSettings? savedCaptureStyle;
   Color? savedInkColor;
   double? savedInkStrokeWidth;
@@ -61,6 +63,14 @@ class _FakeSettingsService extends SettingsService {
       throw Exception('ocr open url save failed');
     }
     savedOcrOpenUrlPromptEnabled = enabled;
+  }
+
+  @override
+  Future<void> saveCaptureDelaySeconds(int seconds) async {
+    if (failCaptureDelaySave) {
+      throw Exception('capture delay save failed');
+    }
+    savedCaptureDelaySeconds = seconds;
   }
 
   @override
@@ -238,6 +248,7 @@ void main() {
       initialShortcuts: ShortcutBindings.defaults(),
       initialOcrPreviewEnabled: false,
       initialOcrOpenUrlPromptEnabled: true,
+      initialCaptureDelaySeconds: 0,
       initialCaptureStyle: const CaptureStyleSettings.defaults(),
       initialInkColor: const Color(0xFFFF0000),
       initialInkStrokeWidth: 6.0,
@@ -373,6 +384,24 @@ void main() {
 
     expect(state.captureStyle.shadowEnabled, isFalse);
     expect(state.captureStyleError, contains('capture style save failed'));
+  });
+
+  test('setCaptureDelaySeconds persists capture delay changes', () async {
+    await state.setCaptureDelaySeconds(5);
+
+    expect(state.captureDelaySeconds, 5);
+    expect(settingsService.savedCaptureDelaySeconds, 5);
+    expect(state.captureDelayError, isNull);
+  });
+
+  test('setCaptureDelaySeconds rolls back on save failure', () async {
+    settingsService.failCaptureDelaySave = true;
+
+    await state.setCaptureDelaySeconds(5);
+
+    expect(state.captureDelaySeconds, 0);
+    expect(settingsService.savedCaptureDelaySeconds, isNull);
+    expect(state.captureDelayError, contains('capture delay save failed'));
   });
 
   test('refreshLaunchAtLogin loads the native state', () async {

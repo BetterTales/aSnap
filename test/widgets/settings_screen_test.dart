@@ -22,6 +22,7 @@ class _FakeSettingsService extends SettingsService {
   ShortcutBindings? savedShortcuts;
   bool? savedOcrPreviewEnabled;
   bool? savedOcrOpenUrlPromptEnabled;
+  int? savedCaptureDelaySeconds;
   CaptureStyleSettings? savedCaptureStyle;
 
   @override
@@ -37,6 +38,11 @@ class _FakeSettingsService extends SettingsService {
   @override
   Future<void> saveOcrOpenUrlPromptEnabled(bool enabled) async {
     savedOcrOpenUrlPromptEnabled = enabled;
+  }
+
+  @override
+  Future<void> saveCaptureDelaySeconds(int seconds) async {
+    savedCaptureDelaySeconds = seconds;
   }
 
   @override
@@ -136,6 +142,7 @@ Future<_SettingsHarness> _pumpSettingsScreen(
     initialShortcuts: initialShortcuts ?? ShortcutBindings.defaults(),
     initialOcrPreviewEnabled: false,
     initialOcrOpenUrlPromptEnabled: true,
+    initialCaptureDelaySeconds: 0,
     initialCaptureStyle: const CaptureStyleSettings.defaults(),
     initialInkColor: kInkDefaultColor,
     initialInkStrokeWidth: kInkDefaultStrokeWidth,
@@ -216,6 +223,11 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Preview'), findsOneWidget);
+    expect(find.text('Delay'), findsOneWidget);
+    expect(find.text('Off'), findsOneWidget);
+    expect(find.text('3s'), findsOneWidget);
+    expect(find.text('5s'), findsOneWidget);
+    expect(find.text('10s'), findsOneWidget);
     expect(find.text('Border radius'), findsOneWidget);
     expect(find.text('Padding'), findsOneWidget);
     expect(find.text('Shadow'), findsOneWidget);
@@ -273,6 +285,22 @@ void main() {
 
     expect(previewPosition.dx, greaterThan(controlsPosition.dx));
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('capture delay presets persist immediately', (tester) async {
+    final harness = await _pumpSettingsScreen(tester);
+
+    await tester.tap(_tabLabel('Capture'));
+    await tester.pumpAndSettle();
+
+    final segmentedButton = tester.widget<SegmentedButton<int>>(
+      find.byWidgetPredicate((widget) => widget is SegmentedButton<int>),
+    );
+    segmentedButton.onSelectionChanged!({5});
+    await tester.pumpAndSettle();
+
+    expect(harness.state.captureDelaySeconds, 5);
+    expect(harness.settingsService.savedCaptureDelaySeconds, 5);
   });
 
   testWidgets('shortcut rows render in shortcuts tab', (tester) async {

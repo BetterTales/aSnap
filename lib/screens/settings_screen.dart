@@ -10,6 +10,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import '../models/capture_style_settings.dart';
 import '../models/shortcut_bindings.dart';
 import '../state/settings_state.dart';
+import '../utils/capture_delay.dart';
 import '../utils/capture_style_renderer.dart';
 import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
@@ -301,6 +302,16 @@ class _SettingsScreenState extends State<SettingsScreen>
             final controls = _SurfaceGroup(
               child: Column(
                 children: [
+                  _CaptureDelayRow(
+                    delaySeconds: widget.settingsState.captureDelaySeconds,
+                    onChanged: (value) {
+                      widget.settingsState.clearCaptureDelayError();
+                      unawaited(
+                        widget.settingsState.setCaptureDelaySeconds(value),
+                      );
+                    },
+                  ),
+                  const _GroupDivider(),
                   _CaptureBorderRadiusRow(
                     borderRadius:
                         widget.settingsState.captureStyle.borderRadius,
@@ -358,8 +369,15 @@ class _SettingsScreenState extends State<SettingsScreen>
         const SizedBox(height: 8),
         const _SectionNote(
           text:
-              'Border radius, padding, and shadow are persistent defaults for copied, saved, and pinned captures.',
+              'Delay applies after you select a region and start Copy, Save, Pin, or OCR. Border radius, padding, and shadow remain persistent capture defaults.',
         ),
+        if (widget.settingsState.captureDelayError != null) ...[
+          const SizedBox(height: 10),
+          _SectionNote(
+            text: widget.settingsState.captureDelayError!,
+            color: context.dangerColor,
+          ),
+        ],
         if (widget.settingsState.captureStyleError != null) ...[
           const SizedBox(height: 10),
           _SectionNote(
@@ -1112,6 +1130,68 @@ class _CaptureBorderRadiusRow extends StatelessWidget {
       divisions: (kCaptureStyleMaxBorderRadius - kCaptureStyleMinBorderRadius)
           .round(),
       onChanged: onChanged,
+    );
+  }
+}
+
+class _CaptureDelayRow extends StatelessWidget {
+  const _CaptureDelayRow({required this.delaySeconds, required this.onChanged});
+
+  final int delaySeconds;
+  final ValueChanged<int> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedDelaySeconds = normalizeCaptureDelaySeconds(delaySeconds);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Text(
+            'Delay',
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+              fontSize: 17,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          SegmentedButton<int>(
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment<int>(value: 0, label: Text('Off')),
+              ButtonSegment<int>(value: 3, label: Text('3s')),
+              ButtonSegment<int>(value: 5, label: Text('5s')),
+              ButtonSegment<int>(value: 10, label: Text('10s')),
+            ],
+            selected: {selectedDelaySeconds},
+            onSelectionChanged: (selection) => onChanged(selection.first),
+            style: ButtonStyle(
+              backgroundColor: WidgetStateProperty.resolveWith((states) {
+                return states.contains(WidgetState.selected)
+                    ? context.accentColor
+                    : context.controlFillColor;
+              }),
+              foregroundColor: WidgetStateProperty.resolveWith((states) {
+                return states.contains(WidgetState.selected)
+                    ? context.controlFillColor
+                    : context.inkColor;
+              }),
+              side: WidgetStatePropertyAll(
+                BorderSide(color: context.surfaceBorderColor),
+              ),
+              padding: const WidgetStatePropertyAll(
+                EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              ),
+              textStyle: WidgetStatePropertyAll(
+                Theme.of(
+                  context,
+                ).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
