@@ -70,6 +70,25 @@ void main() {
     });
   });
 
+  group('capture countdown workflow', () {
+    test('stores countdown state and reports capturing status', () {
+      state.setCaptureCountdown(kind: CaptureKind.region, secondsRemaining: 3);
+
+      expect(state.workflow, isA<CaptureCountdownWorkflow>());
+      expect(state.captureCountdownSecondsRemaining, 3);
+      expect(state.status, CaptureStatus.capturing);
+    });
+
+    test('updates countdown seconds in place', () {
+      state.setCaptureCountdown(kind: CaptureKind.region, secondsRemaining: 5);
+
+      state.updateCaptureCountdown(4);
+
+      expect(state.workflow, isA<CaptureCountdownWorkflow>());
+      expect(state.captureCountdownSecondsRemaining, 4);
+    });
+  });
+
   group('setCapturedImage', () {
     testWidgets('stores image and transitions to captured', (tester) async {
       final image = await _createTestImage();

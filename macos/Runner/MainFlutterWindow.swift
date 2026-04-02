@@ -688,6 +688,11 @@ class MainFlutterWindow: NSWindow {
         self.refreshOverlayCursorIfNeeded()
         MainFlutterWindow.log("revealInkOverlay: alpha=1")
         result(nil)
+      case "preparePreviewWindow":
+        let args = call.arguments as? [String: Any]
+        let useNativeShadow = args?["useNativeShadow"] as? Bool ?? true
+        self.preparePreviewWindow(useNativeShadow: useNativeShadow)
+        result(nil)
       case "cleanupOverlayMode":
         // Overlay cleanup that also restores styleMask (needed so
         // window_manager's setTitleBarStyle won't crash on a borderless
@@ -2248,6 +2253,24 @@ class MainFlutterWindow: NSWindow {
     self.ignoresMouseEvents = false
     self.acceptsMouseMovedEvents = false
     self.setOverlayCursorHidden(false)
+  }
+
+  private func preparePreviewWindow(useNativeShadow: Bool) {
+    self.backgroundColor = .clear
+    self.contentView?.wantsLayer = true
+    self.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+    self.setFlutterSurfaceOpaque(false)
+    self.hasShadow = useNativeShadow
+
+    DispatchQueue.main.async { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+      self?.setFlutterSurfaceOpaque(false)
+    }
   }
 
   // MARK: - OCR

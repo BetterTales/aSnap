@@ -8,6 +8,7 @@ import '../services/hotkey_service.dart';
 import '../services/settings_service.dart';
 import '../services/tray_service.dart';
 import '../services/window_service.dart';
+import '../utils/capture_delay.dart';
 import '../utils/ink_defaults.dart';
 import '../utils/laser_defaults.dart';
 
@@ -16,6 +17,7 @@ class SettingsState extends ChangeNotifier {
     required ShortcutBindings initialShortcuts,
     required bool initialOcrPreviewEnabled,
     required bool initialOcrOpenUrlPromptEnabled,
+    required int initialCaptureDelaySeconds,
     required CaptureStyleSettings initialCaptureStyle,
     required Color initialInkColor,
     required double initialInkStrokeWidth,
@@ -32,6 +34,9 @@ class SettingsState extends ChangeNotifier {
   }) : _shortcuts = initialShortcuts,
        _ocrPreviewEnabled = initialOcrPreviewEnabled,
        _ocrOpenUrlPromptEnabled = initialOcrOpenUrlPromptEnabled,
+       _captureDelaySeconds = normalizeCaptureDelaySeconds(
+         initialCaptureDelaySeconds,
+       ),
        _captureStyle = initialCaptureStyle,
        _inkColor = initialInkColor,
        _inkStrokeWidth = initialInkStrokeWidth,
@@ -65,6 +70,12 @@ class SettingsState extends ChangeNotifier {
 
   String? _ocrOpenUrlPromptError;
   String? get ocrOpenUrlPromptError => _ocrOpenUrlPromptError;
+
+  int _captureDelaySeconds = kDefaultCaptureDelaySeconds;
+  int get captureDelaySeconds => _captureDelaySeconds;
+
+  String? _captureDelayError;
+  String? get captureDelayError => _captureDelayError;
 
   CaptureStyleSettings _captureStyle = const CaptureStyleSettings.defaults();
   CaptureStyleSettings get captureStyle => _captureStyle;
@@ -278,6 +289,29 @@ class SettingsState extends ChangeNotifier {
   void clearOcrOpenUrlPromptError() {
     if (_ocrOpenUrlPromptError == null) return;
     _ocrOpenUrlPromptError = null;
+    notifyListeners();
+  }
+
+  Future<void> setCaptureDelaySeconds(int seconds) async {
+    final normalized = normalizeCaptureDelaySeconds(seconds);
+    if (_captureDelaySeconds == normalized) return;
+    final previous = _captureDelaySeconds;
+    _captureDelaySeconds = normalized;
+    _captureDelayError = null;
+    notifyListeners();
+
+    try {
+      await _settingsService.saveCaptureDelaySeconds(normalized);
+    } catch (error) {
+      _captureDelaySeconds = previous;
+      _captureDelayError = error.toString();
+      notifyListeners();
+    }
+  }
+
+  void clearCaptureDelayError() {
+    if (_captureDelayError == null) return;
+    _captureDelayError = null;
     notifyListeners();
   }
 

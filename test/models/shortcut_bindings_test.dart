@@ -43,4 +43,15 @@ void main() {
 
     expect(label, Platform.isMacOS ? '⇧⌘A' : 'Meta + Shift + A');
   });
+
+  test('trayShortcutDescriptors includes OCR, Ink, and Laser labels', () {
+    final descriptors = trayShortcutDescriptors(ShortcutBindings.defaults());
+    final labels = descriptors
+        .map((descriptor) => descriptor['label'] as String)
+        .toSet();
+
+    expect(labels, contains(ShortcutAction.ocr.label));
+    expect(labels, contains(ShortcutAction.ink.label));
+    expect(labels, contains(ShortcutAction.laser.label));
+  });
 }

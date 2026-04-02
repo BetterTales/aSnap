@@ -393,6 +393,15 @@ class WindowService {
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(useNativeShadow);
+    if (Platform.isMacOS) {
+      try {
+        await _channel.invokeMethod('preparePreviewWindow', {
+          'useNativeShadow': useNativeShadow,
+        });
+      } on MissingPluginException {
+        // Older or mismatched native builds may not implement this method.
+      }
+    }
 
     // Center on the cursor's display
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
@@ -535,6 +544,15 @@ class WindowService {
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(useNativeShadow);
+    if (Platform.isMacOS) {
+      try {
+        await _channel.invokeMethod('preparePreviewWindow', {
+          'useNativeShadow': useNativeShadow,
+        });
+      } on MissingPluginException {
+        // Older or mismatched native builds may not implement this method.
+      }
+    }
     await windowManager.setPosition(Offset(rect.left, rect.top));
     _currentPreviewWindowRect = rect;
     _currentPreviewScreenRect = await _screenRectForPoint(rect.center);

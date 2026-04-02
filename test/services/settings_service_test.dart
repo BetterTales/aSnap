@@ -28,6 +28,7 @@ void main() {
     final shortcuts = await service.loadShortcutBindings();
     final ocrPreview = await service.loadOcrPreviewEnabled();
     final ocrOpenUrlPrompt = await service.loadOcrOpenUrlPromptEnabled();
+    final captureDelaySeconds = await service.loadCaptureDelaySeconds();
     final captureStyle = await service.loadCaptureStyle();
     final inkColor = await service.loadInkColor();
     final inkStrokeWidth = await service.loadInkStrokeWidth();
@@ -41,6 +42,7 @@ void main() {
     expect(shortcuts.encodeJson(), ShortcutBindings.defaults().encodeJson());
     expect(ocrPreview, isFalse);
     expect(ocrOpenUrlPrompt, isTrue);
+    expect(captureDelaySeconds, 0);
     expect(captureStyle, const CaptureStyleSettings.defaults());
     expect(inkColor, kInkDefaultColor);
     expect(inkStrokeWidth, kInkDefaultStrokeWidth);
@@ -65,6 +67,33 @@ void main() {
     expect(ocrPreview, isTrue);
   });
 
+  test('loads a persisted capture delay preset', () async {
+    final dir = await _tempDir();
+    final file = File('${dir.path}/settings.json');
+    await file.writeAsString(jsonEncode({'captureDelaySeconds': 5}));
+    final service = SettingsService(supportDirectoryProvider: () async => dir);
+
+    final captureDelaySeconds = await service.loadCaptureDelaySeconds();
+
+    expect(captureDelaySeconds, 5);
+  });
+
+  test(
+    'falls back to off for invalid persisted capture delay values',
+    () async {
+      final dir = await _tempDir();
+      final file = File('${dir.path}/settings.json');
+      await file.writeAsString(jsonEncode({'captureDelaySeconds': 4}));
+      final service = SettingsService(
+        supportDirectoryProvider: () async => dir,
+      );
+
+      final captureDelaySeconds = await service.loadCaptureDelaySeconds();
+
+      expect(captureDelaySeconds, 0);
+    },
+  );
+
   test('persists OCR preview flag alongside shortcuts', () async {
     final dir = await _tempDir();
     final service = SettingsService(supportDirectoryProvider: () async => dir);
@@ -76,6 +105,7 @@ void main() {
     await service.saveShortcutBindings(updated);
     await service.saveOcrPreviewEnabled(true);
     await service.saveOcrOpenUrlPromptEnabled(false);
+    await service.saveCaptureDelaySeconds(10);
     await service.saveCaptureStyle(
       const CaptureStyleSettings(
         borderRadius: 18,
@@ -95,6 +125,7 @@ void main() {
     var map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
+    expect(map['captureDelaySeconds'], 10);
     expect(map['captureStyle'], {
       'borderRadius': 18.0,
       'padding': 24.0,
@@ -115,6 +146,7 @@ void main() {
     map = await _readSettings(dir);
     expect(map['ocrPreviewEnabled'], isTrue);
     expect(map['ocrOpenUrlPromptEnabled'], isFalse);
+    expect(map['captureDelaySeconds'], 10);
     expect(map['captureStyle'], {
       'borderRadius': 18.0,
       'padding': 24.0,
