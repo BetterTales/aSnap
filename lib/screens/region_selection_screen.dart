@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 import 'dart:ui' as ui;
 
@@ -12,8 +13,10 @@ import '../models/annotation_hit_test.dart';
 import '../models/selection_handle.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
+import '../utils/hardware_keyboard_helpers.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
+import '../widgets/floating_annotation_toolbar.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
 import '../widgets/tool_popover_mixin.dart';
@@ -103,6 +106,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   // -- Interaction state --
   _SelectionPhase _phase = _SelectionPhase.hovering;
   Offset _current = Offset.zero;
+  bool _hasPointerPosition = false;
 
   // Drawing phase: start point for the initial drag.
   Offset? _drawStart;
@@ -147,10 +151,10 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   AnnotationState? get nativeToolbarAnnotationState => widget.annotationState;
 
   @override
-  bool get nativeToolbarShowPin => widget.onPin != null;
+  bool get nativeToolbarShowPin => Platform.isMacOS && widget.onPin != null;
 
   @override
-  bool get nativeToolbarShowOcr => widget.onOcr != null;
+  bool get nativeToolbarShowOcr => Platform.isMacOS && widget.onOcr != null;
 
   @override
   void initState() {
@@ -273,6 +277,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
         setState(() {
           _drawStart = pos;
           _current = pos;
+          _hasPointerPosition = true;
           _phase = _SelectionPhase.drawing;
           // Keep _detectedWindowRect for potential click selection.
         });
@@ -399,6 +404,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           _selectionRect = null;
           _drawStart = pos;
           _current = pos;
+          _hasPointerPosition = true;
           _phase = _SelectionPhase.drawing;
         });
 
@@ -418,6 +424,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       case _SelectionPhase.drawing:
         setState(() {
           _current = pos;
+          _hasPointerPosition = true;
         });
 
       case _SelectionPhase.resizing:
@@ -431,6 +438,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
               screenSize,
             );
             _current = pos;
+            _hasPointerPosition = true;
           });
         }
 
@@ -441,6 +449,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
           setState(() {
             _selectionRect = clampToScreen(moved, screenSize);
             _current = pos;
+            _hasPointerPosition = true;
           });
         }
 
@@ -680,34 +689,27 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
   bool _handleKeyEvent(KeyEvent event) {
     if (event is! KeyDownEvent) return false;
 
-    final meta =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaRight,
-        );
-    final shift =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftRight,
-        );
+    final primaryModifier = isPrimaryShortcutModifierPressed();
+    final shift = isShiftModifierPressed();
 
-    // Cmd+Shift+Z → redo
-    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Shift+Z -> redo
+    if (primaryModifier &&
+        shift &&
+        event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState?.redo();
       return true;
     }
-    // Cmd+Z → undo
-    if (meta && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Z -> undo
+    if (primaryModifier && event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState?.undo();
       return true;
     }
 
-    // Cmd+Shift+P → pin to screen
-    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+    // Pin stays macOS-only until the native pinned window flow is ported.
+    if (Platform.isMacOS &&
+        primaryModifier &&
+        shift &&
+        event.logicalKey == LogicalKeyboardKey.keyP) {
       _handleToolbarPin();
       return true;
     }
@@ -938,6 +940,7 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
             fallbackAnchor: computeFloatingToolbarAnchor(
               anchorRect: toolbarAnchorRect,
               screenSize: screenSize,
+              toolbarHeight: kNativeToolbarFallbackHeight,
             ),
           )
         : null;
@@ -954,10 +957,14 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (showToolbar) {
-        syncNativeToolbar(
-          placement: NativeToolbarPlacement.belowAnchor,
-          anchorRect: toolbarAnchorRect,
-        );
+        if (Platform.isMacOS) {
+          syncNativeToolbar(
+            placement: NativeToolbarPlacement.belowAnchor,
+            anchorRect: toolbarAnchorRect,
+          );
+        } else {
+          hideNativeToolbar();
+        }
       } else {
         hideNativeToolbar();
       }
@@ -969,10 +976,11 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
       child: MouseRegion(
         cursor: _currentCursor,
         onHover: (event) {
-          if (event.localPosition == _current) return;
+          if (_hasPointerPosition && event.localPosition == _current) return;
           final pos = event.localPosition;
           setState(() {
             _current = pos;
+            _hasPointerPosition = true;
           });
 
           // Only fire AX/geometric hit tests during hovering phase.
@@ -1001,8 +1009,9 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                       : null,
                   cursorPosition: _current,
                   isDrawing:
-                      _phase == _SelectionPhase.hovering ||
-                      _phase == _SelectionPhase.drawing,
+                      (_phase == _SelectionPhase.hovering ||
+                          _phase == _SelectionPhase.drawing) &&
+                      _hasPointerPosition,
                   showHandles: _showHandles,
                   devicePixelRatio: dpr,
                   screenSize: screenSize,
@@ -1070,13 +1079,32 @@ class _RegionSelectionScreenState extends State<RegionSelectionScreen>
                 ),
               ),
 
-            if (showToolbar)
+            if (showToolbar && Platform.isMacOS)
               Positioned(
                 left: toolbarAnchor!.dx,
                 top: toolbarAnchor.dy,
                 child: CompositedTransformTarget(
                   link: _popoverAnchorLink,
                   child: const SizedBox(width: 1, height: 1),
+                ),
+              ),
+            if (showToolbar && !Platform.isMacOS)
+              Positioned(
+                left: toolbarAnchor!.dx,
+                top: toolbarAnchor.dy,
+                child: FractionalTranslation(
+                  translation: const Offset(-0.5, 0),
+                  child: FloatingAnnotationToolbar(
+                    anchorLink: _popoverAnchorLink,
+                    activeTool: activeShapeType,
+                    onToolPressed: handleToolTap,
+                    onActionPressed: handleNativeToolbarAction,
+                    showPin: Platform.isMacOS && widget.onPin != null,
+                    showHistoryControls: true,
+                    canUndo: widget.annotationState?.canUndo ?? false,
+                    canRedo: widget.annotationState?.canRedo ?? false,
+                    showOcr: Platform.isMacOS && widget.onOcr != null,
+                  ),
                 ),
               ),
           ],

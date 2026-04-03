@@ -199,6 +199,8 @@ class WindowService {
   /// Minimum preview window size for normal (non-scroll) captures.
   /// Scroll captures use a fullscreen overlay instead of this window.
   static const _minPreviewSize = Size(80, 60);
+  static const _windowsFixedScrollPreviewSize = Size(960, 720);
+  static const _scrollPreviewMaxScreenFraction = 0.85;
   static const _channel = MethodChannel('com.asnap/window');
   int _toolbarRequestId = 0;
   final int _toolbarSessionId = DateTime.now().microsecondsSinceEpoch;
@@ -214,7 +216,7 @@ class WindowService {
   /// Called when the native Esc key monitor detects Escape during capture setup.
   VoidCallback? onEscPressed;
 
-  /// Called when the native scroll-stop button panel is clicked.
+  /// Called when the native scroll-stop button is clicked.
   VoidCallback? onScrollCaptureDone;
 
   /// Called when background rect polling delivers updated window rects.
@@ -253,6 +255,21 @@ class WindowService {
 
   Rect? get currentPreviewWindowRect => _currentPreviewWindowRect;
   Rect? get currentPreviewScreenRect => _currentPreviewScreenRect;
+
+  bool _effectivePreviewShadow(bool useNativeShadow) {
+    if (Platform.isWindows) {
+      return false;
+    }
+    return useNativeShadow;
+  }
+
+  TitleBarStyle _previewTitleBarStyle() {
+    return Platform.isWindows ? TitleBarStyle.normal : TitleBarStyle.hidden;
+  }
+
+  bool _previewWindowButtonsVisible() {
+    return !Platform.isWindows;
+  }
 
   Future<void> ensureInitialized() async {
     await windowManager.ensureInitialized();
@@ -325,8 +342,8 @@ class WindowService {
   Future<void> hideOnReady() async {
     await windowManager.waitUntilReadyToShow(
       const WindowOptions(
-        size: Size(200, 200),
-        center: true,
+        size: Size(1, 1),
+        center: false,
         skipTaskbar: true,
         titleBarStyle: TitleBarStyle.hidden,
       ),
@@ -349,6 +366,7 @@ class WindowService {
     bool useNativeShadow = true,
   }) async {
     if (imageWidth <= 0 || imageHeight <= 0) return null;
+    final effectiveUseNativeShadow = _effectivePreviewShadow(useNativeShadow);
 
     // Ensure hidden before cleanup to avoid any transient redraw while
     // transitioning from full-screen overlay to preview.
@@ -359,6 +377,8 @@ class WindowService {
 
     final maxW = screenSize.width * 0.8;
     final maxH = screenSize.height * 0.8;
+    const reservedToolbarHeight = 0.0;
+    final maxImageH = (maxH - reservedToolbarHeight).clamp(1.0, maxH);
 
     // Size window to image aspect ratio (toolbar floats over image)
     final imageAspect = imageWidth / imageHeight;
@@ -369,34 +389,37 @@ class WindowService {
       winW = maxW;
       winH = winW / imageAspect;
     }
-    if (winH > maxH) {
-      winH = maxH;
+    if (winH > maxImageH) {
+      winH = maxImageH;
       winW = winH * imageAspect;
     }
 
     winW = winW.clamp(_minPreviewSize.width, maxW);
-    winH = winH.clamp(_minPreviewSize.height, maxH);
+    final minImageH = maxImageH < _minPreviewSize.height
+        ? maxImageH
+        : _minPreviewSize.height;
+    winH = winH.clamp(minImageH, maxImageH);
 
-    final previewSize = Size(winW, winH);
+    final previewSize = Size(winW, winH + reservedToolbarHeight);
 
     await windowManager.setMinimumSize(const Size(0, 0));
     await windowManager.setMaximumSize(
       Size(screenSize.width, screenSize.height),
     );
     await windowManager.setTitleBarStyle(
-      TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      _previewTitleBarStyle(),
+      windowButtonVisibility: _previewWindowButtonsVisible(),
     );
     await windowManager.setSize(previewSize);
     await windowManager.setMinimumSize(previewSize);
     await windowManager.setMaximumSize(previewSize);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
-    await windowManager.setHasShadow(useNativeShadow);
-    if (Platform.isMacOS) {
+    await windowManager.setHasShadow(effectiveUseNativeShadow);
+    if (Platform.isMacOS || Platform.isWindows) {
       try {
         await _channel.invokeMethod('preparePreviewWindow', {
-          'useNativeShadow': useNativeShadow,
+          'useNativeShadow': effectiveUseNativeShadow,
         });
       } on MissingPluginException {
         // Older or mismatched native builds may not implement this method.
@@ -526,6 +549,7 @@ class WindowService {
     bool focus = true,
     bool useNativeShadow = true,
   }) async {
+    final effectiveUseNativeShadow = _effectivePreviewShadow(useNativeShadow);
     await windowManager.hide();
     await _channel.invokeMethod('cleanupOverlayMode');
 
@@ -535,19 +559,19 @@ class WindowService {
       const Size(double.infinity, double.infinity),
     );
     await windowManager.setTitleBarStyle(
-      TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      _previewTitleBarStyle(),
+      windowButtonVisibility: _previewWindowButtonsVisible(),
     );
     await windowManager.setSize(size);
     await windowManager.setMinimumSize(size);
     await windowManager.setMaximumSize(size);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
-    await windowManager.setHasShadow(useNativeShadow);
-    if (Platform.isMacOS) {
+    await windowManager.setHasShadow(effectiveUseNativeShadow);
+    if (Platform.isMacOS || Platform.isWindows) {
       try {
         await _channel.invokeMethod('preparePreviewWindow', {
-          'useNativeShadow': useNativeShadow,
+          'useNativeShadow': effectiveUseNativeShadow,
         });
       } on MissingPluginException {
         // Older or mismatched native builds may not implement this method.
@@ -559,6 +583,9 @@ class WindowService {
 
     await windowManager.setOpacity(opacity);
     await windowManager.show();
+    if (opacity > 0.99) {
+      await _channel.invokeMethod('flushPendingToolbarPanel');
+    }
     if (focus) {
       await _focusAndActivateWindow();
       await Future<void>.delayed(const Duration(milliseconds: 40));
@@ -569,6 +596,7 @@ class WindowService {
   Future<void> revealPreviewWindow() async {
     // Use native method to reveal and trigger pending toolbar update.
     await _channel.invokeMethod('revealPreviewWindow');
+    await _channel.invokeMethod('flushPendingToolbarPanel');
     await Future<void>.delayed(const Duration(milliseconds: 40));
     await _focusAndActivateWindow();
   }
@@ -609,9 +637,13 @@ class WindowService {
   /// the mouse cursor (used for ⌘⇧1 fullscreen capture).  When true, captures
   /// all connected displays as a single composite (used for ⌘⇧2 region
   /// selection so the user can drag across monitors).
-  Future<ScreenCapture?> captureScreen({bool allDisplays = false}) async {
+  Future<ScreenCapture?> captureScreen({
+    bool allDisplays = false,
+    bool includeLayeredWindows = true,
+  }) async {
     final result = await _channel.invokeMethod<Map>('captureScreen', {
       'allDisplays': allDisplays,
+      'includeLayeredWindows': includeLayeredWindows,
     });
     if (result == null) return null;
     return ScreenCapture(
@@ -746,15 +778,21 @@ class WindowService {
     );
   }
 
-  /// Capture a rectangular region of the screen (all visible content).
+  /// Capture a rectangular region of the screen.
   /// [region] is in CG coordinates (top-left origin).
+  /// When [includeLayeredWindows] is false, layered/topmost overlays are
+  /// excluded where the platform capture API supports it.
   /// Returns raw BGRA pixel data, or null if capture fails.
-  Future<ScreenCapture?> captureRegion(Rect region) async {
+  Future<ScreenCapture?> captureRegion(
+    Rect region, {
+    bool includeLayeredWindows = true,
+  }) async {
     final result = await _channel.invokeMethod<Map>('captureRegion', {
       'x': region.left,
       'y': region.top,
       'width': region.width,
       'height': region.height,
+      'includeLayeredWindows': includeLayeredWindows,
     });
     if (result == null) return null;
     return ScreenCapture(
@@ -773,10 +811,10 @@ class WindowService {
     );
   }
 
-  /// Show a small native NSPanel covering [cgRect] (CG coordinates) so the
-  /// "Done" button in the Flutter overlay becomes clickable.  The overlay
-  /// window has `ignoresMouseEvents = true` for scroll passthrough; this
-  /// separate panel provides the click target.
+  /// Show a small native button covering [cgRect] (screen coordinates) so the
+  /// "Done" affordance in the Flutter overlay becomes clickable. The overlay
+  /// window ignores mouse events for scroll passthrough, so this separate
+  /// native surface provides the click target.
   Future<void> showScrollStopButton(Rect cgRect) async {
     await _channel.invokeMethod('showScrollStopButton', {
       'x': cgRect.left,
@@ -786,7 +824,7 @@ class WindowService {
     });
   }
 
-  /// Remove the native scroll-stop button panel.
+  /// Remove the native scroll-stop button.
   Future<void> hideScrollStopButton() async {
     await _channel.invokeMethod('hideScrollStopButton');
   }
@@ -805,6 +843,20 @@ class WindowService {
     await _channel.invokeMethod('exitScrollCaptureMode');
   }
 
+  Size _windowsScrollPreviewSize(Size screenSize) {
+    final maxWidth = screenSize.width * _scrollPreviewMaxScreenFraction;
+    final maxHeight = screenSize.height * _scrollPreviewMaxScreenFraction;
+    final width = _windowsFixedScrollPreviewSize.width.clamp(
+      _minPreviewSize.width,
+      maxWidth,
+    );
+    final height = _windowsFixedScrollPreviewSize.height.clamp(
+      _minPreviewSize.height,
+      maxHeight,
+    );
+    return Size(width, height);
+  }
+
   /// Show scroll capture preview: fixed window sized for tall images.
   /// Returns the computed window size for toolbar positioning.
   Future<Size?> showScrollPreview({
@@ -812,52 +864,72 @@ class WindowService {
     required int imageHeight,
     required Size screenSize,
     required Offset screenOrigin,
+    double opacity = 1.0,
+    bool focus = true,
   }) async {
     if (imageWidth <= 0 || imageHeight <= 0) return null;
+    final effectiveUseNativeShadow = _effectivePreviewShadow(true);
 
     // Ensure hidden before cleanup to avoid transition flash.
     await windowManager.hide();
     // Same as showPreview(): cleanup without style restoration to prevent flash.
     await _channel.invokeMethod('cleanupOverlayMode');
+    final previewSize = Platform.isWindows
+        ? _windowsScrollPreviewSize(screenSize)
+        : () {
+            final maxW = screenSize.width * 0.8;
+            final maxH = screenSize.height * 0.85;
+            const reservedToolbarHeight = 0.0;
+            final maxImageH = (maxH - reservedToolbarHeight).clamp(1.0, maxH);
 
-    final maxW = screenSize.width * 0.8;
-    final maxH = screenSize.height * 0.85;
+            // Size to image aspect ratio, clamped to screen bounds.
+            // Tall scroll captures will naturally be constrained by maxH
+            // and the Flutter widget provides scrolling.
+            final imageAspect = imageWidth / imageHeight;
+            var winW = imageWidth.toDouble();
+            var winH = imageHeight.toDouble();
 
-    // Size to image aspect ratio, clamped to screen bounds.
-    // Tall scroll captures will naturally be constrained by maxH
-    // and the Flutter widget provides scrolling.
-    final imageAspect = imageWidth / imageHeight;
-    var winW = imageWidth.toDouble();
-    var winH = imageHeight.toDouble();
+            if (winW > maxW) {
+              winW = maxW;
+              winH = winW / imageAspect;
+            }
+            if (winH > maxImageH) {
+              winH = maxImageH;
+              winW = winH * imageAspect;
+            }
 
-    if (winW > maxW) {
-      winW = maxW;
-      winH = winW / imageAspect;
-    }
-    if (winH > maxH) {
-      winH = maxH;
-      winW = winH * imageAspect;
-    }
+            winW = winW.clamp(_minPreviewSize.width, maxW);
+            final minImageH = maxImageH < _minPreviewSize.height
+                ? maxImageH
+                : _minPreviewSize.height;
+            winH = winH.clamp(minImageH, maxImageH);
 
-    winW = winW.clamp(_minPreviewSize.width, maxW);
-    winH = winH.clamp(_minPreviewSize.height, maxH);
-
-    final previewSize = Size(winW, winH);
+            return Size(winW, winH + reservedToolbarHeight);
+          }();
 
     await windowManager.setMinimumSize(const Size(0, 0));
     await windowManager.setMaximumSize(
       Size(screenSize.width, screenSize.height),
     );
     await windowManager.setTitleBarStyle(
-      TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      _previewTitleBarStyle(),
+      windowButtonVisibility: _previewWindowButtonsVisible(),
     );
     await windowManager.setSize(previewSize);
     await windowManager.setMinimumSize(previewSize);
     await windowManager.setMaximumSize(previewSize);
     await windowManager.setAlwaysOnTop(true);
     await windowManager.setSkipTaskbar(true);
-    await windowManager.setHasShadow(true);
+    await windowManager.setHasShadow(effectiveUseNativeShadow);
+    if (Platform.isMacOS || Platform.isWindows) {
+      try {
+        await _channel.invokeMethod('preparePreviewWindow', {
+          'useNativeShadow': effectiveUseNativeShadow,
+        });
+      } on MissingPluginException {
+        // Older or mismatched native builds may not implement this method.
+      }
+    }
 
     final x = screenOrigin.dx + (screenSize.width - previewSize.width) / 2;
     final y = screenOrigin.dy + (screenSize.height - previewSize.height) / 2;
@@ -877,23 +949,35 @@ class WindowService {
 
     // Restore opacity right before show — cleanupOverlayState leaves alpha=0
     // to prevent flash during styleMask restoration.
-    await windowManager.setOpacity(1.0);
+    await windowManager.setOpacity(opacity);
     await windowManager.show();
-    await _focusAndActivateWindow();
-    await Future<void>.delayed(const Duration(milliseconds: 40));
-    await _focusAndActivateWindow();
+    if (opacity > 0.99) {
+      await _channel.invokeMethod('flushPendingToolbarPanel');
+    }
+    if (focus) {
+      await _focusAndActivateWindow();
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+      await _focusAndActivateWindow();
+    }
 
     return previewSize;
   }
 
   Future<void> hidePreview() async {
-    // Hide only — defer overlay cleanup to the next showPreview() call.
-    // Restoring styleMask on a "hidden" window can still flash because macOS
-    // may briefly redisplay the window when styleMask changes.
-    await windowManager.hide();
+    // On macOS we defer overlay cleanup to the next show transition to avoid
+    // a flash during style restoration. On Windows we restore immediately so
+    // popup/overlay window styles do not leave behind stale frame artifacts.
     _currentPreviewWindowRect = null;
     _currentPreviewScreenRect = null;
     unawaited(hideToolbarPanel());
+    if (Platform.isWindows) {
+      await _channel.invokeMethod('dismissAppWindow');
+      await windowManager.hide();
+      await hideScrollStopButton();
+      await windowManager.setAlwaysOnTop(false);
+      return;
+    }
+    await windowManager.hide();
     // Window is already invisible — no need to block on this.
     unawaited(windowManager.setAlwaysOnTop(false));
   }
@@ -910,8 +994,8 @@ class WindowService {
       const Size(double.infinity, double.infinity),
     );
     await windowManager.setTitleBarStyle(
-      TitleBarStyle.hidden,
-      windowButtonVisibility: false,
+      Platform.isWindows ? TitleBarStyle.normal : TitleBarStyle.hidden,
+      windowButtonVisibility: !Platform.isWindows,
     );
     await windowManager.setSize(windowSize);
     await windowManager.setMinimumSize(windowSize);
@@ -920,6 +1004,20 @@ class WindowService {
     await windowManager.setSkipTaskbar(true);
     await windowManager.setHasShadow(true);
     await windowManager.center();
+
+    if (Platform.isWindows) {
+      // On Windows, applying the settings size while the window is hidden can
+      // leave Flutter rendering the first shown frame at the stale hidden size
+      // until the user manually resizes the window. Show it transparent first,
+      // then repeat the fixed-size bounds update once it is visible so the
+      // initial WM_SIZE reaches the embedded Flutter view.
+      await windowManager.setOpacity(0.0);
+      await windowManager.show();
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+      await windowManager.setSize(windowSize);
+      await windowManager.center();
+    }
+
     await windowManager.setOpacity(1.0);
     await windowManager.show();
     await _focusAndActivateWindow();
@@ -930,7 +1028,7 @@ class WindowService {
   /// Flutter sends placement intent and state; AppKit computes the real panel
   /// geometry and reports the resolved frame back asynchronously.
   Future<void> showToolbarPanel({required NativeToolbarRequest request}) async {
-    if (!Platform.isMacOS) return;
+    if (!Platform.isMacOS && !Platform.isWindows) return;
     final requestId = ++_toolbarRequestId;
     try {
       await _channel.invokeMethod(
@@ -945,7 +1043,7 @@ class WindowService {
 
   /// Hide the native floating toolbar panel.
   Future<void> hideToolbarPanel() async {
-    if (!Platform.isMacOS) return;
+    if (!Platform.isMacOS && !Platform.isWindows) return;
     final requestId = ++_toolbarRequestId;
     try {
       await _channel.invokeMethod('hideToolbarPanel', {

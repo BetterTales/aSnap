@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -225,6 +227,48 @@ void main() {
       windowCalls.map((call) => call.method),
       isNot(contains('flushPendingToolbarPanel')),
     );
+  });
+
+  test('showScrollPreview keeps a fixed window size on Windows', () async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          return null;
+        });
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowManagerChannel, (call) async {
+          switch (call.method) {
+            case 'isMinimized':
+              return false;
+            default:
+              return null;
+          }
+        });
+
+    await windowService.showScrollPreview(
+      imageWidth: 320,
+      imageHeight: 2400,
+      screenSize: const Size(1920, 1080),
+      screenOrigin: Offset.zero,
+      focus: false,
+    );
+    final firstRect = windowService.currentPreviewWindowRect;
+
+    await windowService.showScrollPreview(
+      imageWidth: 2000,
+      imageHeight: 420,
+      screenSize: const Size(1920, 1080),
+      screenOrigin: Offset.zero,
+      focus: false,
+    );
+    final secondRect = windowService.currentPreviewWindowRect;
+
+    expect(firstRect, isNotNull);
+    expect(secondRect, isNotNull);
+    expect(secondRect!.size, firstRect!.size);
   });
 
   test('showPreview forwards native shadow preference', () async {
