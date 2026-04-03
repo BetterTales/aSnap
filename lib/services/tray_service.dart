@@ -8,6 +8,7 @@ import '../utils/constants.dart';
 
 class TrayService with TrayListener {
   static const _channel = MethodChannel('com.asnap/window');
+  static const _trayChannel = MethodChannel('tray_manager');
   ShortcutBindings _shortcuts = ShortcutBindings.defaults();
 
   VoidCallback? onCaptureFullScreen;
@@ -72,6 +73,15 @@ class TrayService with TrayListener {
     return Menu(items: items);
   }
 
+  Future<void> _showContextMenu() {
+    if (Platform.isWindows) {
+      return _trayChannel.invokeMethod('popUpContextMenu', {
+        'bringAppToFront': true,
+      });
+    }
+    return trayManager.popUpContextMenu();
+  }
+
   Future<void> init({required ShortcutBindings shortcuts}) async {
     await trayManager.setIcon(
       kTrayIconPath,
@@ -132,12 +142,12 @@ class TrayService with TrayListener {
 
   @override
   void onTrayIconMouseDown() {
-    trayManager.popUpContextMenu();
+    _showContextMenu();
   }
 
   @override
   void onTrayIconRightMouseDown() {
-    trayManager.popUpContextMenu();
+    _showContextMenu();
   }
 
   Future<void> destroy() async {

@@ -138,4 +138,32 @@ void main() {
       'Region\t${shortcutDisplayLabel(rebound.forAction(ShortcutAction.region))}',
     );
   });
+
+  test('Windows tray click opens popup with foreground ownership', () async {
+    if (!Platform.isWindows) {
+      return;
+    }
+
+    final trayCalls = <MethodCall>[];
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_trayManagerChannel, (call) async {
+          trayCalls.add(call);
+          return null;
+        });
+
+    final service = TrayService();
+
+    service.onTrayIconMouseDown();
+    service.onTrayIconRightMouseDown();
+
+    final popupCalls = trayCalls
+        .where((call) => call.method == 'popUpContextMenu')
+        .toList();
+    expect(popupCalls, hasLength(2));
+    for (final call in popupCalls) {
+      final arguments = Map<String, dynamic>.from(call.arguments as Map);
+      expect(arguments['bringAppToFront'], isTrue);
+    }
+  });
 }
