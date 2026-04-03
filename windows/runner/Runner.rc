@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.asnap.tacshi" "\0"
-            VALUE "FileDescription", "a_snap" "\0"
+            VALUE "FileDescription", "aSnap" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "a_snap" "\0"
+            VALUE "InternalName", "aSnap" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.asnap.tacshi. All rights reserved." "\0"
-            VALUE "OriginalFilename", "a_snap.exe" "\0"
-            VALUE "ProductName", "a_snap" "\0"
+            VALUE "OriginalFilename", "aSnap.exe" "\0"
+            VALUE "ProductName", "aSnap" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -865,6 +865,18 @@ class MainFlutterWindow: NSWindow {
       case "getWindowList":
         // Synchronous window list + AX tree walk. Shows permission prompt if needed.
         result(MainFlutterWindow.computeWindowRects(promptForAccess: true))
+      case "checkScreenCapturePermission":
+        if #available(macOS 10.15, *) {
+          result(CGPreflightScreenCaptureAccess())
+        } else {
+          result(true)
+        }
+      case "requestScreenCapturePermission":
+        if #available(macOS 10.15, *) {
+          result(CGRequestScreenCaptureAccess())
+        } else {
+          result(true)
+        }
       case "checkAccessibility":
         // Check accessibility trust, optionally prompting the TCC dialog.
         let prompt = (call.arguments as? [String: Any])?["prompt"] as? Bool ?? false

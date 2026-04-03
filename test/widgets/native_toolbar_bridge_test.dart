@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:ui' as ui;
 
 import 'package:a_snap/models/annotation.dart';
@@ -8,6 +9,7 @@ import 'package:a_snap/screens/scroll_result_screen.dart';
 import 'package:a_snap/services/window_service.dart';
 import 'package:a_snap/state/annotation_state.dart';
 import 'package:a_snap/state/app_state.dart';
+import 'package:a_snap/widgets/floating_annotation_toolbar.dart';
 import 'package:a_snap/widgets/shape_popover.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -198,9 +200,9 @@ void main() {
 
         expect(windowService.onToolbarAction, isNotNull);
         expect(windowService.showCalls, isNotEmpty);
-        expect(windowService.showCalls.last.showPin, isTrue);
+        expect(windowService.showCalls.last.showPin, Platform.isMacOS);
         expect(windowService.showCalls.last.showHistoryControls, isTrue);
-        expect(windowService.showCalls.last.showOcr, isTrue);
+        expect(windowService.showCalls.last.showOcr, Platform.isMacOS);
         expect(
           windowService.showCalls.last.placement,
           NativeToolbarPlacement.belowWindow,
@@ -208,7 +210,7 @@ void main() {
 
         expect(
           tester.getTopLeft(find.byType(CompositedTransformTarget)),
-          const Offset(400, 600),
+          const Offset(400, 388),
         );
         windowService.emitToolbarFrameChanged(
           const Rect.fromLTWH(120, 650, 412, 44),
@@ -276,43 +278,50 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      expect(windowService.showCalls, isNotEmpty);
-      expect(windowService.showCalls.last.showPin, isFalse);
-      expect(windowService.showCalls.last.showHistoryControls, isTrue);
-      expect(windowService.showCalls.last.showOcr, isTrue);
-      expect(
-        windowService.showCalls.last.placement,
-        NativeToolbarPlacement.belowAnchor,
-      );
-      expect(
-        windowService.showCalls.last.anchorRect,
-        const Rect.fromLTWH(20, 20, 140, 100),
-      );
-      expect(
-        tester.getTopLeft(find.byType(CompositedTransformTarget)),
-        const Offset(90, 128),
-      );
-      windowService.emitToolbarFrameChanged(
-        const Rect.fromLTWH(240, 150, 412, 44),
-        requestId: windowService.showCalls.last.requestId,
-      );
-      await tester.pump();
+      if (Platform.isMacOS) {
+        expect(windowService.showCalls, isNotEmpty);
+        expect(windowService.showCalls.last.showPin, isFalse);
+        expect(windowService.showCalls.last.showHistoryControls, isTrue);
+        expect(windowService.showCalls.last.showOcr, isTrue);
+        expect(
+          windowService.showCalls.last.placement,
+          NativeToolbarPlacement.belowAnchor,
+        );
+        expect(
+          windowService.showCalls.last.anchorRect,
+          const Rect.fromLTWH(20, 20, 140, 100),
+        );
+        expect(
+          tester.getTopLeft(find.byType(CompositedTransformTarget)),
+          const Offset(90, 128),
+        );
+        windowService.emitToolbarFrameChanged(
+          const Rect.fromLTWH(240, 150, 412, 44),
+          requestId: windowService.showCalls.last.requestId,
+        );
+        await tester.pump();
 
-      expect(
-        tester.getTopLeft(find.byType(CompositedTransformTarget)),
-        const Offset(446, 150),
-      );
+        expect(
+          tester.getTopLeft(find.byType(CompositedTransformTarget)),
+          const Offset(446, 150),
+        );
 
-      windowService.onToolbarAction!.call('ocr');
-      expect(ocrCount, 1);
+        windowService.onToolbarAction!.call('ocr');
+        expect(ocrCount, 1);
 
-      windowService.onToolbarAction!.call('close');
-      await tester.pump();
-      await tester.pump();
+        windowService.onToolbarAction!.call('close');
+        await tester.pump();
+        await tester.pump();
 
-      expect(cancelCount, 1);
-      expect(windowService.hideCalls, greaterThan(0));
-      expect(windowService.onToolbarAction, isNull);
+        expect(cancelCount, 1);
+        expect(windowService.hideCalls, greaterThan(0));
+        expect(windowService.onToolbarAction, isNull);
+      } else {
+        expect(windowService.showCalls, isEmpty);
+        expect(find.byType(FloatingAnnotationToolbar), findsOneWidget);
+        expect(ocrCount, 0);
+        expect(cancelCount, 0);
+      }
     });
   });
 
@@ -348,18 +357,20 @@ void main() {
       expect(windowService.showCalls, isNotEmpty);
       expect(windowService.showCalls.last.showPin, isFalse);
       expect(windowService.showCalls.last.showHistoryControls, isTrue);
-      expect(windowService.showCalls.last.showOcr, isTrue);
+      expect(windowService.showCalls.last.showOcr, Platform.isMacOS);
       expect(
         windowService.showCalls.last.placement,
-        NativeToolbarPlacement.belowAnchor,
+        Platform.isWindows
+            ? NativeToolbarPlacement.belowWindow
+            : NativeToolbarPlacement.belowAnchor,
       );
       expect(
         windowService.showCalls.last.anchorRect,
-        const Rect.fromLTWH(290, 60, 220, 420),
+        Platform.isWindows ? isNull : const Rect.fromLTWH(290, 60, 220, 420),
       );
       expect(
         tester.getTopLeft(find.byType(CompositedTransformTarget)),
-        const Offset(400, 488),
+        const Offset(400, 548),
       );
       windowService.emitToolbarFrameChanged(
         const Rect.fromLTWH(180, 500, 412, 44),

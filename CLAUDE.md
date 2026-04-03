@@ -7,6 +7,7 @@ macOS + Windows menu bar screenshot tool built with Flutter. Currently focused o
 ```bash
 # Dev cycle: format → analyze → build debug
 ./scripts/dev.sh
+.\scripts\dev.cmd
 
 # Full clean rebuild
 ./scripts/clean.sh
@@ -17,6 +18,7 @@ flutter analyze
 flutter test
 flutter build macos --debug
 flutter build macos --release
+flutter build windows --debug
 ```
 
 The built app is at `build/macos/Build/Products/{Debug,Release}/a_snap.app`.

@@ -175,7 +175,10 @@ class ScrollCaptureService {
     }
 
     try {
-      final capture = await ws.captureRegion(region);
+      final capture = await ws.captureRegion(
+        region,
+        includeLayeredWindows: false,
+      );
       if (capture == null || _cancelled) {
         _captureInProgress = false;
         return;

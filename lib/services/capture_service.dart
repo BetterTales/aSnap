@@ -2,10 +2,12 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:screen_capturer/screen_capturer.dart';
 
 class CaptureService {
+  static const _windowChannel = MethodChannel('com.asnap/window');
+
   Future<Uint8List?> captureFullScreen() async {
     if (!await _ensurePermission()) return null;
 
@@ -23,13 +25,26 @@ class CaptureService {
   /// [physicalRect] is in physical pixel coordinates.
   /// Returns a new [ui.Image] — caller owns it and must dispose.
   Future<ui.Image?> cropImage(ui.Image source, ui.Rect physicalRect) async {
-    final clampedLeft = physicalRect.left.clamp(0.0, source.width.toDouble());
-    final clampedTop = physicalRect.top.clamp(0.0, source.height.toDouble());
+    final snappedLeft = physicalRect.left.floorToDouble();
+    final snappedTop = physicalRect.top.floorToDouble();
+    final snappedRight = physicalRect.right.ceilToDouble();
+    final snappedBottom = physicalRect.bottom.ceilToDouble();
+
+    final clampedLeft = snappedLeft.clamp(0.0, source.width.toDouble());
+    final clampedTop = snappedTop.clamp(0.0, source.height.toDouble());
+    final clampedRight = snappedRight.clamp(
+      clampedLeft,
+      source.width.toDouble(),
+    );
+    final clampedBottom = snappedBottom.clamp(
+      clampedTop,
+      source.height.toDouble(),
+    );
     final srcRect = ui.Rect.fromLTWH(
       clampedLeft,
       clampedTop,
-      physicalRect.width.clamp(0, source.width - clampedLeft),
-      physicalRect.height.clamp(0, source.height - clampedTop),
+      (clampedRight - clampedLeft).clamp(0.0, source.width - clampedLeft),
+      (clampedBottom - clampedTop).clamp(0.0, source.height - clampedTop),
     );
 
     if (srcRect.width <= 0 || srcRect.height <= 0) {
@@ -53,7 +68,17 @@ class CaptureService {
 
   Future<bool> checkPermission() async {
     if (Platform.isMacOS) {
-      return await screenCapturer.isAccessAllowed();
+      try {
+        final allowed = await _windowChannel.invokeMethod<bool>(
+          'checkScreenCapturePermission',
+        );
+        return allowed ?? true;
+      } on MissingPluginException {
+        return true;
+      } on PlatformException catch (error) {
+        debugPrint('[aSnap] checkScreenCapturePermission failed: $error');
+        return true;
+      }
     }
     return true;
   }
@@ -61,9 +86,11 @@ class CaptureService {
   Future<void> requestPermission() async {
     if (Platform.isMacOS) {
       try {
-        await screenCapturer.requestAccess();
-      } catch (e) {
-        debugPrint('[aSnap] requestAccess failed: $e');
+        await _windowChannel.invokeMethod('requestScreenCapturePermission');
+      } on MissingPluginException {
+        // Ignore and fall back to opening System Settings below.
+      } on PlatformException catch (error) {
+        debugPrint('[aSnap] requestScreenCapturePermission failed: $error');
       }
       // Also open System Settings directly as a fallback
       await _openScreenRecordingSettings();
@@ -74,7 +101,7 @@ class CaptureService {
   Future<bool> _ensurePermission() async {
     if (!Platform.isMacOS) return true;
 
-    final allowed = await screenCapturer.isAccessAllowed();
+    final allowed = await checkPermission();
     if (!allowed) {
       debugPrint(
         '[aSnap] Screen recording permission not granted, opening System Settings...',

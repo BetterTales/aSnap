@@ -101,6 +101,9 @@ class HotkeyService {
 
     try {
       for (final entry in _bindings.entries) {
+        if (!_isShortcutSupported(entry.key)) {
+          continue;
+        }
         try {
           await hotKeyManager.register(
             entry.value,
@@ -185,7 +188,27 @@ class HotkeyService {
     return null;
   }
 
+  bool _isShortcutSupported(ShortcutAction action) {
+    if (Platform.isMacOS) {
+      return true;
+    }
+    switch (action) {
+      case ShortcutAction.pin:
+      case ShortcutAction.ocr:
+        return false;
+      case ShortcutAction.region:
+      case ShortcutAction.scrollCapture:
+      case ShortcutAction.fullScreen:
+      case ShortcutAction.ink:
+      case ShortcutAction.laser:
+        return true;
+    }
+  }
+
   void _dispatchAction(ShortcutAction action) {
+    if (!_isShortcutSupported(action)) {
+      return;
+    }
     final now = DateTime.now();
     final lastTriggeredAt = _lastTriggeredAt[action];
     if (lastTriggeredAt != null &&

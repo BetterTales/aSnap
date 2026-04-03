@@ -15,12 +15,13 @@ const double kToolbarGap = 8.0;
 Offset computeFloatingToolbarAnchor({
   required Rect anchorRect,
   required Size screenSize,
+  double toolbarHeight = kNativeToolbarFallbackHeight,
   EdgeInsets viewportPadding = const EdgeInsets.all(8),
 }) {
   final minX = viewportPadding.left;
   final maxX = screenSize.width - viewportPadding.right;
   final minY = viewportPadding.top;
-  final maxY = screenSize.height - viewportPadding.bottom;
+  final maxY = screenSize.height - viewportPadding.bottom - toolbarHeight;
 
   double x;
   if (maxX <= minX) {
