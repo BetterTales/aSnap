@@ -8,6 +8,7 @@ import '../utils/constants.dart';
 
 class TrayService with TrayListener {
   static const _channel = MethodChannel('com.asnap/window');
+  ShortcutBindings _shortcuts = ShortcutBindings.defaults();
 
   VoidCallback? onCaptureFullScreen;
   VoidCallback? onCaptureRegion;
@@ -19,47 +20,77 @@ class TrayService with TrayListener {
   VoidCallback? onOpenSettings;
   VoidCallback? onQuit;
 
+  String _menuLabel(ShortcutAction action) {
+    final base = action.label;
+    if (!Platform.isWindows) {
+      return base;
+    }
+    return '$base\t${shortcutDisplayLabel(_shortcuts.forAction(action))}';
+  }
+
   Menu _buildMenu() {
-    return Menu(
-      items: [
-        MenuItem(key: 'capture_region', label: 'Region'),
-        MenuItem(key: 'capture_scroll', label: 'Scroll'),
-        MenuItem(key: 'capture_full_screen', label: 'Full Screen'),
-        MenuItem(key: 'ocr', label: 'OCR'),
+    final items = <MenuItem>[
+      MenuItem(key: 'capture_region', label: _menuLabel(ShortcutAction.region)),
+      MenuItem(
+        key: 'capture_scroll',
+        label: _menuLabel(ShortcutAction.scrollCapture),
+      ),
+      MenuItem(
+        key: 'capture_full_screen',
+        label: _menuLabel(ShortcutAction.fullScreen),
+      ),
+    ];
+
+    if (Platform.isMacOS) {
+      items.addAll([
+        MenuItem(key: 'ocr', label: _menuLabel(ShortcutAction.ocr)),
         MenuItem.separator(),
-        MenuItem(key: 'ink', label: 'Ink'),
-        MenuItem(key: 'laser', label: 'Laser'),
+      ]);
+    } else {
+      items.add(MenuItem.separator());
+    }
+
+    items.addAll([
+      MenuItem(key: 'ink', label: _menuLabel(ShortcutAction.ink)),
+      MenuItem(key: 'laser', label: _menuLabel(ShortcutAction.laser)),
+    ]);
+
+    if (Platform.isMacOS) {
+      items.addAll([
         MenuItem.separator(),
-        MenuItem(key: 'pin', label: 'Pin'),
-        MenuItem.separator(),
-        MenuItem(key: 'settings', label: 'Settings'),
-        MenuItem.separator(),
-        MenuItem(key: 'quit', label: 'Quit $kAppName'),
-      ],
-    );
+        MenuItem(key: 'pin', label: _menuLabel(ShortcutAction.pin)),
+      ]);
+    }
+
+    items.addAll([
+      MenuItem.separator(),
+      MenuItem(key: 'settings', label: 'Settings'),
+      MenuItem.separator(),
+      MenuItem(key: 'quit', label: 'Quit $kAppName'),
+    ]);
+
+    return Menu(items: items);
   }
 
   Future<void> init({required ShortcutBindings shortcuts}) async {
-    await trayManager.setIcon(kTrayIconPath, isTemplate: true, iconSize: 18);
+    await trayManager.setIcon(
+      kTrayIconPath,
+      isTemplate: Platform.isMacOS,
+      iconSize: 18,
+    );
     await trayManager.setToolTip(kTrayTooltip);
 
-    // Use tray_manager for menu creation and display (proper NSStatusItem
-    // integration). On macOS, register shortcuts separately so the native
-    // side can patch keyEquivalent on the menu items before they render.
-    await trayManager.setContextMenu(_buildMenu());
-
-    if (Platform.isMacOS) {
-      await updateShortcuts(shortcuts);
-    }
+    await updateShortcuts(shortcuts);
 
     trayManager.addListener(this);
   }
 
   Future<void> updateShortcuts(ShortcutBindings shortcuts) async {
-    if (!Platform.isMacOS) return;
+    _shortcuts = shortcuts;
     // Rebuild the menu so the next popup uses fresh NSMenuItems before native
-    // keyEquivalent patching runs.
+    // keyEquivalent patching runs (macOS) or so labels refresh (Windows).
     await trayManager.setContextMenu(_buildMenu());
+    if (!Platform.isMacOS) return;
     await _channel.invokeMethod(
       'registerTrayShortcuts',
       trayShortcutDescriptors(shortcuts),
