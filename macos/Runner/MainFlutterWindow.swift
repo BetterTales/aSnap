@@ -39,6 +39,9 @@ class MainFlutterWindow: NSWindow {
   private var globalEscMonitor: Any?
   // Local Esc key monitor (catches Escape when our window is key but at alpha=0)
   private var localEscMonitor: Any?
+  private var overlayPassthroughClickGlobalMonitor: Any?
+  private var overlayPassthroughClickLocalMonitor: Any?
+  private var overlayDismissOnNextClickArmed = false
 
   // Ink shortcut monitors (global)
   private var inkKeyDownMonitor: Any?
@@ -791,9 +794,27 @@ class MainFlutterWindow: NSWindow {
         self.ignoresMouseEvents = passthrough
         self.acceptsMouseMovedEvents = !passthrough
         if !passthrough {
+          self.stopOverlayDismissOnNextClickMonitor()
           self.makeKeyAndOrderFront(nil)
           NSApp.activate(ignoringOtherApps: true)
           self.refreshOverlayCursorIfNeeded()
+        }
+        result(nil)
+      case "setOverlayDismissOnNextClick":
+        guard let args = call.arguments as? [String: Any],
+          let enabled = args["enabled"] as? Bool
+        else {
+          result(
+            FlutterError(
+              code: "INVALID_ARGS",
+              message: "setOverlayDismissOnNextClick requires enabled",
+              details: nil))
+          return
+        }
+        if enabled {
+          self.armOverlayDismissOnNextClickMonitor()
+        } else {
+          self.stopOverlayDismissOnNextClickMonitor()
         }
         result(nil)
       case "setOverlayCursorHidden":
@@ -1960,6 +1981,43 @@ class MainFlutterWindow: NSWindow {
     }
   }
 
+  private func stopOverlayDismissOnNextClickMonitor() {
+    if let monitor = self.overlayPassthroughClickGlobalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.overlayPassthroughClickGlobalMonitor = nil
+    }
+    if let monitor = self.overlayPassthroughClickLocalMonitor {
+      NSEvent.removeMonitor(monitor)
+      self.overlayPassthroughClickLocalMonitor = nil
+    }
+    self.overlayDismissOnNextClickArmed = false
+  }
+
+  private func armOverlayDismissOnNextClickMonitor() {
+    self.stopOverlayDismissOnNextClickMonitor()
+    self.overlayDismissOnNextClickArmed = true
+    let eventMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+    self.overlayPassthroughClickGlobalMonitor = NSEvent.addGlobalMonitorForEvents(
+      matching: eventMask
+    ) { [weak self] _ in
+      self?.handleOverlayPassthroughClick()
+    }
+    self.overlayPassthroughClickLocalMonitor = NSEvent.addLocalMonitorForEvents(
+      matching: eventMask
+    ) { [weak self] event in
+      self?.handleOverlayPassthroughClick()
+      return event
+    }
+  }
+
+  private func handleOverlayPassthroughClick() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.overlayDismissOnNextClickArmed else { return }
+      self.stopOverlayDismissOnNextClickMonitor()
+      self.flutterChannel?.invokeMethod("onOverlayPassthroughClick", arguments: nil)
+    }
+  }
+
   // MARK: - Ink shortcut helpers
 
   private static func inkModifierFlags(from names: [String]) -> NSEvent.ModifierFlags {
@@ -2239,6 +2297,7 @@ class MainFlutterWindow: NSWindow {
     }
     // Remove Esc monitors (safety net — normally stopped by Dart)
     self.stopEscMonitorImpl()
+    self.stopOverlayDismissOnNextClickMonitor()
     self.overlayScreenFrame = nil
 
     if restoreStyleMask {

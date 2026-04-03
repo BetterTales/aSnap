@@ -294,6 +294,7 @@ Future<void> _initAfterRunApp() async {
   _windowService.onInkKeyUp = _handleInkKeyUp;
   _windowService.onLaserKeyDown = _handleLaserKeyDown;
   _windowService.onLaserKeyUp = _handleLaserKeyUp;
+  _windowService.onOverlayPassthroughClick = _handleOverlayPassthroughClick;
   _windowService.onScrollCaptureDone = _handleScrollCaptureDone;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
@@ -493,6 +494,7 @@ Future<void> _handleInkKeyDown() async {
       return;
     }
     _appState.updateInkOverlay(tool: InkTool.ink, drawingEnabled: true);
+    await _windowService.setOverlayDismissOnNextClick(enabled: false);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
       await _windowService.setOverlayCursorHidden(hidden: true);
@@ -512,6 +514,7 @@ Future<void> _handleInkKeyUp() async {
     _appState.updateInkOverlay(drawingEnabled: false);
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
+  await _windowService.setOverlayDismissOnNextClick(enabled: true);
   await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.resetInkMonitorState();
 }
@@ -536,6 +539,7 @@ Future<void> _handleLaserKeyDown() async {
       return;
     }
     _appState.updateInkOverlay(tool: InkTool.laser, drawingEnabled: true);
+    await _windowService.setOverlayDismissOnNextClick(enabled: false);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
       await _windowService.setOverlayCursorHidden(hidden: false);
@@ -559,11 +563,26 @@ Future<void> _exitInkOverlay() async {
   _inkState.clear();
   _laserState.clear();
   _appState.clear();
+  await _windowService.setOverlayDismissOnNextClick(enabled: false);
   await _windowService.stopEscMonitor();
   await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.resetInkMonitorState();
   await _windowService.exitOverlay();
   await _windowService.hidePreview();
+}
+
+void _handleOverlayPassthroughClick() {
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink == null || ink.tool != InkTool.ink || ink.drawingEnabled) {
+    return;
+  }
+  if (_escActionInProgress) return;
+  _escActionInProgress = true;
+  unawaited(
+    _exitInkOverlay().whenComplete(() {
+      _escActionInProgress = false;
+    }),
+  );
 }
 
 Future<void> _showInkOverlay({
@@ -588,6 +607,7 @@ Future<void> _showInkOverlay({
   if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await WidgetsBinding.instance.endOfFrame;
   if (_appState.inkOverlayWorkflow?.tool != tool) return;
+  await _windowService.setOverlayDismissOnNextClick(enabled: false);
   await _windowService.setOverlayMousePassthrough(passthrough: false);
   try {
     await _windowService.setOverlayCursorHidden(hidden: hideCursor);

@@ -39,6 +39,7 @@ namespace {
 
 constexpr int kEscHotkeyId = 0xA51A;
 constexpr int kScrollStopButtonId = 0xA51B;
+constexpr UINT kOverlayPassthroughClickMessage = WM_APP + 101;
 constexpr double kMonitorMatchEpsilon = 2.0;
 constexpr int kWindowCompositionAccentPolicy = 19;
 constexpr wchar_t kToolbarWindowClassName[] = L"ASnapToolbarWindow";
@@ -87,6 +88,8 @@ struct CaptureResult {
   int height = 0;
   int bytes_per_row = 0;
 };
+
+FlutterWindow* g_overlay_dismiss_target = nullptr;
 
 const flutter::EncodableMap* AsEncodableMap(
     const flutter::EncodableValue* value) {
@@ -663,6 +666,7 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   StopEscMonitor();
+  StopOverlayDismissOnNextClickMonitor();
   HideToolbarPanel();
   HideScrollStopButton();
   RestoreWindowState();
@@ -1026,6 +1030,13 @@ void FlutterWindow::HandleWindowMethodCall(
     return;
   }
 
+  if (method == "setOverlayDismissOnNextClick") {
+    const bool enabled = args != nullptr && GetBool(*args, "enabled", false);
+    SetOverlayDismissOnNextClick(enabled);
+    result->Success(flutter::EncodableValue());
+    return;
+  }
+
   if (method == "activateApp") {
     ActivateAppWindow();
     result->Success(flutter::EncodableValue());
@@ -1212,6 +1223,7 @@ void FlutterWindow::RestoreWindowState() {
   HideScrollStopButton();
   SetWindowExcludedFromCapture(false);
   SetTransparentBackground(false);
+  StopOverlayDismissOnNextClickMonitor();
   SetMousePassthrough(false);
   RedrawWindow(window, nullptr, nullptr,
                RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN |
@@ -1240,6 +1252,7 @@ void FlutterWindow::DismissAppWindow() {
   HideScrollStopButton();
   SetWindowExcludedFromCapture(false);
   SetTransparentBackground(false);
+  StopOverlayDismissOnNextClickMonitor();
   SetMousePassthrough(false);
   SetHostedFlutterViewVisible(false);
   custom_frame_active_ = false;
@@ -2189,6 +2202,70 @@ void FlutterWindow::DisableLayeredWindowIfTransparent() {
                    SWP_NOOWNERZORDER | SWP_NOACTIVATE);
 }
 
+LRESULT CALLBACK FlutterWindow::OverlayDismissMouseProc(int nCode,
+                                                        WPARAM wparam,
+                                                        LPARAM lparam) noexcept {
+  FlutterWindow* window = g_overlay_dismiss_target;
+  if (nCode == HC_ACTION && window != nullptr &&
+      window->overlay_dismiss_on_next_click_) {
+    switch (wparam) {
+      case WM_LBUTTONDOWN:
+      case WM_RBUTTONDOWN:
+      case WM_MBUTTONDOWN:
+      case WM_XBUTTONDOWN:
+        window->overlay_dismiss_on_next_click_ = false;
+        PostMessage(window->GetHandle(), kOverlayPassthroughClickMessage, 0, 0);
+        break;
+      default:
+        break;
+    }
+  }
+
+  return CallNextHookEx(window != nullptr ? window->overlay_dismiss_click_hook_
+                                          : nullptr,
+                        nCode, wparam, lparam);
+}
+
+void FlutterWindow::StopOverlayDismissOnNextClickMonitor() {
+  overlay_dismiss_on_next_click_ = false;
+  if (overlay_dismiss_click_hook_ != nullptr) {
+    UnhookWindowsHookEx(overlay_dismiss_click_hook_);
+    overlay_dismiss_click_hook_ = nullptr;
+  }
+  if (g_overlay_dismiss_target == this) {
+    g_overlay_dismiss_target = nullptr;
+  }
+}
+
+void FlutterWindow::SetOverlayDismissOnNextClick(bool enabled) {
+  if (!enabled) {
+    StopOverlayDismissOnNextClickMonitor();
+    return;
+  }
+
+  overlay_dismiss_on_next_click_ = true;
+  g_overlay_dismiss_target = this;
+  if (overlay_dismiss_click_hook_ == nullptr) {
+    overlay_dismiss_click_hook_ =
+        SetWindowsHookExW(WH_MOUSE_LL, OverlayDismissMouseProc, nullptr, 0);
+    if (overlay_dismiss_click_hook_ == nullptr) {
+      overlay_dismiss_on_next_click_ = false;
+      if (g_overlay_dismiss_target == this) {
+        g_overlay_dismiss_target = nullptr;
+      }
+    }
+  }
+}
+
+void FlutterWindow::HandleOverlayPassthroughClick() {
+  StopOverlayDismissOnNextClickMonitor();
+  if (window_channel_) {
+    window_channel_->InvokeMethod(
+        "onOverlayPassthroughClick",
+        std::make_unique<flutter::EncodableValue>());
+  }
+}
+
 void FlutterWindow::SetHostedFlutterViewVisible(bool visible) {
   if (!flutter_controller_ || !flutter_controller_->view()) {
     return;
@@ -2212,6 +2289,9 @@ void FlutterWindow::SetMousePassthrough(bool enabled) {
   }
 
   mouse_passthrough_enabled_ = enabled;
+  if (!enabled) {
+    StopOverlayDismissOnNextClickMonitor();
+  }
 
   LONG_PTR ex_style = GetWindowLongPtr(window, GWL_EXSTYLE);
   if (enabled) {
@@ -2253,6 +2333,11 @@ void FlutterWindow::StopEscMonitor() {
 LRESULT FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                                       WPARAM const wparam,
                                       LPARAM const lparam) noexcept {
+  if (message == kOverlayPassthroughClickMessage) {
+    HandleOverlayPassthroughClick();
+    return 0;
+  }
+
   if (message == WM_HOTKEY && wparam == kEscHotkeyId) {
     if (window_channel_) {
       window_channel_->InvokeMethod(

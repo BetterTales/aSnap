@@ -76,6 +76,11 @@ class FlutterWindow : public Win32Window {
   void SetTransparentBackground(bool enabled);
   void SetWindowOpacity(BYTE alpha);
   void DisableLayeredWindowIfTransparent();
+  void SetOverlayDismissOnNextClick(bool enabled);
+  void StopOverlayDismissOnNextClickMonitor();
+  void HandleOverlayPassthroughClick();
+  static LRESULT CALLBACK OverlayDismissMouseProc(int nCode, WPARAM wparam,
+                                                  LPARAM lparam) noexcept;
   void SetMousePassthrough(bool enabled);
   void SetHostedFlutterViewVisible(bool visible);
   void ActivateAppWindow();
@@ -96,6 +101,8 @@ class FlutterWindow : public Win32Window {
   bool esc_hotkey_registered_ = false;
   bool transparent_background_enabled_ = false;
   bool mouse_passthrough_enabled_ = false;
+  HHOOK overlay_dismiss_click_hook_ = nullptr;
+  bool overlay_dismiss_on_next_click_ = false;
   HWND toolbar_window_ = nullptr;
   std::vector<ToolbarButtonState> toolbar_buttons_;
   std::optional<flutter::EncodableMap> pending_toolbar_args_;

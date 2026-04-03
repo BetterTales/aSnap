@@ -135,6 +135,23 @@ void main() {
     expect(capturedCall?.method, 'revealInkOverlay');
   });
 
+  test(
+    'setOverlayDismissOnNextClick forwards to the native window channel',
+    () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_windowChannel, (call) async {
+            capturedCall = call;
+            return null;
+          });
+
+      await windowService.setOverlayDismissOnNextClick(enabled: true);
+
+      expect(capturedCall?.method, 'setOverlayDismissOnNextClick');
+      expect(capturedCall?.arguments, {'enabled': true});
+    },
+  );
+
   test('resetInkMonitorState forwards to the native window channel', () async {
     if (!Platform.isMacOS) {
       return;
@@ -448,4 +465,22 @@ void main() {
       expect(updates.last.sessionId, sessionId);
     },
   );
+
+  test('ensureInitialized forwards overlay passthrough click callbacks', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          return null;
+        });
+
+    await windowService.ensureInitialized();
+
+    var callbackCount = 0;
+    windowService.onOverlayPassthroughClick = () {
+      callbackCount++;
+    };
+
+    await _dispatchWindowCallback('onOverlayPassthroughClick', const {});
+
+    expect(callbackCount, 1);
+  });
 }

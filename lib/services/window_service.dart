@@ -244,6 +244,10 @@ class WindowService {
   /// Called when the native laser shortcut is released.
   VoidCallback? onLaserKeyUp;
 
+  /// Called when the overlay is armed for click-through dismissal and the
+  /// next passthrough click is observed by the native host.
+  VoidCallback? onOverlayPassthroughClick;
+
   /// Called after the native floating toolbar panel resolves its actual frame.
   ///
   /// The frame is reported in Flutter-local coordinates with a top-left origin.
@@ -290,6 +294,8 @@ class WindowService {
         onLaserKeyDown?.call();
       } else if (call.method == 'onLaserKeyUp') {
         onLaserKeyUp?.call();
+      } else if (call.method == 'onOverlayPassthroughClick') {
+        onOverlayPassthroughClick?.call();
       } else if (call.method == 'onScrollCaptureDone') {
         onScrollCaptureDone?.call();
       } else if (call.method == 'onEditPinnedImage') {
@@ -523,6 +529,13 @@ class WindowService {
     if (!Platform.isMacOS && !Platform.isWindows) return;
     await _channel.invokeMethod('setOverlayMousePassthrough', {
       'passthrough': passthrough,
+    });
+  }
+
+  Future<void> setOverlayDismissOnNextClick({required bool enabled}) async {
+    if (!Platform.isMacOS && !Platform.isWindows) return;
+    await _channel.invokeMethod('setOverlayDismissOnNextClick', {
+      'enabled': enabled,
     });
   }
 
