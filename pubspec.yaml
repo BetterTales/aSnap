@@ -10,9 +10,6 @@ dependencies:
   flutter:
     sdk: flutter
 
-  # Desktop screenshot capture (full screen + region)
-  screen_capturer: ^0.2.3
-
   # System tray / menu bar integration
   tray_manager: ^0.5.2
 

@@ -31,6 +31,7 @@ bool _displayChangeInProgress = false;
 bool _displayChangePending = false;
 bool _regionCaptureCancelled = false;
 bool _escActionInProgress = false;
+bool _windowCloseInProgress = false;
 int _nextCaptureDelayToken = 0;
 int? _pendingCaptureDelayToken;
 Future<void> Function()? _pendingCaptureDelayCancel;
@@ -87,6 +88,16 @@ class _PreparedCaptureImage {
   final bool hasEmbeddedCaptureStyle;
 }
 
+class _WindowsRegionCapture {
+  const _WindowsRegionCapture({
+    required this.image,
+    required this.captureScale,
+  });
+
+  final ui.Image image;
+  final double captureScale;
+}
+
 final Map<String, _DisplayCache> _displayCaches = {};
 
 String _displayKey(Offset origin) => '${origin.dx},${origin.dy}';
@@ -136,8 +147,16 @@ late final ScrollCaptureService _scrollCaptureService;
 late final SettingsService _settingsService;
 late final SettingsState _settingsState;
 late final WindowService _windowService;
+late final _AppWindowListener _appWindowListener;
 final GlobalKey<NavigatorState> _navigatorKey = GlobalKey<NavigatorState>();
 bool _ocrInProgress = false;
+
+class _AppWindowListener with WindowListener {
+  @override
+  void onWindowClose() {
+    unawaited(_handleWindowCloseRequest());
+  }
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -156,6 +175,8 @@ void main() async {
   _windowService = WindowService();
 
   await _windowService.ensureInitialized();
+  _appWindowListener = _AppWindowListener();
+  windowManager.addListener(_appWindowListener);
 
   final initialShortcuts = await _settingsService.loadShortcutBindings();
   final initialOcrPreviewEnabled = await _settingsService
@@ -273,6 +294,7 @@ Future<void> _initAfterRunApp() async {
   _windowService.onInkKeyUp = _handleInkKeyUp;
   _windowService.onLaserKeyDown = _handleLaserKeyDown;
   _windowService.onLaserKeyUp = _handleLaserKeyUp;
+  _windowService.onOverlayPassthroughClick = _handleOverlayPassthroughClick;
   _windowService.onScrollCaptureDone = _handleScrollCaptureDone;
   _windowService.onRectsUpdated = (windows) {
     _cachedGlobalWindows = windows;
@@ -454,7 +476,7 @@ Future<void> _scheduleCaptureStart(
 
 Future<void> _handleInkKeyDown() async {
   _cancelPendingDelayedCapture();
-  if (!Platform.isMacOS) return;
+  if (!Platform.isMacOS && !Platform.isWindows) return;
   if (_appState.workflow is PreparingCaptureWorkflow ||
       _appState.workflow is RegionSelectionWorkflow ||
       _appState.workflow is CaptureCountdownWorkflow ||
@@ -472,6 +494,7 @@ Future<void> _handleInkKeyDown() async {
       return;
     }
     _appState.updateInkOverlay(tool: InkTool.ink, drawingEnabled: true);
+    await _windowService.setOverlayDismissOnNextClick(enabled: false);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
       await _windowService.setOverlayCursorHidden(hidden: true);
@@ -491,13 +514,14 @@ Future<void> _handleInkKeyUp() async {
     _appState.updateInkOverlay(drawingEnabled: false);
   }
   await _windowService.setOverlayMousePassthrough(passthrough: true);
+  await _windowService.setOverlayDismissOnNextClick(enabled: true);
   await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.resetInkMonitorState();
 }
 
 Future<void> _handleLaserKeyDown() async {
   _cancelPendingDelayedCapture();
-  if (!Platform.isMacOS) return;
+  if (!Platform.isMacOS && !Platform.isWindows) return;
   if (_appState.workflow is PreparingCaptureWorkflow ||
       _appState.workflow is RegionSelectionWorkflow ||
       _appState.workflow is CaptureCountdownWorkflow ||
@@ -515,26 +539,22 @@ Future<void> _handleLaserKeyDown() async {
       return;
     }
     _appState.updateInkOverlay(tool: InkTool.laser, drawingEnabled: true);
+    await _windowService.setOverlayDismissOnNextClick(enabled: false);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
-      await _windowService.setOverlayCursorHidden(hidden: true);
+      await _windowService.setOverlayCursorHidden(hidden: false);
     } catch (_) {}
     return;
   }
 
-  await _showInkOverlay(tool: InkTool.laser, hideCursor: true);
+  await _showInkOverlay(tool: InkTool.laser, hideCursor: false);
 }
 
 Future<void> _handleLaserKeyUp() async {
   final ink = _appState.inkOverlayWorkflow;
   if (ink == null || ink.tool != InkTool.laser) return;
 
-  if (ink.drawingEnabled) {
-    _appState.updateInkOverlay(drawingEnabled: false);
-  }
-  await _windowService.setOverlayMousePassthrough(passthrough: true);
-  await _windowService.setOverlayCursorHidden(hidden: false);
-  await _windowService.resetInkMonitorState();
+  await _exitInkOverlay();
 }
 
 Future<void> _exitInkOverlay() async {
@@ -543,6 +563,7 @@ Future<void> _exitInkOverlay() async {
   _inkState.clear();
   _laserState.clear();
   _appState.clear();
+  await _windowService.setOverlayDismissOnNextClick(enabled: false);
   await _windowService.stopEscMonitor();
   await _windowService.setOverlayCursorHidden(hidden: false);
   await _windowService.resetInkMonitorState();
@@ -550,19 +571,50 @@ Future<void> _exitInkOverlay() async {
   await _windowService.hidePreview();
 }
 
+void _handleOverlayPassthroughClick() {
+  final ink = _appState.inkOverlayWorkflow;
+  if (ink == null || ink.tool != InkTool.ink || ink.drawingEnabled) {
+    return;
+  }
+  if (_escActionInProgress) return;
+  _escActionInProgress = true;
+  unawaited(
+    _exitInkOverlay().whenComplete(() {
+      _escActionInProgress = false;
+    }),
+  );
+}
+
 Future<void> _showInkOverlay({
   required InkTool tool,
   required bool hideCursor,
 }) async {
-  await _windowService.enterInkOverlay();
+  Offset? screenOrigin;
+  if (Platform.isWindows) {
+    // Force a clean native window reset before switching into the transparent
+    // fullscreen overlay. Windows can otherwise retain stale preview/settings
+    // sizing for the first shown frame.
+    await _windowService.hidePreview();
+    final screenInfo = await _windowService.getScreenInfo();
+    screenOrigin = screenInfo?.screenOrigin;
+  }
+
   _appState.setInkOverlay(tool: tool, drawingEnabled: true);
   await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
+  await _windowService.enterInkOverlay(screenOrigin: screenOrigin);
   await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
+  await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
+  await _windowService.setOverlayDismissOnNextClick(enabled: false);
   await _windowService.setOverlayMousePassthrough(passthrough: false);
   try {
     await _windowService.setOverlayCursorHidden(hidden: hideCursor);
   } catch (_) {}
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.revealInkOverlay();
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.startEscMonitor();
 }
 
@@ -612,6 +664,7 @@ Future<void> _handleOpenSettings() async {
   _clearDisplayCaches();
   await _windowService.hideToolbarPanel();
   _appState.setSettings();
+  await WidgetsBinding.instance.endOfFrame;
   await _windowService.showSettingsWindow();
   _appState.nudge();
   unawaited(_settingsState.refreshLaunchAtLogin());
@@ -625,6 +678,18 @@ Future<void> _handleCloseSettings() async {
   _annotationState.clear();
   _clearDisplayCaches();
   await _windowService.hidePreview();
+}
+
+Future<void> _handleWindowCloseRequest() async {
+  if (_windowCloseInProgress) return;
+  if (_appState.workflow is! SettingsWorkflow) return;
+
+  _windowCloseInProgress = true;
+  try {
+    await _handleCloseSettings();
+  } finally {
+    _windowCloseInProgress = false;
+  }
 }
 
 Future<void> _handleSuspendHotkeys() async {
@@ -648,6 +713,28 @@ Future<ui.Image> _decodeRawPixels(ScreenCapture capture) {
     rowBytes: capture.bytesPerRow,
   );
   return completer.future;
+}
+
+Future<_WindowsRegionCapture?> _captureWindowsRegion({
+  required Rect logicalRect,
+  required Offset screenOrigin,
+}) async {
+  if (!Platform.isWindows) return null;
+  final capture = await _windowService.captureRegion(
+    Rect.fromLTWH(
+      logicalRect.left + screenOrigin.dx,
+      logicalRect.top + screenOrigin.dy,
+      logicalRect.width,
+      logicalRect.height,
+    ),
+    includeLayeredWindows: false,
+  );
+  if (capture == null) return null;
+  final image = await _decodeRawPixels(capture);
+  final captureScale = logicalRect.width <= 0
+      ? 1.0
+      : capture.pixelWidth / logicalRect.width;
+  return _WindowsRegionCapture(image: image, captureScale: captureScale);
 }
 
 Future<ui.Image> _decodeStraightRgbaImage(
@@ -691,6 +778,9 @@ Rect _expandRectForCaptureStyle(
   Rect contentRect, {
   required CaptureStyleSettings style,
 }) {
+  if (Platform.isWindows) {
+    return contentRect;
+  }
   final layout = computeCaptureStyleLayout(contentRect.size, style);
   return Rect.fromLTWH(
     contentRect.left - layout.outerInsets.left,
@@ -745,10 +835,12 @@ Future<void> _showPreviewWithImage(
   bool applyCurrentCaptureStyle = true,
   bool embeddedCaptureStyle = false,
 }) async {
-  final style = _effectivePhysicalCaptureStyle(
-    captureScale: captureScale,
-    applyCurrentCaptureStyle: applyCurrentCaptureStyle,
-  );
+  final style = Platform.isWindows
+      ? const CaptureStyleSettings.defaults()
+      : _effectivePhysicalCaptureStyle(
+          captureScale: captureScale,
+          applyCurrentCaptureStyle: applyCurrentCaptureStyle,
+        );
   final layout = computeCaptureStyleLayout(
     Size(image.width.toDouble(), image.height.toDouble()),
     style,
@@ -759,16 +851,23 @@ Future<void> _showPreviewWithImage(
     applyCurrentCaptureStyle: applyCurrentCaptureStyle,
     embeddedCaptureStyle: embeddedCaptureStyle,
   );
+  final useDeferredPreviewReveal = Platform.isWindows;
   await _windowService.showPreview(
     imageWidth: layout.outerSize.width.ceil(),
     imageHeight: layout.outerSize.height.ceil(),
     screenSize: targetScreenSize,
     screenOrigin: targetScreenOrigin,
+    opacity: useDeferredPreviewReveal ? 0.0 : 1.0,
+    focus: !useDeferredPreviewReveal,
     useNativeShadow: _useNativeShadowForImage(
       applyCurrentCaptureStyle: applyCurrentCaptureStyle,
       embeddedCaptureStyle: embeddedCaptureStyle,
     ),
   );
+  if (useDeferredPreviewReveal) {
+    await WidgetsBinding.instance.endOfFrame;
+    await _windowService.revealPreviewWindow();
+  }
   // setCapturedImage() happens before the window is visible. Rebuild once more
   // after show/focus so PreviewScreen can re-run focus sync reliably.
   _appState.nudge();
@@ -1266,15 +1365,37 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
   final scaleY = decodedFullScreen.height / screenSize.height;
 
   final physicalRect = Rect.fromLTRB(
-    logicalRect.left * scaleX,
-    logicalRect.top * scaleY,
-    logicalRect.right * scaleX,
-    logicalRect.bottom * scaleY,
+    (logicalRect.left * scaleX).floorToDouble(),
+    (logicalRect.top * scaleY).floorToDouble(),
+    (logicalRect.right * scaleX).ceilToDouble(),
+    (logicalRect.bottom * scaleY).ceilToDouble(),
   );
 
   // Stop Esc monitor during crop to prevent a race where Esc disposes the
   // source image while cropImage's picture.toImage() is still in-flight.
   await _windowService.stopEscMonitor();
+
+  if (Platform.isWindows) {
+    await _windowService.hidePreview();
+    final capture = await _captureWindowsRegion(
+      logicalRect: logicalRect,
+      screenOrigin: screenOrigin,
+    );
+    if (capture == null) {
+      _appState.clear();
+      await _windowService.hidePreview();
+      return;
+    }
+    await _showSelectedRegionPreview(
+      image: capture.image,
+      logicalRect: logicalRect,
+      screenSize: screenSize,
+      screenOrigin: screenOrigin,
+      captureScale: capture.captureScale,
+      useOverlayPreview: false,
+    );
+    return;
+  }
 
   final cropped = await _captureService.cropImage(
     decodedFullScreen,
@@ -1287,7 +1408,7 @@ Future<void> _handleRegionSelected(Rect logicalRect) async {
       screenSize: screenSize,
       screenOrigin: screenOrigin,
       captureScale: scaleX,
-      useOverlayPreview: true,
+      useOverlayPreview: !Platform.isWindows,
     );
   } else {
     _appState.clear();
@@ -1336,6 +1457,9 @@ Future<bool> _startDelayedRegionAction({
 
   await _scheduleCaptureStart(
     () async {
+      if (Platform.isWindows) {
+        await _windowService.hidePreview();
+      }
       final capture = await _windowService.captureRegion(
         Rect.fromLTWH(
           logicalRect.left + screenOrigin.dx,
@@ -1343,6 +1467,7 @@ Future<bool> _startDelayedRegionAction({
           logicalRect.width,
           logicalRect.height,
         ),
+        includeLayeredWindows: !Platform.isWindows,
       );
       if (capture == null) {
         _appState.clear();
@@ -1387,10 +1512,10 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
   final physicalRect = Rect.fromLTRB(
-    logicalRect.left * scaleX,
-    logicalRect.top * scaleY,
-    logicalRect.right * scaleX,
-    logicalRect.bottom * scaleY,
+    (logicalRect.left * scaleX).floorToDouble(),
+    (logicalRect.top * scaleY).floorToDouble(),
+    (logicalRect.right * scaleX).ceilToDouble(),
+    (logicalRect.bottom * scaleY).ceilToDouble(),
   );
   final styledLogicalRect = _expandRectForCaptureStyle(
     logicalRect,
@@ -1465,6 +1590,54 @@ Future<void> _handleRegionCopy(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Expensive work after the window is gone.
+  if (Platform.isWindows) {
+    final capture = await _windowService.captureRegion(
+      Rect.fromLTWH(
+        logicalRect.left + screenOrigin.dx,
+        logicalRect.top + screenOrigin.dy,
+        logicalRect.width,
+        logicalRect.height,
+      ),
+      includeLayeredWindows: false,
+    );
+    if (capture != null) {
+      final capturedImage = await _decodeRawPixels(capture);
+      final captureScale = logicalRect.width <= 0
+          ? 1.0
+          : capture.pixelWidth / logicalRect.width;
+      final prepared = await _prepareCaptureImage(
+        sourceImage: capturedImage,
+        annotations: annotations,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: true,
+        embeddedCaptureStyle: false,
+      );
+      final byteData = await prepared.image.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+      final pngBytes = byteData?.buffer.asUint8List();
+      final copied =
+          pngBytes != null && await _clipboardService.copyImage(pngBytes);
+      _clearLastCopiedPinCache();
+      if (copied) {
+        _lastCopiedImage = prepared.image;
+        _lastCopiedCgFrame = cgPinFrame;
+        _lastCopiedClipboardPngBytes = Uint8List.fromList(pngBytes);
+        _lastCopiedHasEmbeddedCaptureStyle = prepared.hasEmbeddedCaptureStyle;
+        if (!identical(prepared.image, capturedImage)) {
+          capturedImage.dispose();
+        }
+      } else {
+        if (!identical(prepared.image, capturedImage)) {
+          prepared.image.dispose();
+        }
+        capturedImage.dispose();
+      }
+    }
+    decodedFullScreen.dispose();
+    return;
+  }
+
   final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
@@ -1525,6 +1698,7 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   );
   final decodedFullScreen = selection.decodedImage;
   final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
 
   if (await _startDelayedRegionAction(
     logicalRect: logicalRect,
@@ -1562,10 +1736,10 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
   final physicalRect = Rect.fromLTRB(
-    logicalRect.left * scaleX,
-    logicalRect.top * scaleY,
-    logicalRect.right * scaleX,
-    logicalRect.bottom * scaleY,
+    (logicalRect.left * scaleX).floorToDouble(),
+    (logicalRect.top * scaleY).floorToDouble(),
+    (logicalRect.right * scaleX).ceilToDouble(),
+    (logicalRect.bottom * scaleY).ceilToDouble(),
   );
 
   // Capture annotation state before clearing.
@@ -1584,6 +1758,43 @@ Future<void> _handleRegionSave(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Expensive crop + encode + write after the window is gone.
+  if (Platform.isWindows) {
+    final capture = await _windowService.captureRegion(
+      Rect.fromLTWH(
+        logicalRect.left + screenOrigin.dx,
+        logicalRect.top + screenOrigin.dy,
+        logicalRect.width,
+        logicalRect.height,
+      ),
+      includeLayeredWindows: false,
+    );
+    if (capture != null) {
+      final capturedImage = await _decodeRawPixels(capture);
+      final captureScale = logicalRect.width <= 0
+          ? 1.0
+          : capture.pixelWidth / logicalRect.width;
+      final prepared = await _prepareCaptureImage(
+        sourceImage: capturedImage,
+        annotations: annotations,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: true,
+        embeddedCaptureStyle: false,
+      );
+      final byteData = await prepared.image.toByteData(
+        format: ui.ImageByteFormat.png,
+      );
+      if (byteData != null) {
+        await _fileService.saveToPath(savePath, byteData.buffer.asUint8List());
+      }
+      if (!identical(prepared.image, capturedImage)) {
+        prepared.image.dispose();
+      }
+      capturedImage.dispose();
+    }
+    decodedFullScreen.dispose();
+    return;
+  }
+
   final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
@@ -1621,6 +1832,7 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
   }
   final decodedFullScreen = selection.decodedImage;
   final screenSize = selection.screenSize;
+  final screenOrigin = selection.screenOrigin;
   final showPreview =
       _settingsState.ocrPreviewEnabled && !selection.isOcrSelection;
   final keepWindowVisible =
@@ -1671,13 +1883,71 @@ Future<void> _handleRegionOcr(Rect logicalRect) async {
     return;
   }
 
+  if (Platform.isWindows) {
+    var windowHidden = false;
+    _ocrInProgress = true;
+    _appState.detachDecodedFullScreen();
+    try {
+      await _windowService.hideToolbarPanel();
+      if (!keepWindowVisible) {
+        await _windowService.hidePreview();
+        _appState.clear();
+        _annotationState.clear();
+        _clearDisplayCaches();
+        unawaited(_windowService.stopEscMonitor());
+        unawaited(_windowService.suspendOverlay());
+        unawaited(_windowService.startRectPolling());
+        windowHidden = true;
+      }
+
+      final capture = await _windowService.captureRegion(
+        Rect.fromLTWH(
+          logicalRect.left + screenOrigin.dx,
+          logicalRect.top + screenOrigin.dy,
+          logicalRect.width,
+          logicalRect.height,
+        ),
+        includeLayeredWindows: false,
+      );
+      if (capture == null) return;
+      final capturedImage = await _decodeRawPixels(capture);
+      try {
+        final byteData = await capturedImage.toByteData(
+          format: ui.ImageByteFormat.png,
+        );
+        final pngBytes = byteData?.buffer.asUint8List();
+        if (pngBytes != null) {
+          final normalized = await _recognizeTextFromPng(pngBytes);
+          if (normalized != null) {
+            await _applyOcrResult(normalized, showPreview: showPreview);
+          }
+        }
+      } finally {
+        capturedImage.dispose();
+      }
+    } finally {
+      _ocrInProgress = false;
+      if (!windowHidden) {
+        await _windowService.hidePreview();
+        _appState.clear();
+        _annotationState.clear();
+        _clearDisplayCaches();
+        unawaited(_windowService.stopEscMonitor());
+        unawaited(_windowService.suspendOverlay());
+        unawaited(_windowService.startRectPolling());
+      }
+      decodedFullScreen.dispose();
+    }
+    return;
+  }
+
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
   final physicalRect = Rect.fromLTRB(
-    logicalRect.left * scaleX,
-    logicalRect.top * scaleY,
-    logicalRect.right * scaleX,
-    logicalRect.bottom * scaleY,
+    (logicalRect.left * scaleX).floorToDouble(),
+    (logicalRect.top * scaleY).floorToDouble(),
+    (logicalRect.right * scaleX).ceilToDouble(),
+    (logicalRect.bottom * scaleY).ceilToDouble(),
   );
   var windowHidden = false;
 
@@ -2036,10 +2306,10 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
   final scaleX = decodedFullScreen.width / screenSize.width;
   final scaleY = decodedFullScreen.height / screenSize.height;
   final physicalRect = Rect.fromLTRB(
-    logicalRect.left * scaleX,
-    logicalRect.top * scaleY,
-    logicalRect.right * scaleX,
-    logicalRect.bottom * scaleY,
+    (logicalRect.left * scaleX).floorToDouble(),
+    (logicalRect.top * scaleY).floorToDouble(),
+    (logicalRect.right * scaleX).ceilToDouble(),
+    (logicalRect.bottom * scaleY).ceilToDouble(),
   );
   final styledLogicalRect = _expandRectForCaptureStyle(
     logicalRect,
@@ -2113,6 +2383,50 @@ Future<void> _handleRegionPin(Rect logicalRect) async {
   unawaited(_windowService.startRectPolling());
 
   // Crop + composite after the window is gone.
+  if (Platform.isWindows) {
+    final capture = await _windowService.captureRegion(
+      Rect.fromLTWH(
+        logicalRect.left + screenOrigin.dx,
+        logicalRect.top + screenOrigin.dy,
+        logicalRect.width,
+        logicalRect.height,
+      ),
+      includeLayeredWindows: false,
+    );
+    if (capture != null) {
+      final capturedImage = await _decodeRawPixels(capture);
+      final captureScale = logicalRect.width <= 0
+          ? 1.0
+          : capture.pixelWidth / logicalRect.width;
+      final prepared = await _prepareCaptureImage(
+        sourceImage: capturedImage,
+        annotations: annotations,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: true,
+        embeddedCaptureStyle: false,
+      );
+      final byteData = await prepared.image.toByteData(
+        format: ui.ImageByteFormat.rawStraightRgba,
+      );
+      if (byteData != null) {
+        final rgbaBytes = Uint8List.fromList(byteData.buffer.asUint8List());
+        await _pinNativeImageFromRgbaBytes(
+          rgbaBytes: rgbaBytes,
+          width: prepared.image.width,
+          height: prepared.image.height,
+          cgFrame: cgPinFrame,
+          hasEmbeddedCaptureStyle: prepared.hasEmbeddedCaptureStyle,
+        );
+      }
+      if (!identical(prepared.image, capturedImage)) {
+        prepared.image.dispose();
+      }
+      capturedImage.dispose();
+    }
+    decodedFullScreen.dispose();
+    return;
+  }
+
   final cropped = await _captureService.cropImage(
     decodedFullScreen,
     physicalRect,
@@ -2454,11 +2768,36 @@ Future<void> _handleScrollFinish() async {
       return;
     }
 
-    // Stay in fullscreen overlay — just re-enable mouse interaction.
-    final captureRegion = _appState.scrollCapturingWorkflow?.captureRegion;
+    final scrollCapture = _appState.scrollCapturingWorkflow;
+    final captureRegion = scrollCapture?.captureRegion;
     final captureScale = captureRegion == null || captureRegion.width <= 0
         ? 1.0
         : result.width / captureRegion.width;
+    if (Platform.isWindows &&
+        scrollCapture != null &&
+        scrollCapture.screenSize.width > 0 &&
+        scrollCapture.screenSize.height > 0) {
+      await _windowService.showScrollPreview(
+        imageWidth: result.width,
+        imageHeight: result.height,
+        screenSize: scrollCapture.screenSize,
+        screenOrigin: scrollCapture.screenOrigin,
+        opacity: 0.0,
+        focus: false,
+      );
+      _appState.setScrollResult(
+        result,
+        captureScale: captureScale,
+        applyCurrentCaptureStyle: true,
+        embeddedCaptureStyle: false,
+      );
+      await WidgetsBinding.instance.endOfFrame;
+      await _windowService.revealPreviewWindow();
+      _appState.nudge();
+      return;
+    }
+
+    // Stay in fullscreen overlay — just re-enable mouse interaction.
     _appState.setScrollResult(
       result,
       captureScale: captureScale,

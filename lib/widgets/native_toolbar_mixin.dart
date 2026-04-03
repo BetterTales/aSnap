@@ -7,11 +7,12 @@ import '../state/annotation_state.dart';
 import '../utils/toolbar_actions.dart';
 import 'tool_popover_mixin.dart';
 
-/// Shared macOS native toolbar wiring for screens that expose annotation tools.
+/// Shared native toolbar wiring for screens that expose annotation tools.
 ///
-/// Dart owns the toolbar state and business logic, while AppKit renders the
-/// actual floating panel. This mixin keeps action routing and sync behavior
-/// identical across preview, region-selection, and scroll-result flows.
+/// Dart owns the toolbar state and business logic, while the native host
+/// renders the actual floating panel. This mixin keeps action routing and sync
+/// behavior identical across preview, region-selection, and scroll-result
+/// flows.
 mixin NativeToolbarMixin<T extends StatefulWidget>
     on State<T>, ToolPopoverMixin<T> {
   NativeToolbarRequest? _lastToolbarRequest;

@@ -18,6 +18,7 @@ class CaptureStyleFrame extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final useHardClip = borderRadius <= 0.01;
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -34,10 +35,13 @@ class CaptureStyleFrame extends StatelessWidget {
         ),
         Positioned.fromRect(
           rect: contentRect,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(borderRadius),
-            child: child,
-          ),
+          child: useHardClip
+              ? ClipRect(child: child)
+              : ClipRRect(
+                  borderRadius: BorderRadius.circular(borderRadius),
+                  clipBehavior: Clip.antiAlias,
+                  child: child,
+                ),
         ),
       ],
     );

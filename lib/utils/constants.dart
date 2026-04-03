@@ -4,7 +4,9 @@ import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
 const String kAppName = 'aSnap';
-const String kTrayIconPath = 'assets/icons/tray_icon.png';
+String get kTrayIconPath => Platform.isWindows
+    ? 'assets/icons/tray_icon.ico'
+    : 'assets/icons/tray_icon.png';
 const String kTrayTooltip = 'aSnap - Screenshot Tool';
 
 // Default hotkeys: Cmd+Shift+1/2/3 on macOS, Ctrl+Shift+1/2/3 on Windows

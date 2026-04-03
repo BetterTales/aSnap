@@ -78,6 +78,7 @@ aSnap requires **Screen Recording** and **Accessibility** permissions (System Se
 ```bash
 # Dev cycle: format → analyze → build debug
 ./scripts/dev.sh
+.\scripts\dev.cmd
 
 # Full clean rebuild
 ./scripts/clean.sh

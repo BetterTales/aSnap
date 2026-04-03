@@ -507,7 +507,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         const SizedBox(height: 8),
         const _SectionNote(
           text:
-              'Hold the laser shortcut to show a pointer. Release to let it fade out.',
+              'Hold the laser shortcut to show a pointer. Release to dismiss the overlay.',
         ),
         if (widget.settingsState.laserColorError != null ||
             widget.settingsState.laserSizeError != null ||
@@ -656,6 +656,17 @@ class _Header extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (Platform.isWindows) {
+      return Text(
+        'Settings',
+        style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+          fontSize: 28,
+          fontWeight: FontWeight.w700,
+          letterSpacing: -0.4,
+        ),
+      );
+    }
+
     return Row(
       children: [
         Text(

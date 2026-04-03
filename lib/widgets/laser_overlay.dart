@@ -54,6 +54,7 @@ class _LaserOverlayState extends State<LaserOverlay>
       _updateTicker();
       if (!widget.drawingEnabled) {
         _lastSamplePosition = null;
+        _lastSampleTime = 0;
         _isPrimaryDown = false;
       }
     }
@@ -103,6 +104,9 @@ class _LaserOverlayState extends State<LaserOverlay>
     final now = widget.laserState.nowSeconds();
     const minInterval = 1 / 120;
     const minDistance = 0.5;
+    if (_lastSamplePosition == null) {
+      _activeStrokeId += 1;
+    }
     if (_lastSamplePosition != null) {
       final delta = position - _lastSamplePosition!;
       if (now - _lastSampleTime < minInterval && delta.distance < minDistance) {
@@ -150,42 +154,45 @@ class _LaserOverlayState extends State<LaserOverlay>
     _lastSampleTime = 0;
   }
 
+  Offset _eventPosition(PointerEvent event) => event.localPosition;
+
   void _updateCursor(Offset position) {
     if (_cursorPosition.value == position) return;
     _cursorPosition.value = position;
   }
 
   void _onPointerHover(PointerHoverEvent event) {
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerEnter(PointerEnterEvent event) {
-    _updateCursor(event.localPosition);
+    _updateCursor(_eventPosition(event));
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerDown(PointerDownEvent event) {
-    if (event.buttons != kPrimaryButton) return;
+    if ((event.buttons & kPrimaryButton) == 0) return;
+    final position = _eventPosition(event);
     _isPrimaryDown = true;
-    _activeStrokeId += 1;
     _lastSamplePosition = null;
     _lastSampleTime = 0;
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerUp(PointerUpEvent event) {
-    if (event.buttons == kPrimaryButton || event.buttons == 0) {
-      _isPrimaryDown = false;
-      _lastSamplePosition = null;
-      _lastSampleTime = 0;
-      _updateCursor(event.localPosition);
-    }
+    final position = _eventPosition(event);
+    _isPrimaryDown = false;
+    _lastSamplePosition = null;
+    _lastSampleTime = 0;
+    _updateCursor(position);
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
@@ -201,22 +208,24 @@ class _LaserOverlayState extends State<LaserOverlay>
       _cursorPosition,
     ]);
 
-    final painter = _LaserPainter(
-      laserState: widget.laserState,
-      color: widget.color,
-      size: widget.size,
-      fadeSeconds: widget.fadeSeconds,
-      cursorActive: widget.drawingEnabled,
-      cursorPositionListenable: _cursorPosition,
-      repaint: repaint,
-    );
-
-    final content = RepaintBoundary(
-      child: CustomPaint(painter: painter, size: Size.infinite),
+    final content = SizedBox.expand(
+      child: ListenableBuilder(
+        listenable: repaint,
+        builder: (context, _) => CustomPaint(
+          painter: _LaserPainter(
+            laserState: widget.laserState,
+            color: widget.color,
+            size: widget.size,
+            fadeSeconds: widget.fadeSeconds,
+            cursorActive: widget.drawingEnabled,
+            cursorPositionListenable: _cursorPosition,
+          ),
+        ),
+      ),
     );
 
     final cursor = widget.drawingEnabled
-        ? SystemMouseCursors.none
+        ? SystemMouseCursors.basic
         : MouseCursor.defer;
 
     final decorated = MouseRegion(
@@ -250,7 +259,6 @@ class _LaserPainter extends CustomPainter {
     required this.fadeSeconds,
     required this.cursorActive,
     required this.cursorPositionListenable,
-    super.repaint,
   });
 
   final LaserState laserState;
@@ -344,9 +352,6 @@ class _LaserPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LaserPainter oldDelegate) {
-    return oldDelegate.color != color ||
-        oldDelegate.size != size ||
-        oldDelegate.fadeSeconds != fadeSeconds ||
-        oldDelegate.cursorActive != cursorActive;
+    return true;
   }
 }

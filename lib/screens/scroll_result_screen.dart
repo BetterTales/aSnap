@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
@@ -8,11 +9,14 @@ import '../models/capture_style_settings.dart';
 import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../utils/capture_style_renderer.dart';
+import '../utils/hardware_keyboard_helpers.dart';
 import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
 import '../widgets/capture_style_frame.dart';
+import '../widgets/floating_annotation_toolbar.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
+import '../widgets/transparent_clear_layer.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Fullscreen overlay that displays a scroll capture result.
@@ -59,6 +63,18 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
 
   final _popoverAnchorLink = LayerLink();
 
+  Rect _snapRect(Rect rect, double devicePixelRatio) {
+    final left =
+        (rect.left * devicePixelRatio).floorToDouble() / devicePixelRatio;
+    final top =
+        (rect.top * devicePixelRatio).floorToDouble() / devicePixelRatio;
+    final right =
+        (rect.right * devicePixelRatio).ceilToDouble() / devicePixelRatio;
+    final bottom =
+        (rect.bottom * devicePixelRatio).ceilToDouble() / devicePixelRatio;
+    return Rect.fromLTRB(left, top, right, bottom);
+  }
+
   @override
   AnnotationState get popoverAnnotationState => widget.annotationState;
 
@@ -75,7 +91,7 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   bool get nativeToolbarShowPin => false;
 
   @override
-  bool get nativeToolbarShowOcr => true;
+  bool get nativeToolbarShowOcr => Platform.isMacOS;
 
   @override
   void initState() {
@@ -101,28 +117,18 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   bool _handleKeyEvent(KeyEvent event) {
     if (event is! KeyDownEvent) return false;
 
-    final meta =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaRight,
-        );
-    final shift =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftRight,
-        );
+    final primaryModifier = isPrimaryShortcutModifierPressed();
+    final shift = isShiftModifierPressed();
 
-    // Cmd+Shift+Z → redo
-    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Shift+Z -> redo
+    if (primaryModifier &&
+        shift &&
+        event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState.redo();
       return true;
     }
-    // Cmd+Z → undo
-    if (meta && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Z -> undo
+    if (primaryModifier && event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState.undo();
       return true;
     }
@@ -186,11 +192,11 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
   Rect _imageContainerRect(
     Size screenSize, {
     required CaptureStyleLayout captureLayout,
-    required double toolbarHeight,
+    required double reservedToolbarHeight,
   }) {
     final maxW = screenSize.width * 0.9;
     final availableHeight =
-        (screenSize.height - toolbarHeight - kToolbarGap * 2).clamp(
+        (screenSize.height - reservedToolbarHeight - kToolbarGap * 2).clamp(
           1.0,
           screenSize.height,
         );
@@ -236,85 +242,123 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
         listenable: widget.annotationState,
         builder: (context, _) {
           final screenSize = MediaQuery.sizeOf(context);
-          final toolbarHeight =
+          final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
+          final isWindows = Platform.isWindows;
+          final useNativeFloatingToolbar = Platform.isMacOS || isWindows;
+          final nativeToolbarHeight =
               resolvedNativeToolbarFrame?.height ??
               kNativeToolbarFallbackHeight;
+          final reservedToolbarHeight = useNativeFloatingToolbar
+              ? 0.0
+              : nativeToolbarHeight;
           final image = widget.stitchedImage;
           final imagePixelSize = Size(
             image.width.toDouble(),
             image.height.toDouble(),
           );
-          final style = widget.showCaptureStyleChrome
+          final useCaptureStyleChrome =
+              widget.showCaptureStyleChrome && !Platform.isWindows;
+          final style = useCaptureStyleChrome
               ? widget.captureStyle.scaled(widget.captureScale)
               : const CaptureStyleSettings.defaults();
+          final useFrameChrome =
+              useCaptureStyleChrome && style.hasVisibleEffect;
           final captureLayout = computeCaptureStyleLayout(
             imagePixelSize,
             style,
           );
-          final containerRect = _imageContainerRect(
-            screenSize,
-            captureLayout: captureLayout,
-            toolbarHeight: toolbarHeight,
-          );
+          final containerRect = isWindows
+              ? Rect.fromLTWH(0, 0, screenSize.width, screenSize.height)
+              : _imageContainerRect(
+                  screenSize,
+                  captureLayout: captureLayout,
+                  reservedToolbarHeight: reservedToolbarHeight,
+                );
+          final snappedContainerRect = Platform.isWindows
+              ? _snapRect(containerRect, devicePixelRatio)
+              : containerRect;
           final displayScale =
-              containerRect.width / captureLayout.outerSize.width;
-          final localContentRect = Rect.fromLTWH(
+              snappedContainerRect.width / captureLayout.outerSize.width;
+          final localContentRectRaw = Rect.fromLTWH(
             captureLayout.outerInsets.left * displayScale,
             captureLayout.outerInsets.top * displayScale,
             captureLayout.contentSize.width * displayScale,
-            containerRect.height -
+            snappedContainerRect.height -
                 ((captureLayout.outerInsets.top +
                             captureLayout.outerInsets.bottom) *
                         displayScale)
                     .clamp(0.0, containerRect.height),
           );
+          final localContentRect = useFrameChrome
+              ? (Platform.isWindows
+                    ? _snapRect(localContentRectRaw, devicePixelRatio)
+                    : localContentRectRaw)
+              : Rect.fromLTWH(
+                  0,
+                  0,
+                  snappedContainerRect.width,
+                  snappedContainerRect.height,
+                );
           final fullContentHeight =
               captureLayout.contentSize.height * displayScale;
-          final displayBorderRadius = captureLayout.borderRadius * displayScale;
+          final displayBorderRadius = useFrameChrome
+              ? captureLayout.borderRadius * displayScale
+              : 0.0;
           final toolbarAnchor = nativeToolbarAnchorPoint(
             viewportSize: screenSize,
             fallbackAnchor: computeFloatingToolbarAnchor(
-              anchorRect: containerRect,
+              anchorRect: snappedContainerRect,
               screenSize: screenSize,
+              toolbarHeight: nativeToolbarHeight,
             ),
           );
 
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            syncNativeToolbar(
-              placement: NativeToolbarPlacement.belowAnchor,
-              anchorRect: containerRect,
-            );
+            if (useNativeFloatingToolbar) {
+              syncNativeToolbar(
+                placement: isWindows
+                    ? NativeToolbarPlacement.belowWindow
+                    : NativeToolbarPlacement.belowAnchor,
+                anchorRect: isWindows ? null : containerRect,
+              );
+            } else {
+              hideNativeToolbar();
+            }
           });
 
           return Stack(
             children: [
+              if (isWindows)
+                const Positioned.fill(child: TransparentClearLayer()),
               // Scrim background (full screen).
-              const Positioned.fill(
-                child: ColoredBox(color: Color(0x44000000)),
-              ),
+              if (!isWindows)
+                const Positioned.fill(
+                  child: ColoredBox(color: Color(0x44000000)),
+                ),
 
               // Click outside image → discard (when no tool is active).
               // Always present to keep the Stack child count stable — toggling
               // children shifts widget positions, causing the ScrollController
               // to momentarily attach to two scroll views during rebuilds.
-              Positioned.fill(
-                child: IgnorePointer(
-                  ignoring: activeShapeType != null,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.translucent,
-                    onTap: widget.onDiscard,
-                    child: const SizedBox.expand(),
+              if (!isWindows)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    ignoring: activeShapeType != null,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.translucent,
+                      onTap: widget.onDiscard,
+                      child: const SizedBox.expand(),
+                    ),
                   ),
                 ),
-              ),
 
               // Image container with border.
               Positioned(
-                left: containerRect.left,
-                top: containerRect.top,
-                width: containerRect.width,
-                height: containerRect.height,
+                left: snappedContainerRect.left,
+                top: snappedContainerRect.top,
+                width: snappedContainerRect.width,
+                height: snappedContainerRect.height,
                 child: CaptureStyleFrame(
                   contentRect: localContentRect,
                   borderRadius: displayBorderRadius,
@@ -328,7 +372,14 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
                           child: SizedBox(
                             width: localContentRect.width,
                             height: fullContentHeight,
-                            child: RawImage(image: image, fit: BoxFit.fitWidth),
+                            child: RawImage(
+                              image: image,
+                              fit: BoxFit.fitWidth,
+                              filterQuality: Platform.isWindows
+                                  ? FilterQuality.none
+                                  : FilterQuality.low,
+                              isAntiAlias: false,
+                            ),
                           ),
                         ),
                       ),
@@ -418,14 +469,34 @@ class _ScrollResultScreenState extends State<ScrollResultScreen>
               ),
 
               // Toolbar — positioned below/above/inside the image container.
-              Positioned(
-                top: toolbarAnchor.dy,
-                left: toolbarAnchor.dx,
-                child: CompositedTransformTarget(
-                  link: _popoverAnchorLink,
-                  child: const SizedBox(width: 1, height: 1),
+              if (useNativeFloatingToolbar)
+                Positioned(
+                  top: toolbarAnchor.dy,
+                  left: toolbarAnchor.dx,
+                  child: CompositedTransformTarget(
+                    link: _popoverAnchorLink,
+                    child: const SizedBox(width: 1, height: 1),
+                  ),
+                )
+              else
+                Positioned(
+                  top: toolbarAnchor.dy,
+                  left: toolbarAnchor.dx,
+                  child: FractionalTranslation(
+                    translation: const Offset(-0.5, 0),
+                    child: FloatingAnnotationToolbar(
+                      anchorLink: _popoverAnchorLink,
+                      activeTool: activeShapeType,
+                      onToolPressed: handleToolTap,
+                      onActionPressed: handleNativeToolbarAction,
+                      showPin: false,
+                      showHistoryControls: true,
+                      canUndo: widget.annotationState.canUndo,
+                      canRedo: widget.annotationState.canRedo,
+                      showOcr: Platform.isMacOS,
+                    ),
+                  ),
                 ),
-              ),
             ],
           );
         },

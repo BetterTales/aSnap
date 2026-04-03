@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -10,6 +11,7 @@ import '../state/ink_state.dart';
 import '../state/laser_state.dart';
 import '../widgets/ink_overlay.dart';
 import '../widgets/laser_overlay.dart';
+import '../widgets/transparent_clear_layer.dart';
 
 class InkOverlayScreen extends StatefulWidget {
   const InkOverlayScreen({
@@ -159,45 +161,58 @@ class _InkOverlayScreenState extends State<InkOverlayScreen> {
   Widget build(BuildContext context) {
     final inkActive = widget.drawingEnabled && widget.tool == InkTool.ink;
     final laserActive = widget.drawingEnabled && widget.tool == InkTool.laser;
-    final overlayCursor = (inkActive || laserActive)
+    final overlayCursor = inkActive
         ? SystemMouseCursors.none
         : MouseCursor.defer;
 
     return ColoredBox(
       color: Colors.transparent,
-      child: MouseRegion(
-        cursor: overlayCursor,
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: !inkActive,
-                child: InkOverlay(
-                  inkState: widget.inkState,
-                  drawingEnabled: inkActive,
-                  strokeColor: widget.strokeColor,
-                  strokeWidth: widget.strokeWidth,
-                  smoothingTolerance: widget.smoothingTolerance,
-                  autoFadeSeconds: widget.autoFadeSeconds,
-                  eraserSize: widget.eraserSize,
-                  onEraserSizeChanged: widget.onEraserSizeChanged,
-                ),
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Positioned.fill(
+            child: Platform.isWindows
+                ? const TransparentClearLayer()
+                : const ColoredBox(color: Colors.transparent),
+          ),
+          Positioned.fill(
+            child: MouseRegion(
+              cursor: overlayCursor,
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: !inkActive,
+                      child: InkOverlay(
+                        inkState: widget.inkState,
+                        drawingEnabled: inkActive,
+                        strokeColor: widget.strokeColor,
+                        strokeWidth: widget.strokeWidth,
+                        smoothingTolerance: widget.smoothingTolerance,
+                        autoFadeSeconds: widget.autoFadeSeconds,
+                        eraserSize: widget.eraserSize,
+                        onEraserSizeChanged: widget.onEraserSizeChanged,
+                      ),
+                    ),
+                  ),
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      ignoring: !laserActive,
+                      child: LaserOverlay(
+                        laserState: widget.laserState,
+                        drawingEnabled: laserActive,
+                        color: widget.laserColor,
+                        size: widget.laserSize,
+                        fadeSeconds: widget.laserFadeSeconds,
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
-            Positioned.fill(
-              child: IgnorePointer(
-                ignoring: !laserActive,
-                child: LaserOverlay(
-                  laserState: widget.laserState,
-                  drawingEnabled: laserActive,
-                  color: widget.laserColor,
-                  size: widget.laserSize,
-                  fadeSeconds: widget.laserFadeSeconds,
-                ),
-              ),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }

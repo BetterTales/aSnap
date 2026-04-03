@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 import 'dart:ui' as ui;
 
@@ -10,10 +11,14 @@ import '../services/window_service.dart';
 import '../state/annotation_state.dart';
 import '../state/app_state.dart';
 import '../utils/capture_style_renderer.dart';
+import '../utils/hardware_keyboard_helpers.dart';
+import '../utils/toolbar_layout.dart';
 import '../widgets/annotation_overlay.dart';
 import '../widgets/capture_style_frame.dart';
+import '../widgets/floating_annotation_toolbar.dart';
 import '../widgets/native_toolbar_mixin.dart';
 import '../widgets/qr_code_overlay.dart';
+import '../widgets/transparent_clear_layer.dart';
 import '../widgets/tool_popover_mixin.dart';
 
 /// Floating preview window for normal (non-scroll) captures.
@@ -77,10 +82,10 @@ class _PreviewScreenState extends State<PreviewScreen>
   AnnotationState get nativeToolbarAnnotationState => widget.annotationState;
 
   @override
-  bool get nativeToolbarShowPin => widget.onPin != null;
+  bool get nativeToolbarShowPin => Platform.isMacOS && widget.onPin != null;
 
   @override
-  bool get nativeToolbarShowOcr => true;
+  bool get nativeToolbarShowOcr => Platform.isMacOS;
 
   @override
   void initState() {
@@ -131,33 +136,26 @@ class _PreviewScreenState extends State<PreviewScreen>
     // Only handle keys when preview is active with an image.
     if (widget.appState.capturedImage == null) return false;
 
-    final meta =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.metaRight,
-        );
-    final shift =
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftLeft,
-        ) ||
-        HardwareKeyboard.instance.logicalKeysPressed.contains(
-          LogicalKeyboardKey.shiftRight,
-        );
+    final primaryModifier = isPrimaryShortcutModifierPressed();
+    final shift = isShiftModifierPressed();
 
-    // Cmd+Shift+Z → redo
-    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Shift+Z -> redo
+    if (primaryModifier &&
+        shift &&
+        event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState.redo();
       return true;
     }
-    // Cmd+Z → undo
-    if (meta && event.logicalKey == LogicalKeyboardKey.keyZ) {
+    // Primary+Z -> undo
+    if (primaryModifier && event.logicalKey == LogicalKeyboardKey.keyZ) {
       widget.annotationState.undo();
       return true;
     }
-    // Cmd+Shift+P → pin to screen
-    if (meta && shift && event.logicalKey == LogicalKeyboardKey.keyP) {
+    // Pin stays macOS-only until the native pinned window flow is ported.
+    if (Platform.isMacOS &&
+        primaryModifier &&
+        shift &&
+        event.logicalKey == LogicalKeyboardKey.keyP) {
       widget.onPin?.call();
       return true;
     }
@@ -220,6 +218,18 @@ class _PreviewScreenState extends State<PreviewScreen>
   // Build
   // ---------------------------------------------------------------------------
 
+  Rect _snapRect(Rect rect, double devicePixelRatio) {
+    final left =
+        (rect.left * devicePixelRatio).floorToDouble() / devicePixelRatio;
+    final top =
+        (rect.top * devicePixelRatio).floorToDouble() / devicePixelRatio;
+    final right =
+        (rect.right * devicePixelRatio).ceilToDouble() / devicePixelRatio;
+    final bottom =
+        (rect.bottom * devicePixelRatio).ceilToDouble() / devicePixelRatio;
+    return Rect.fromLTRB(left, top, right, bottom);
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -233,7 +243,7 @@ class _PreviewScreenState extends State<PreviewScreen>
             if (!mounted) return;
             unawaited(widget.windowService.hideToolbarPanel());
           });
-          return const ColoredBox(color: Color(0xFF1E1E1E));
+          return const ColoredBox(color: Colors.transparent);
         }
 
         // Reset annotation UI and toolbar cache when the image changes.
@@ -252,56 +262,90 @@ class _PreviewScreenState extends State<PreviewScreen>
           autofocus: true,
           child: LayoutBuilder(
             builder: (context, constraints) {
+              final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
               // Compute the actual rect where the image renders.
               final imageSize = Size(
                 image.width.toDouble(),
                 image.height.toDouble(),
               );
-              final style = widget.showCaptureStyleChrome
+              final useCaptureStyleChrome =
+                  widget.showCaptureStyleChrome && !Platform.isWindows;
+              final style = useCaptureStyleChrome
                   ? widget.captureStyle.scaled(widget.captureScale)
                   : const CaptureStyleSettings.defaults();
+              final useFrameChrome =
+                  useCaptureStyleChrome && style.hasVisibleEffect;
               final captureLayout = computeCaptureStyleLayout(imageSize, style);
+              final useNativeFloatingToolbar =
+                  Platform.isMacOS || Platform.isWindows;
               final imageViewport = constraints.biggest;
               final fitted = applyBoxFit(
                 BoxFit.scaleDown,
                 captureLayout.outerSize,
                 imageViewport,
               );
-              final outerDisplayRect = Alignment.center.inscribe(
+              final outerDisplayRectRaw = Alignment.center.inscribe(
                 fitted.destination,
                 Offset.zero & imageViewport,
               );
-              final imageDisplayRect = projectCaptureStyleRect(
-                captureLayout.contentRect,
-                sourceBounds: captureLayout.outerSize,
-                destinationBounds: outerDisplayRect,
-              );
+              final outerDisplayRect = Platform.isWindows
+                  ? _snapRect(outerDisplayRectRaw, devicePixelRatio)
+                  : outerDisplayRectRaw;
+              final imageDisplayRect = useFrameChrome
+                  ? (() {
+                      final imageDisplayRectRaw = projectCaptureStyleRect(
+                        captureLayout.contentRect,
+                        sourceBounds: captureLayout.outerSize,
+                        destinationBounds: outerDisplayRect,
+                      );
+                      return Platform.isWindows
+                          ? _snapRect(imageDisplayRectRaw, devicePixelRatio)
+                          : imageDisplayRectRaw;
+                    })()
+                  : outerDisplayRect;
               final displayScale =
                   outerDisplayRect.width / captureLayout.outerSize.width;
-              final displayBorderRadius =
-                  captureLayout.borderRadius * displayScale;
-              final popoverAnchor = nativeToolbarAnchorPoint(
-                viewportSize: imageViewport,
-                fallbackAnchor: Offset(
-                  imageViewport.width / 2,
-                  imageViewport.height,
+              final displayBorderRadius = useFrameChrome
+                  ? captureLayout.borderRadius * displayScale
+                  : 0.0;
+              final toolbarAnchor = nativeToolbarAnchorPoint(
+                viewportSize: constraints.biggest,
+                fallbackAnchor: computeFloatingToolbarAnchor(
+                  anchorRect: outerDisplayRect,
+                  screenSize: constraints.biggest,
                 ),
               );
               WidgetsBinding.instance.addPostFrameCallback((_) {
                 if (!mounted) return;
-                syncNativeToolbar(
-                  placement: NativeToolbarPlacement.belowWindow,
-                );
+                if (useNativeFloatingToolbar) {
+                  syncNativeToolbar(
+                    placement: NativeToolbarPlacement.belowWindow,
+                  );
+                } else {
+                  hideNativeToolbar();
+                }
               });
 
               return Stack(
                 fit: StackFit.expand,
                 children: [
+                  Positioned.fill(
+                    child: Platform.isWindows
+                        ? const TransparentClearLayer()
+                        : const ColoredBox(color: Colors.transparent),
+                  ),
                   CaptureStyleFrame(
                     contentRect: imageDisplayRect,
                     borderRadius: displayBorderRadius,
                     shadowEnabled: captureLayout.shadowEnabled,
-                    child: RawImage(image: image, fit: BoxFit.fill),
+                    child: RawImage(
+                      image: image,
+                      fit: BoxFit.fill,
+                      filterQuality: Platform.isWindows
+                          ? FilterQuality.none
+                          : FilterQuality.low,
+                      isAntiAlias: false,
+                    ),
                   ),
 
                   // Annotation overlay.
@@ -330,14 +374,34 @@ class _PreviewScreenState extends State<PreviewScreen>
                         !widget.annotationState.editingText,
                   ),
 
-                  Positioned(
-                    left: popoverAnchor.dx,
-                    top: popoverAnchor.dy,
-                    child: CompositedTransformTarget(
-                      link: _popoverAnchorLink,
-                      child: const SizedBox(width: 1, height: 1),
+                  if (useNativeFloatingToolbar)
+                    Positioned(
+                      left: toolbarAnchor.dx,
+                      top: toolbarAnchor.dy,
+                      child: CompositedTransformTarget(
+                        link: _popoverAnchorLink,
+                        child: const SizedBox(width: 1, height: 1),
+                      ),
+                    )
+                  else
+                    Positioned(
+                      left: toolbarAnchor.dx,
+                      top: toolbarAnchor.dy,
+                      child: FractionalTranslation(
+                        translation: const Offset(-0.5, 0),
+                        child: FloatingAnnotationToolbar(
+                          anchorLink: _popoverAnchorLink,
+                          activeTool: activeShapeType,
+                          onToolPressed: handleToolTap,
+                          onActionPressed: handleNativeToolbarAction,
+                          showPin: Platform.isMacOS && widget.onPin != null,
+                          showHistoryControls: true,
+                          canUndo: widget.annotationState.canUndo,
+                          canRedo: widget.annotationState.canRedo,
+                          showOcr: Platform.isMacOS,
+                        ),
+                      ),
                     ),
-                  ),
                 ],
               );
             },

@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -29,9 +30,9 @@ class ScrollCapturePreview extends StatefulWidget {
   /// Called when the user clicks the "Done" button to finish capture.
   final VoidCallback? onDone;
 
-  /// Called with the CG-coordinate rect of the "Done" button so the native
-  /// side can place a clickable NSPanel over it (the overlay ignores mouse
-  /// events; the NSPanel provides the hit area).
+  /// Called with the screen-coordinate rect of the "Done" button so the native
+  /// side can place a clickable button over it. The overlay ignores mouse
+  /// events, so the native surface provides the hit area.
   final void Function(Rect cgRect)? onStopButtonRect;
 
   const ScrollCapturePreview({
@@ -53,6 +54,9 @@ class _ScrollCapturePreviewState extends State<ScrollCapturePreview>
     with SingleTickerProviderStateMixin {
   late final AnimationController _rainbowController;
   final _scrollController = ScrollController();
+
+  static const _windowsDoneFill = Color(0xFF3E3E3E);
+  static const _windowsDoneBorder = Color(0xFF969696);
 
   @override
   void initState() {
@@ -217,9 +221,13 @@ class _ScrollCapturePreviewState extends State<ScrollCapturePreview>
 
   Widget _buildStatusBar() {
     final hasFrames = widget.frameCount > 0;
+    final showNativeDoneButton =
+        hasFrames &&
+        widget.onStopButtonRect != null &&
+        (Platform.isMacOS || Platform.isWindows);
 
     // Report the "Done" button position after this frame paints.
-    if (hasFrames) {
+    if (showNativeDoneButton) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _reportDoneButtonRect();
       });
@@ -255,23 +263,10 @@ class _ScrollCapturePreviewState extends State<ScrollCapturePreview>
             ),
           ),
           const Spacer(),
-          if (hasFrames)
-            Container(
-              key: _doneButtonKey,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: const Color(0x30FFFFFF),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: const Text(
-                '✓ Done',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  decoration: TextDecoration.none,
-                ),
-              ),
+          if (showNativeDoneButton)
+            Opacity(
+              opacity: Platform.isWindows ? 0 : 1,
+              child: _buildDoneButtonPlaceholder(),
             )
           else
             const Text(
@@ -284,6 +279,29 @@ class _ScrollCapturePreviewState extends State<ScrollCapturePreview>
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildDoneButtonPlaceholder() {
+    return Container(
+      key: _doneButtonKey,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: Platform.isWindows ? _windowsDoneFill : const Color(0x30FFFFFF),
+        borderRadius: BorderRadius.circular(6),
+        border: Platform.isWindows
+            ? Border.all(color: _windowsDoneBorder, width: 1)
+            : null,
+      ),
+      child: const Text(
+        'Done',
+        style: TextStyle(
+          color: Colors.white,
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          decoration: TextDecoration.none,
+        ),
       ),
     );
   }

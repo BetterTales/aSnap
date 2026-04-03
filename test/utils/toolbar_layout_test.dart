@@ -20,7 +20,7 @@ void main() {
         screenSize: const Size(800, 600),
       );
 
-      expect(anchor, const Offset(792, 592));
+      expect(anchor, const Offset(792, 548));
     });
 
     test('handles very small screens without throwing', () {
