@@ -12,7 +12,6 @@
 #include <cstdio>
 #include <memory>
 #include <optional>
-#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -88,61 +87,6 @@ struct CaptureResult {
   int height = 0;
   int bytes_per_row = 0;
 };
-
-void ResetDebugLog() {}
-
-void AppendDebugLog(const std::string& line) {
-  (void)line;
-}
-
-std::string RectToDebugString(const RECT& rect) {
-  std::ostringstream buffer;
-  buffer << "[" << rect.left << "," << rect.top << " " << rect.right << ","
-         << rect.bottom << " " << (rect.right - rect.left) << "x"
-         << (rect.bottom - rect.top) << "]";
-  return buffer.str();
-}
-
-std::string HexToDebugString(uintptr_t value) {
-  std::ostringstream buffer;
-  buffer << "0x" << std::hex << value;
-  return buffer.str();
-}
-
-std::string WindowSnapshotDebugString(HWND window, HWND flutter_view = nullptr) {
-  std::ostringstream buffer;
-  buffer << "window=" << window;
-  if (window == nullptr) {
-    return buffer.str();
-  }
-
-  RECT window_rect{};
-  RECT client_rect{};
-  GetWindowRect(window, &window_rect);
-  GetClientRect(window, &client_rect);
-
-  const HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
-  const UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
-
-  buffer << " windowRect=" << RectToDebugString(window_rect)
-         << " clientRect=" << RectToDebugString(client_rect)
-         << " style=" << HexToDebugString(
-                static_cast<uintptr_t>(GetWindowLongPtr(window, GWL_STYLE)))
-         << " exStyle=" << HexToDebugString(
-                static_cast<uintptr_t>(GetWindowLongPtr(window, GWL_EXSTYLE)))
-         << " dpi=" << dpi;
-
-  if (flutter_view != nullptr) {
-    RECT flutter_rect{};
-    GetWindowRect(flutter_view, &flutter_rect);
-    buffer << " flutterView=" << flutter_view
-           << " flutterRect=" << RectToDebugString(flutter_rect)
-           << " flutterExStyle=" << HexToDebugString(static_cast<uintptr_t>(
-                  GetWindowLongPtr(flutter_view, GWL_EXSTYLE)));
-  }
-
-  return buffer.str();
-}
 
 const flutter::EncodableMap* AsEncodableMap(
     const flutter::EncodableValue* value) {
@@ -700,9 +644,6 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
 
-  ResetDebugLog();
-  AppendDebugLog("OnCreate begin");
-
   RECT frame = GetClientArea();
 
   // The size here must match the window dimensions to avoid unnecessary surface
@@ -716,8 +657,6 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
   InitializeMethodChannel();
-  AppendDebugLog("OnCreate complete " + WindowSnapshotDebugString(
-      GetHandle(), flutter_controller_->view()->GetNativeWindow()));
 
   return true;
 }
@@ -978,8 +917,6 @@ void FlutterWindow::HandleWindowMethodCall(
     }
 
     if (monitor.has_value()) {
-      AppendDebugLog("enterOverlayMode target monitor physical=" +
-                     RectToDebugString(monitor->physical_bounds));
       ConfigureOverlayWindow(monitor->physical_bounds, false, 0);
     }
     result->Success(flutter::EncodableValue());
@@ -1003,8 +940,6 @@ void FlutterWindow::HandleWindowMethodCall(
     }
 
     if (monitor.has_value()) {
-      AppendDebugLog("enterInkOverlayMode target monitor physical=" +
-                     RectToDebugString(monitor->physical_bounds));
       ConfigureInkOverlayWindow(monitor->physical_bounds);
     }
     result->Success(flutter::EncodableValue());
@@ -1012,21 +947,18 @@ void FlutterWindow::HandleWindowMethodCall(
   }
 
   if (method == "cleanupOverlayMode" || method == "exitOverlayMode") {
-    AppendDebugLog("cleanupOverlayMode requested");
     RestoreWindowState();
     result->Success(flutter::EncodableValue());
     return;
   }
 
   if (method == "dismissAppWindow") {
-    AppendDebugLog("dismissAppWindow requested");
     DismissAppWindow();
     result->Success(flutter::EncodableValue());
     return;
   }
 
   if (method == "suspendOverlay") {
-    AppendDebugLog("suspendOverlay requested");
     SetWindowOpacity(0);
     result->Success(flutter::EncodableValue());
     return;
@@ -1062,7 +994,6 @@ void FlutterWindow::HandleWindowMethodCall(
   }
 
   if (method == "revealOverlay") {
-    AppendDebugLog("revealOverlay begin");
     SetMousePassthrough(false);
     SetWindowOpacity(255);
     ActivateAppWindow();
@@ -1071,14 +1002,11 @@ void FlutterWindow::HandleWindowMethodCall(
     if (flutter_controller_) {
       flutter_controller_->ForceRedraw();
     }
-    AppendDebugLog("revealOverlay end " + WindowSnapshotDebugString(
-        GetHandle(), flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
     result->Success(flutter::EncodableValue());
     return;
   }
 
   if (method == "revealInkOverlay") {
-    AppendDebugLog("revealInkOverlay begin");
     SetMousePassthrough(false);
     SetWindowCloak(GetHandle(), false);
     ActivateAppWindow();
@@ -1086,8 +1014,6 @@ void FlutterWindow::HandleWindowMethodCall(
     if (flutter_controller_) {
       flutter_controller_->ForceRedraw();
     }
-    AppendDebugLog("revealInkOverlay end " + WindowSnapshotDebugString(
-        GetHandle(), flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
     result->Success(flutter::EncodableValue());
     return;
   }
@@ -1095,8 +1021,6 @@ void FlutterWindow::HandleWindowMethodCall(
   if (method == "setOverlayMousePassthrough") {
     const bool passthrough =
         args != nullptr && GetBool(*args, "passthrough", false);
-    AppendDebugLog(std::string("setOverlayMousePassthrough ") +
-                   (passthrough ? "true" : "false"));
     SetMousePassthrough(passthrough);
     result->Success(flutter::EncodableValue());
     return;
@@ -1267,8 +1191,6 @@ void FlutterWindow::RestoreWindowState() {
   if (window == nullptr) {
     return;
   }
-  AppendDebugLog("RestoreWindowState begin " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 
   // Hide the hosted Flutter child first so DWM drops the last composited
   // capture frame instead of leaving it visible until the next input event.
@@ -1301,8 +1223,6 @@ void FlutterWindow::RestoreWindowState() {
     flutter_controller_->ForceRedraw();
   }
   saved_window_state_ = false;
-  AppendDebugLog("RestoreWindowState end " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::DismissAppWindow() {
@@ -1310,8 +1230,6 @@ void FlutterWindow::DismissAppWindow() {
   if (window == nullptr) {
     return;
   }
-  AppendDebugLog("DismissAppWindow begin " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 
   if (saved_window_state_) {
     RestoreWindowState();
@@ -1337,8 +1255,6 @@ void FlutterWindow::DismissAppWindow() {
   RedrawWindow(GetDesktopWindow(), nullptr, nullptr,
                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW);
   DwmFlush();
-  AppendDebugLog("DismissAppWindow end " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::PreparePreviewWindow(bool use_native_shadow) {
@@ -1346,10 +1262,6 @@ void FlutterWindow::PreparePreviewWindow(bool use_native_shadow) {
   if (window == nullptr) {
     return;
   }
-  AppendDebugLog(std::string("PreparePreviewWindow nativeShadow=") +
-                 (use_native_shadow ? "true " : "false ") +
-                 WindowSnapshotDebugString(
-                     window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 
   EnsureSavedWindowState();
   SetWindowCloak(window, false);
@@ -1383,8 +1295,6 @@ void FlutterWindow::ConfigureInkOverlayWindow(const RECT& bounds) {
   if (window == nullptr) {
     return;
   }
-  AppendDebugLog("ConfigureInkOverlayWindow bounds=" +
-                 RectToDebugString(bounds));
 
   EnsureSavedWindowState();
   custom_frame_active_ = true;
@@ -1411,9 +1321,6 @@ void FlutterWindow::ConfigureInkOverlayWindow(const RECT& bounds) {
   if (flutter_controller_) {
     flutter_controller_->ForceRedraw();
   }
-  AppendDebugLog("ConfigureInkOverlayWindow end " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow()
-                                  : nullptr));
 }
 
 void FlutterWindow::ConfigureOverlayWindow(const RECT& bounds,
@@ -1422,10 +1329,6 @@ void FlutterWindow::ConfigureOverlayWindow(const RECT& bounds,
   if (window == nullptr) {
     return;
   }
-  AppendDebugLog(std::string("ConfigureOverlayWindow bounds=") +
-                 RectToDebugString(bounds) + " clickThrough=" +
-                 (click_through ? "true" : "false") + " alpha=" +
-                 std::to_string(alpha));
 
   EnsureSavedWindowState();
   SetWindowCloak(window, false);
@@ -1459,8 +1362,6 @@ void FlutterWindow::ConfigureOverlayWindow(const RECT& bounds,
   if (flutter_controller_) {
     flutter_controller_->ForceRedraw();
   }
-  AppendDebugLog("ConfigureOverlayWindow end " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::LayoutHostedFlutterView() {
@@ -1503,8 +1404,6 @@ void FlutterWindow::SyncFlutterWindowMetrics() {
 
   LayoutHostedFlutterView();
   SendMessage(window, WM_SIZE, SIZE_RESTORED, MAKELPARAM(width, height));
-  AppendDebugLog("SyncFlutterWindowMetrics " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::ShowOrUpdateToolbarPanel(
@@ -2256,10 +2155,6 @@ void FlutterWindow::SetTransparentBackground(bool enabled) {
   ExtendFrameIntoClientArea(GetHandle(), enabled);
   ApplyTransparentAccent(GetHandle(), enabled);
   transparent_background_enabled_ = enabled;
-  AppendDebugLog(std::string("SetTransparentBackground ") +
-                 (enabled ? "true " : "false ") +
-                 WindowSnapshotDebugString(
-                     GetHandle(), flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::SetWindowOpacity(BYTE alpha) {
@@ -2292,11 +2187,6 @@ void FlutterWindow::DisableLayeredWindowIfTransparent() {
   SetWindowPos(window, nullptr, 0, 0, 0, 0,
                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
                    SWP_NOOWNERZORDER | SWP_NOACTIVATE);
-  AppendDebugLog("DisableLayeredWindowIfTransparent " +
-                 WindowSnapshotDebugString(
-                     window, flutter_controller_
-                                 ? flutter_controller_->view()->GetNativeWindow()
-                                 : nullptr));
 }
 
 void FlutterWindow::SetHostedFlutterViewVisible(bool visible) {
@@ -2333,10 +2223,6 @@ void FlutterWindow::SetMousePassthrough(bool enabled) {
   SetWindowPos(window, nullptr, 0, 0, 0, 0,
                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
                    SWP_NOOWNERZORDER | SWP_NOACTIVATE);
-  AppendDebugLog(std::string("SetMousePassthrough applied ") +
-                 (enabled ? "true " : "false ") +
-                 WindowSnapshotDebugString(
-                     window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::ActivateAppWindow() {
@@ -2353,8 +2239,6 @@ void FlutterWindow::ActivateAppWindow() {
   SetForegroundWindow(window);
   SetActiveWindow(window);
   SetFocus(window);
-  AppendDebugLog("ActivateAppWindow " + WindowSnapshotDebugString(
-      window, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr));
 }
 
 void FlutterWindow::StopEscMonitor() {
@@ -2369,20 +2253,6 @@ void FlutterWindow::StopEscMonitor() {
 LRESULT FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
                                       WPARAM const wparam,
                                       LPARAM const lparam) noexcept {
-  if (message == WM_SIZE || message == WM_WINDOWPOSCHANGED ||
-      message == WM_DPICHANGED || message == WM_MOVE) {
-    std::ostringstream buffer;
-    buffer << "Message "
-           << (message == WM_SIZE ? "WM_SIZE"
-               : message == WM_WINDOWPOSCHANGED ? "WM_WINDOWPOSCHANGED"
-               : message == WM_DPICHANGED       ? "WM_DPICHANGED"
-                                                : "WM_MOVE")
-           << " wparam=" << wparam << " lparam=" << lparam << " "
-           << WindowSnapshotDebugString(
-                  hwnd, flutter_controller_ ? flutter_controller_->view()->GetNativeWindow() : nullptr);
-    AppendDebugLog(buffer.str());
-  }
-
   if (message == WM_HOTKEY && wparam == kEscHotkeyId) {
     if (window_channel_) {
       window_channel_->InvokeMethod(

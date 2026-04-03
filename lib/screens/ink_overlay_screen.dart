@@ -161,7 +161,7 @@ class _InkOverlayScreenState extends State<InkOverlayScreen> {
   Widget build(BuildContext context) {
     final inkActive = widget.drawingEnabled && widget.tool == InkTool.ink;
     final laserActive = widget.drawingEnabled && widget.tool == InkTool.laser;
-    final overlayCursor = (inkActive || laserActive)
+    final overlayCursor = inkActive
         ? SystemMouseCursors.none
         : MouseCursor.defer;
 

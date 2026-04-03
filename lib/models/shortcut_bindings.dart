@@ -34,7 +34,8 @@ extension ShortcutActionX on ShortcutAction {
     ShortcutAction.pin => 'Pin the latest copied image to the screen.',
     ShortcutAction.ocr => 'Start an OCR region capture.',
     ShortcutAction.ink => 'Hold to draw on screen.',
-    ShortcutAction.laser => 'Hold to show a laser pointer.',
+    ShortcutAction.laser =>
+      'Hold to show a laser pointer; release to dismiss it.',
   };
 }
 

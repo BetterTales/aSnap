@@ -538,24 +538,19 @@ Future<void> _handleLaserKeyDown() async {
     _appState.updateInkOverlay(tool: InkTool.laser, drawingEnabled: true);
     await _windowService.setOverlayMousePassthrough(passthrough: false);
     try {
-      await _windowService.setOverlayCursorHidden(hidden: true);
+      await _windowService.setOverlayCursorHidden(hidden: false);
     } catch (_) {}
     return;
   }
 
-  await _showInkOverlay(tool: InkTool.laser, hideCursor: true);
+  await _showInkOverlay(tool: InkTool.laser, hideCursor: false);
 }
 
 Future<void> _handleLaserKeyUp() async {
   final ink = _appState.inkOverlayWorkflow;
   if (ink == null || ink.tool != InkTool.laser) return;
 
-  if (ink.drawingEnabled) {
-    _appState.updateInkOverlay(drawingEnabled: false);
-  }
-  await _windowService.setOverlayMousePassthrough(passthrough: true);
-  await _windowService.setOverlayCursorHidden(hidden: false);
-  await _windowService.resetInkMonitorState();
+  await _exitInkOverlay();
 }
 
 Future<void> _exitInkOverlay() async {
@@ -587,14 +582,19 @@ Future<void> _showInkOverlay({
 
   _appState.setInkOverlay(tool: tool, drawingEnabled: true);
   await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.enterInkOverlay(screenOrigin: screenOrigin);
   await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await WidgetsBinding.instance.endOfFrame;
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.setOverlayMousePassthrough(passthrough: false);
   try {
     await _windowService.setOverlayCursorHidden(hidden: hideCursor);
   } catch (_) {}
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.revealInkOverlay();
+  if (_appState.inkOverlayWorkflow?.tool != tool) return;
   await _windowService.startEscMonitor();
 }
 
