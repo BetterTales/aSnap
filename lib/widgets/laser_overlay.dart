@@ -150,41 +150,47 @@ class _LaserOverlayState extends State<LaserOverlay>
     _lastSampleTime = 0;
   }
 
+  Offset _eventPosition(PointerEvent event) => event.localPosition;
+
   void _updateCursor(Offset position) {
     if (_cursorPosition.value == position) return;
     _cursorPosition.value = position;
   }
 
   void _onPointerHover(PointerHoverEvent event) {
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerEnter(PointerEnterEvent event) {
-    _updateCursor(event.localPosition);
+    _updateCursor(_eventPosition(event));
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerDown(PointerDownEvent event) {
     if (event.buttons != kPrimaryButton) return;
+    final position = _eventPosition(event);
     _isPrimaryDown = true;
     _activeStrokeId += 1;
     _lastSamplePosition = null;
     _lastSampleTime = 0;
-    _updateCursor(event.localPosition);
-    _recordSample(event.localPosition);
+    _updateCursor(position);
+    _recordSample(position);
   }
 
   void _onPointerUp(PointerUpEvent event) {
+    final position = _eventPosition(event);
     if (event.buttons == kPrimaryButton || event.buttons == 0) {
       _isPrimaryDown = false;
       _lastSamplePosition = null;
       _lastSampleTime = 0;
-      _updateCursor(event.localPosition);
+      _updateCursor(position);
     }
   }
 
@@ -208,11 +214,13 @@ class _LaserOverlayState extends State<LaserOverlay>
       fadeSeconds: widget.fadeSeconds,
       cursorActive: widget.drawingEnabled,
       cursorPositionListenable: _cursorPosition,
-      repaint: repaint,
     );
 
-    final content = RepaintBoundary(
-      child: CustomPaint(painter: painter, size: Size.infinite),
+    final content = SizedBox.expand(
+      child: ListenableBuilder(
+        listenable: repaint,
+        builder: (context, _) => CustomPaint(painter: painter),
+      ),
     );
 
     final cursor = widget.drawingEnabled
@@ -250,7 +258,6 @@ class _LaserPainter extends CustomPainter {
     required this.fadeSeconds,
     required this.cursorActive,
     required this.cursorPositionListenable,
-    super.repaint,
   });
 
   final LaserState laserState;
@@ -344,9 +351,6 @@ class _LaserPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _LaserPainter oldDelegate) {
-    return oldDelegate.color != color ||
-        oldDelegate.size != size ||
-        oldDelegate.fadeSeconds != fadeSeconds ||
-        oldDelegate.cursorActive != cursorActive;
+    return true;
   }
 }

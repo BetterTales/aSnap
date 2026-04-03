@@ -355,6 +355,21 @@ class WindowService {
     );
   }
 
+  Future<void> _prepareWindowsFullscreenOverlayWindow() async {
+    if (!Platform.isWindows) return;
+    await windowManager.setMinimumSize(const Size(0, 0));
+    await windowManager.setMaximumSize(
+      const Size(double.infinity, double.infinity),
+    );
+    await windowManager.setTitleBarStyle(
+      TitleBarStyle.hidden,
+      windowButtonVisibility: false,
+    );
+    await windowManager.setHasShadow(false);
+    await windowManager.setAlwaysOnTop(true);
+    await windowManager.setSkipTaskbar(true);
+  }
+
   /// Show the preview window sized to the image.
   Future<Size?> showPreview({
     required int imageWidth,
@@ -470,6 +485,7 @@ class WindowService {
   /// a race condition where the cursor may have moved between captureScreen and
   /// enterOverlayMode.
   Future<void> showFullScreenOverlay({Offset? screenOrigin}) async {
+    await _prepareWindowsFullscreenOverlayWindow();
     final args = screenOrigin != null
         ? {'screenOriginX': screenOrigin.dx, 'screenOriginY': screenOrigin.dy}
         : null;
@@ -478,17 +494,24 @@ class WindowService {
 
   /// Show a transparent full-screen overlay for ink drawing.
   Future<void> enterInkOverlay({Offset? screenOrigin}) async {
-    if (!Platform.isMacOS) return;
+    await _prepareWindowsFullscreenOverlayWindow();
     final args = screenOrigin != null
         ? {'screenOriginX': screenOrigin.dx, 'screenOriginY': screenOrigin.dy}
         : null;
-    await _channel.invokeMethod('enterInkOverlayMode', args);
+    if (Platform.isMacOS || Platform.isWindows) {
+      await _channel.invokeMethod('enterInkOverlayMode', args);
+      return;
+    }
+    await _channel.invokeMethod('enterOverlayMode', args);
   }
 
   /// Reveal the prepared ink overlay after Flutter has rendered its first frame.
   Future<void> revealInkOverlay() async {
-    if (!Platform.isMacOS) return;
-    await _channel.invokeMethod('revealInkOverlay');
+    if (Platform.isMacOS || Platform.isWindows) {
+      await _channel.invokeMethod('revealInkOverlay');
+      return;
+    }
+    await _channel.invokeMethod('revealOverlay');
   }
 
   /// Fully exit overlay mode: restore window style, level, observers.
@@ -497,7 +520,7 @@ class WindowService {
   }
 
   Future<void> setOverlayMousePassthrough({required bool passthrough}) async {
-    if (!Platform.isMacOS) return;
+    if (!Platform.isMacOS && !Platform.isWindows) return;
     await _channel.invokeMethod('setOverlayMousePassthrough', {
       'passthrough': passthrough,
     });

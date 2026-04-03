@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -98,6 +100,8 @@ class _InkOverlayState extends State<InkOverlay>
     _cursorPosition.value = position;
   }
 
+  Offset _eventPosition(PointerEvent event) => event.localPosition;
+
   void _clearCursorPosition() {
     final hadCursor = _cursorPosition.value != null;
     final hadEraser = _cursorIsEraser.value;
@@ -117,13 +121,14 @@ class _InkOverlayState extends State<InkOverlay>
     final isPrimary = (event.buttons & kPrimaryButton) != 0;
     final isSecondary = (event.buttons & kSecondaryButton) != 0;
     if (!isPrimary && !isSecondary) return;
+    final position = _eventPosition(event);
     _rightButtonDown = isSecondary;
     final isEraser = isSecondary;
-    _updateCursorPosition(event.localPosition);
+    _updateCursorPosition(position);
     _setCursorIsEraser(isEraser);
     _cancelFade();
     widget.inkState.startStroke(
-      event.localPosition,
+      position,
       color: widget.strokeColor,
       strokeWidth: isEraser ? widget.eraserSize : widget.strokeWidth,
       isEraser: isEraser,
@@ -132,7 +137,8 @@ class _InkOverlayState extends State<InkOverlay>
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    _updateCursorPosition(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursorPosition(position);
     if (!widget.drawingEnabled) return;
     final hasButton =
         (event.buttons & (kPrimaryButton | kSecondaryButton)) != 0;
@@ -140,7 +146,7 @@ class _InkOverlayState extends State<InkOverlay>
     final isEraser = (event.buttons & kSecondaryButton) != 0;
     _rightButtonDown = isEraser;
     _setCursorIsEraser(isEraser);
-    widget.inkState.appendStroke(event.localPosition);
+    widget.inkState.appendStroke(position);
   }
 
   void _onPointerUp(PointerUpEvent event) {
@@ -158,7 +164,8 @@ class _InkOverlayState extends State<InkOverlay>
   }
 
   void _onPointerHover(PointerHoverEvent event) {
-    _updateCursorPosition(event.localPosition);
+    final position = _eventPosition(event);
+    _updateCursorPosition(position);
   }
 
   void _onPointerSignal(PointerSignalEvent event) {
@@ -186,23 +193,26 @@ class _InkOverlayState extends State<InkOverlay>
       _cursorPosition,
       _cursorIsEraser,
     ]);
-    final content = RepaintBoundary(
-      child: CustomPaint(
-        painter: _InkPainter(
-          inkState: widget.inkState,
-          strokeColor: widget.strokeColor,
-          strokeWidth: widget.strokeWidth,
-          eraserSize: widget.eraserSize,
-          cursorActive: widget.drawingEnabled,
-          cursorPositionListenable: _cursorPosition,
-          cursorIsEraserListenable: _cursorIsEraser,
-          repaint: repaint,
+    final content = SizedBox.expand(
+      child: ListenableBuilder(
+        listenable: repaint,
+        builder: (context, _) => CustomPaint(
+          painter: _InkPainter(
+            inkState: widget.inkState,
+            strokeColor: widget.strokeColor,
+            strokeWidth: widget.strokeWidth,
+            eraserSize: widget.eraserSize,
+            cursorActive: widget.drawingEnabled,
+            cursorPositionListenable: _cursorPosition,
+            cursorIsEraserListenable: _cursorIsEraser,
+          ),
         ),
-        size: Size.infinite,
       ),
     );
 
-    final faded = FadeTransition(opacity: _fadeController, child: content);
+    final faded = Platform.isWindows
+        ? content
+        : FadeTransition(opacity: _fadeController, child: content);
 
     final cursor = widget.drawingEnabled
         ? SystemMouseCursors.none
@@ -240,7 +250,6 @@ class _InkPainter extends CustomPainter {
     required this.cursorActive,
     required this.cursorPositionListenable,
     required this.cursorIsEraserListenable,
-    super.repaint,
   });
 
   final InkState inkState;
@@ -326,9 +335,5 @@ class _InkPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _InkPainter oldDelegate) =>
-      oldDelegate.strokeColor != strokeColor ||
-      oldDelegate.strokeWidth != strokeWidth ||
-      oldDelegate.eraserSize != eraserSize ||
-      oldDelegate.cursorActive != cursorActive;
+  bool shouldRepaint(covariant _InkPainter oldDelegate) => true;
 }

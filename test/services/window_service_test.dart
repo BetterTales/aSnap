@@ -109,6 +109,19 @@ void main() {
     },
   );
 
+  test('enterInkOverlay forwards to the expected native method', () async {
+    MethodCall? capturedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_windowChannel, (call) async {
+          capturedCall = call;
+          return null;
+        });
+
+    await windowService.enterInkOverlay();
+
+    expect(capturedCall?.method, 'enterInkOverlayMode');
+  });
+
   test('revealInkOverlay forwards to the native window channel', () async {
     MethodCall? capturedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -123,6 +136,9 @@ void main() {
   });
 
   test('resetInkMonitorState forwards to the native window channel', () async {
+    if (!Platform.isMacOS) {
+      return;
+    }
     MethodCall? capturedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(_windowChannel, (call) async {
